@@ -690,17 +690,20 @@ def task_md_monitor(args: list[str] | None = None, interactive: bool = True) -> 
                     )
                 total_steps = len(data)
 
-            # Status bar always at bottom
+            # Status bar — only on step change or first run, avoid flooding
             if data:
                 last = data[-1]
-                console.print(
+                current_status = (
                     f"[dim]Step {last['step']}  |  "
                     f"T = {last['temperature_k']:.1f} K  |  "
                     f"E = {last['energy_ry']:.4f} Ry  |  "
                     f"q / Ctrl+C to exit  |  {log_path}[/dim]"
                 )
+                if new_count > 0:
+                    console.print(current_status)
             else:
-                console.print(f"[dim]Waiting for data...  |  q / Ctrl+C to exit  |  {log_path}[/dim]")
+                if total_steps == 0:
+                    console.print(f"[dim]Waiting for data...  |  q / Ctrl+C to exit  |  {log_path}[/dim]")
 
             # Check for exit key
             try:

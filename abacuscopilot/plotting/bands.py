@@ -326,7 +326,7 @@ def plot_fatbands(
             color = species_colors.get(species)
             for ib in range(nbands):
                 if np.any(weights[ib] > 0.01):
-                    widths = weights[ib] * linewidth
+                    widths = np.maximum(weights[ib] * linewidth, 0.0)
                     ax.scatter(k_dists, energies_shifted[ib], s=widths * 10,
                               c=color if color else None, alpha=0.6, linewidths=0,
                               label=species if ib == 0 else "")

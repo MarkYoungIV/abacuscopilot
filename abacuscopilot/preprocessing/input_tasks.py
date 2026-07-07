@@ -147,7 +147,7 @@ TEMPLATE_LCAO_CELL_RELAX = {**_LCAO_BASE, "calculation": "cell-relax", **_RELAX_
 TEMPLATE_LCAO_RELAX      = {**_LCAO_BASE, "calculation": "relax",      **_RELAX_FIELDS, "cal_stress": 0}
 TEMPLATE_LCAO_SCF         = {**_LCAO_BASE, "calculation": "scf"}
 TEMPLATE_LCAO_BAND        = {**_LCAO_BASE, "calculation": "nscf", "symmetry": -1, "kspacing": 0.0, **_NSCF_READ, "out_band": True}
-TEMPLATE_LCAO_DOS         = {**_LCAO_BASE, "calculation": "nscf", **_NSCF_READ, "out_dos": 1, "dos_emin_ev": -15.0, "dos_emax_ev": 15.0, "dos_edelta_ev": 0.01}
+TEMPLATE_LCAO_DOS         = {**_LCAO_BASE, "calculation": "nscf", **_NSCF_READ, "out_dos": 1, "dos_emin_ev": -15.0, "dos_emax_ev": 15.0, "dos_edelta_ev": 0.01, "dos_sigma": 0.03}
 
 # --- PW templates ------------------------------------------------------------
 
@@ -155,7 +155,7 @@ TEMPLATE_PW_CELL_RELAX = {**_PW_BASE, "calculation": "cell-relax", **_RELAX_FIEL
 TEMPLATE_PW_RELAX      = {**_PW_BASE, "calculation": "relax",      **_RELAX_FIELDS, "cal_stress": 0}
 TEMPLATE_PW_SCF         = {**_PW_BASE, "calculation": "scf"}
 TEMPLATE_PW_BAND        = {**_PW_BASE, "calculation": "nscf", "symmetry": -1, "kspacing": 0.0, **_NSCF_READ, "out_band": True}
-TEMPLATE_PW_DOS         = {**_PW_BASE, "calculation": "nscf", **_NSCF_READ, "out_dos": 1, "dos_emin_ev": -15.0, "dos_emax_ev": 15.0, "dos_edelta_ev": 0.01}
+TEMPLATE_PW_DOS         = {**_PW_BASE, "calculation": "nscf", **_NSCF_READ, "out_dos": 1, "dos_emin_ev": -15.0, "dos_emax_ev": 15.0, "dos_edelta_ev": 0.01, "dos_sigma": 0.03}
 
 # --- MD templates (distinct enough to keep inline) ---------------------------
 

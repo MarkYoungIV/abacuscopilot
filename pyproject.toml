@@ -32,15 +32,15 @@ dependencies = [
     "matplotlib>=3.5",
     "rich>=13.0",
     "pyyaml>=6.0",
+    "ase>=3.22",
 ]
 
 [project.optional-dependencies]
-ase = ["ase>=3.22"]
 symmetry = ["spglib>=2.0"]
 kpath = ["seekpath>=2.0"]
 xml = ["lxml>=4.9"]
 full = [
-    "abacuscopilot[ase,symmetry,xml]",
+    "abacuscopilot[symmetry,xml]",
 ]
 dev = [
     "pytest>=7.0",

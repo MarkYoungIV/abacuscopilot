@@ -56,7 +56,9 @@
       "Bash(env)",
       "Bash(networksetup -getwebproxy Wi-Fi)",
       "Bash(networksetup -getsecurewebproxy Wi-Fi)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(git rm *)",
+      "Bash(git config *)"
     ]
   }
 }
