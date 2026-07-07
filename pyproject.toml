@@ -1,0 +1,114 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abacuscopilot"
+version = "0.1.0"
+description = "Your AI copilot for the ABACUS DFT software — pre- and post-processing made simple"
+readme = "README.md"
+license = {text = "GPL-3.0"}
+requires-python = ">=3.9"
+authors = [
+    {name = "AbacusCopilot Developers"}
+]
+keywords = ["abacus", "dft", "materials-science", "copilot", "post-processing", "pre-processing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+
+dependencies = [
+    "numpy>=1.21",
+    "scipy>=1.7",
+    "matplotlib>=3.5",
+    "rich>=13.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+ase = ["ase>=3.22"]
+symmetry = ["spglib>=2.0"]
+kpath = ["seekpath>=2.0"]
+xml = ["lxml>=4.9"]
+full = [
+    "abacuscopilot[ase,symmetry,xml]",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
+    "pre-commit>=3.0",
+]
+
+[project.scripts]
+abacuscopilot = "abacuscopilot.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/abacuskit/abacus-kit"
+Repository = "https://github.com/abacuskit/abacus-kit"
+
+[tool.setuptools.packages.find]
+include = ["abacuscopilot*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+exclude = [".agents/", ".git/", "__pycache__/", "build/", "dist/", "*.egg-info/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "RUF001",   # ambiguous unicode (Chinese characters are intentional)
+    "RUF002",   # docstring ambiguity
+    "E501",     # line length (handled by formatter)
+    "E741",     # ambiguous variable names like 'l', 'I'
+    "N806",     # variable naming (too strict for existing codebase)
+    "N803",     # argument naming
+    "N801",     # class naming
+    "N818",     # exception naming
+    "UP037",    # quoted annotations (compat)
+]
+
+[tool.mypy]
+python_version = "3.10"
+# Enable the most impactful checks without being too noisy
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+warn_return_any = false
+warn_unreachable = true
+no_implicit_optional = true
+warn_no_return = true
+strict_equality = true
+# Dependencies that lack type stubs
+[[tool.mypy.overrides]]
+module = [
+    "numpy.*",
+    "scipy.*",
+    "matplotlib.*",
+    "rich.*",
+    "yaml.*",
+    "ase.*",
+    "spglib.*",
+    "seekpath.*",
+    "lxml.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = ["-v", "--tb=short", "--strict-markers"]

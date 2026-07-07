@@ -1,0 +1,29 @@
+repos:
+  # All hooks use language: system — no network download required.
+  # Uses your already-installed ruff and mypy.
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff (lint)
+        entry: ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: ruff-format
+        name: ruff (format)
+        entry: ruff format --check
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: mypy
+        name: mypy
+        entry: mypy abacuscopilot/ --no-site-packages
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]

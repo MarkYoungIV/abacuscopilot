@@ -1,0 +1,199 @@
+Metadata-Version: 2.4
+Name: abacuscopilot
+Version: 0.1.0
+Summary: Your AI copilot for the ABACUS DFT software — pre- and post-processing made simple
+Author: AbacusCopilot Developers
+License: GPL-3.0
+Project-URL: Homepage, https://github.com/abacuskit/abacus-kit
+Project-URL: Repository, https://github.com/abacuskit/abacus-kit
+Keywords: abacus,dft,materials-science,copilot,post-processing,pre-processing
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Physics
+Classifier: Topic :: Scientific/Engineering :: Chemistry
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.21
+Requires-Dist: scipy>=1.7
+Requires-Dist: matplotlib>=3.5
+Requires-Dist: rich>=13.0
+Requires-Dist: pyyaml>=6.0
+Provides-Extra: ase
+Requires-Dist: ase>=3.22; extra == "ase"
+Provides-Extra: symmetry
+Requires-Dist: spglib>=2.0; extra == "symmetry"
+Provides-Extra: kpath
+Requires-Dist: seekpath>=2.0; extra == "kpath"
+Provides-Extra: xml
+Requires-Dist: lxml>=4.9; extra == "xml"
+Provides-Extra: full
+Requires-Dist: abacuscopilot[ase,symmetry,xml]; extra == "full"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0; extra == "dev"
+Requires-Dist: ruff>=0.1; extra == "dev"
+
+# AbacusCopilot
+
+> ୧(๑•̀⌄•́๑)૭   A pre- & post-processing toolkit for the ABACUS DFT software
+
+**AbacusCopilot** is a VASPKIT-style toolkit that streamlines working with ABACUS — generating input files, analyzing output, and producing publication-quality figures. It provides both an interactive menu-driven interface and a command-line task mode.
+
+## Quick Start
+
+```bash
+# Install
+pip install -e .
+
+# Launch interactive mode
+abacuscopilot
+
+# Run a task non-interactively
+abacuscopilot -task 101                    # Generate SCF INPUT
+abacuscopilot -task 201                    # Convert CIF → STRU
+abacuscopilot -task 301                    # Generate KPT from k-spacing
+abacuscopilot -task 721 --bands OUT.Si/BANDS_1.dat  # Plot band structure
+abacuscopilot -task 711 --log OUT.ABACUS/running_scf.log  # SCF convergence
+abacuscopilot --list-tasks                 # Show all available tasks
+```
+
+### First-time Setup
+
+```bash
+abacuscopilot -task 1    # Configuration wizard
+```
+
+Configures pseudopotential paths, orbital directories, ABACUS binary location, and default calculation parameters. Settings are saved to `~/.abacuscopilot/config.yaml`.
+
+## Task Reference
+
+### Pre-processing
+
+| ID | Name | Description |
+|----|------|-------------|
+| 1 | System Setup | Configure pseudopotential paths, defaults |
+| 2 | Show Config | Display current configuration |
+| 3 | Check Environment | Verify tools and dependencies |
+| 10 | Prepare Files | Copy PP/orbital files from library |
+| 101 | SCF INPUT | Generate INPUT for SCF calculation |
+| 102 | Relax INPUT | Generate INPUT for geometry relaxation |
+| 103 | MD INPUT | Generate INPUT for molecular dynamics |
+| 104 | Band Structure INPUT | Generate INPUT for band (NSCF) |
+| 105 | DOS INPUT | Generate INPUT for DOS/PDOS |
+| 106 | Work Function INPUT | Generate INPUT for work function |
+| 201 | STRU from CIF | Convert CIF to ABACUS STRU |
+| 202 | STRU from POSCAR | Convert VASP POSCAR to STRU |
+| 203 | Coord Convert | Convert STRU between Direct and Cartesian |
+| 204 | STRU to CIF | Convert STRU to CIF |
+| 205 | STRU to POSCAR | Convert STRU to VASP POSCAR |
+| 301 | Auto KPT (MP mesh) | Generate MP k-point mesh from k-spacing |
+| 302 | KPT (band path) | Generate line-mode KPT for bands |
+| 303 | Custom KPT | Custom k-point list |
+| 401 | Build Supercell | Nx×Ny×Nz supercell |
+| 402 | Redefine Lattice | Apply 3×3 transformation matrix |
+| 403 | Coord Conversion | Direct ↔ Cartesian conversion |
+| 404 | Fix/Unfix Atoms | Selective dynamics constraints |
+| 405 | Slab Builder | Build slab from Miller indices |
+| 406 | Vacuum Layer | Add vacuum along cell axis |
+| 501 | Symmetry Analysis | Space group, Wyckoff positions |
+| 502 | Primitive Cell | Reduce to primitive cell |
+
+### Post-processing
+
+| ID | Name | Description |
+|----|------|-------------|
+| 711 | SCF Convergence | Check SCF convergence history |
+| 712 | SCF Compare | Compare multiple SCF runs |
+| 713 | Calc Status | Check if calculation completed |
+| 721 | Plot Band Structure | Band structure from BANDS_*.dat |
+| 722 | Fat-band Plot | Projected (fat) band structure |
+| 731 | Plot DOS | Total density of states |
+| 732 | Plot PDOS | Projected density of states |
+| 733 | DOS+Bands Combined | Side-by-side figure |
+| 741 | 1D Planar Avg Charge | Planar-averaged charge density |
+| 742 | Export Cube/XSF | Export for VESTA visualization |
+| 743 | Diff. Charge Density | Δρ = ρ_AB − ρ_A − ρ_B |
+| 751 | Elastic Constants | Parse elastic tensor, VRH moduli |
+| 752 | EOS Fitting | Birch-Murnaghan equation of state |
+| 771 | Work Function | Φ = V_vacuum − E_Fermi |
+| 772 | Macroscopic Avg | Double-averaged potential |
+
+## CLI Examples
+
+```bash
+# Generate all input files for a relaxation
+abacuscopilot -task 201                    # STRU from CIF
+abacuscopilot -task 102                    # Relax INPUT
+abacuscopilot -task 301                    # Auto KPT
+abacuscopilot -task 10                     # Copy PP/orbital files
+
+# After calculation: analyze results
+abacuscopilot -task 713                    # Check status
+abacuscopilot -task 711                    # SCF convergence
+abacuscopilot -task 721 --bands OUT.Si/BANDS_1.dat  # Band plot
+abacuscopilot -task 731 --dos OUT.Si/DOS_1.dat      # DOS plot
+
+# Output to a specific directory
+abacuscopilot -task 101 -o ./my_calculation/
+
+# Note: for flags with negative values, use = syntax
+abacuscopilot -task 721 --erange=-5,5 --bands BANDS.dat
+```
+
+## Configuration
+
+Edit `~/.abacuscopilot/config.yaml` or run `abacuscopilot -task 1`:
+
+```yaml
+libraries:
+  pseudo_library: /path/to/pseudopotentials/
+  orbital_library: /path/to/orbitals/
+
+defaults:
+  kspacing: 0.14
+  ecutwfc: 100.0
+  basis_type: lcao
+  dft_functional: pbe
+  scf_thr: 1e-7
+
+plotting:
+  dpi: 300
+  figure_format: png
+```
+
+## Development
+
+```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
+# Run tests
+python -m pytest tests/ -v
+
+# Run specific test file
+python -m pytest tests/test_io.py -v
+```
+
+### Adding a New Task
+
+```python
+from abacuscopilot.tasks import task
+
+@task(9001, category="My Category", name="My Task",
+      description="Description for CLI and menu")
+def my_task(args=None, interactive=True):
+    console = ...
+    # task logic here
+```
+
+Tasks are auto-discovered from `abacuscopilot/preprocessing/` and `abacuscopilot/postprocessing/` packages.
+
+## License
+
+GPL-3.0 — Inspired by VASPKIT

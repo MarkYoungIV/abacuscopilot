@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Test data
+abacuscopilot/test/
+
+# Large library files (auto-detected by config)
+Orbitals/
+Pseudopotential/
+
+# Coverage
+.coverage
+.pytest_cache/
+
+# Claude Code
+.claude/
+.agents/
+
+# Pre-commit cache
+.pre-commit-cache/
