@@ -126,25 +126,44 @@ def _generate_kpt_via_seekpath(structure, npts: int):
     point_coords = result["point_coords"]   # {"GAMMA": [0,0,0], "X": [0.5,0,0.5], ...}
     path = result["path"]                   # [("GAMMA","X"), ("X","U"), ...]
 
-    # Build line-mode segments
-    segments = []
-    labels = []
+    # Build line-mode segments directly, keeping each segment's true
+    # start/end labels. seekpath breaks the path at equivalent points
+    # (e.g. FCC: ...->X, X->U, K->GAMMA...), where segment i's end label
+    # differs from segment i+1's start label. We must NOT flatten labels to
+    # "one label per point" or the coords and labels desync (U gets mislabelled
+    # as K). At a break, join the two labels as "END|START" for display.
+    from abacuscopilot.core.models import KPoints
+
+    def _disp(lbl: str) -> str:
+        return "Γ" if lbl.upper() == "GAMMA" else lbl
+
+    kpts = KPoints(mode="line")
+    disp_path_labels = []
     for i, (start_label, end_label) in enumerate(path):
         start = list(point_coords[start_label])
         end = list(point_coords[end_label])
-        segments.append((start, end, npts))
-        labels.append(start_label)
-    labels.append(path[-1][1])  # final endpoint label
+        kpts.line_path.append({
+            "start": tuple(start),
+            "end": tuple(end),
+            "npoints": npts,
+            "label": start_label,
+            "end_label": end_label,
+        })
+        # Build a human-readable path string that shows breaks
+        if i == 0:
+            disp_path_labels.append(_disp(start_label))
+        elif start_label != path[i - 1][1]:
+            # discontinuity: previous end and this start differ
+            disp_path_labels[-1] = f"{disp_path_labels[-1]}|{_disp(start_label)}"
+        disp_path_labels.append(_disp(end_label))
 
-    from abacuscopilot.io.kpt_file import line_mode_kpts_from_path
-    kpts = line_mode_kpts_from_path(segments, labels=labels)
-
-    path_str = " — ".join(labels)
+    path_str = " — ".join(disp_path_labels)
     # Data needed to draw the path inside the Brillouin zone (optional plot).
+    # Segments come straight from kpts.line_path so the plot matches the KPT
+    # file exactly (incl. FCC-style U/K breaks).
     bz_data = {
         "recip_lattice": result["reciprocal_primitive_lattice"],
-        "point_coords": point_coords,
-        "path": path,
+        "segments": kpts.line_path,
     }
     return kpts, path_str, bz_data
 
@@ -231,7 +250,7 @@ def task_band_kpt(args: list[str] | None = None, interactive: bool = True) -> No
     if want_bz:
         from abacuscopilot.plotting.brillouin import plot_brillouin_zone
         out = plot_brillouin_zone(
-            bz_data["recip_lattice"], bz_data["point_coords"], bz_data["path"],
+            bz_data["recip_lattice"], bz_data["segments"],
             out_png="brillouin_zone.png", title="Brillouin zone — band path",
         )
         if out:
@@ -352,7 +371,7 @@ BAND_CONNECTION = .TRUE.
     if want_bz:
         from abacuscopilot.plotting.brillouin import plot_brillouin_zone
         out = plot_brillouin_zone(
-            bz_data["recip_lattice"], bz_data["point_coords"], bz_data["path"],
+            bz_data["recip_lattice"], bz_data["segments"],
             out_png="brillouin_zone_phonon.png",
             title="Brillouin zone — phonon q-path",
         )

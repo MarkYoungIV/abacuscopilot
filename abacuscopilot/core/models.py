@@ -297,22 +297,45 @@ class KPoints:
 
         elif self.mode in ("line", "line_cartesian"):
             coord_type = "Line_Cartesian" if self.mode == "line_cartesian" else "Line"
-            n_endpoints = len(self.line_path) + 1
-            lines.append(str(n_endpoints))
+            # Build the endpoint list from segments. A path may be discontinuous
+            # (e.g. FCC: X->U then K->Gamma, where a segment's end != next
+            # segment's start). At such a break the ABACUS convention (matching
+            # abacustest) is to emit the break point with npoints=1, then start
+            # the next branch fresh. Continuous joins share a single point.
+            # Each entry: (xyz, npoints, label)
+            points: list[tuple] = []
+            segs = self.line_path
+            if segs:
+                first = segs[0]
+                points.append((first["start"], first.get("npoints", 20),
+                               first.get("label", "")))
+                for idx, seg in enumerate(segs):
+                    end = seg["end"]
+                    end_label = seg.get("end_label", "")
+                    is_last = idx == len(segs) - 1
+                    if is_last:
+                        # final endpoint terminates the path
+                        points.append((end, 1, end_label))
+                    else:
+                        nxt = segs[idx + 1]
+                        continuous = (tuple(end) == tuple(nxt["start"])
+                                      and end_label == nxt.get("label", ""))
+                        if continuous:
+                            # shared point → carries next segment's npoints
+                            points.append((end, nxt.get("npoints", 20), end_label))
+                        else:
+                            # discontinuity: close this branch (npoints=1),
+                            # then open the next branch at its start
+                            points.append((end, 1, end_label))
+                            points.append((nxt["start"], nxt.get("npoints", 20),
+                                           nxt.get("label", "")))
+            lines.append(str(len(points)))
             lines.append(coord_type)
-            for seg in self.line_path:
-                start = seg["start"]
-                npts = seg.get("npoints", 20)
-                label = seg.get("label", "")
+            for xyz, npts, label in points:
                 label_str = f"  {label}" if label else ""
-                lines.append(f"  {start[0]:.10f}  {start[1]:.10f}  {start[2]:.10f}  {npts:>4d}{label_str}")
-            # Add final endpoint with its label
-            if self.line_path:
-                last = self.line_path[-1]
-                end = last["end"]
-                end_label = last.get("end_label", "")
-                elabel_str = f"  {end_label}" if end_label else ""
-                lines.append(f"  {end[0]:.10f}  {end[1]:.10f}  {end[2]:.10f}  {1:>4d}{elabel_str}")
+                lines.append(
+                    f"  {xyz[0]:.10f}  {xyz[1]:.10f}  {xyz[2]:.10f}  {npts:>4d}{label_str}"
+                )
             return "\n".join(lines) + "\n"
 
         raise ValueError(f"Unknown KPT mode: {self.mode}")

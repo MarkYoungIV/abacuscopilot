@@ -12,17 +12,20 @@ import numpy as np
 
 def plot_brillouin_zone(
     recip_lattice,
-    point_coords: dict,
-    path: list,
+    segments: list,
     out_png: str = "brillouin_zone.png",
     title: str | None = None,
 ) -> str | None:
-    """Draw the Brillouin zone with the high-symmetry path on it.
+    """Draw the Brillouin zone with the actual k-path segments on it.
 
     Args:
         recip_lattice: 3x3 reciprocal primitive lattice; rows are b1, b2, b3.
-        point_coords: {label: [f1, f2, f3]} fractional coords in reciprocal basis.
-        path: [(label1, label2), ...] segments connecting high-symmetry points.
+        segments: list of segment dicts, each with keys
+            "start" / "end" (fractional coords in reciprocal basis) and
+            "label" / "end_label" (point names). This is exactly what gets
+            written to the KPT file (kpts.line_path), so the plot matches the
+            KPT 1:1 — important for lattices (e.g. FCC) where seekpath breaks
+            the path at equivalent points like U/K.
         out_png: output PNG path.
         title: optional figure title.
 
@@ -33,7 +36,6 @@ def plot_brillouin_zone(
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from matplotlib.patches import FancyArrowPatch  # noqa: F401 (kept for parity)
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
         from seekpath.brillouinzone.brillouinzone import BZ
 
@@ -61,21 +63,25 @@ def plot_brillouin_zone(
         )
         ax.add_collection3d(poly)
 
-        # --- high-symmetry points ---
-        cart = {lbl: to_cart(fr) for lbl, fr in point_coords.items()}
-        for lbl, xyz in cart.items():
-            ax.scatter(*xyz, color="#d62728", s=35, depthshade=False, zorder=5)
-            disp = "Γ" if lbl.upper() == "GAMMA" else lbl
-            ax.text(xyz[0], xyz[1], xyz[2], f"  {disp}", fontsize=11, zorder=6)
+        # --- draw path segments exactly as written to KPT ---
+        # Collect the labelled points actually visited (dedupe by cartesian pos).
+        labelled = {}   # display_label -> cartesian xyz
+        for seg in segments:
+            p1 = to_cart(seg["start"])
+            p2 = to_cart(seg["end"])
+            ax.plot(
+                [p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]],
+                color="#d62728", linewidth=2.0, zorder=4,
+            )
+            for lbl, xyz in ((seg.get("label", ""), p1), (seg.get("end_label", ""), p2)):
+                if lbl:
+                    disp = "Γ" if lbl.upper() == "GAMMA" else lbl
+                    labelled[disp] = xyz
 
-        # --- k-path segments ---
-        for l1, l2 in path:
-            if l1 in cart and l2 in cart:
-                p1, p2 = cart[l1], cart[l2]
-                ax.plot(
-                    [p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]],
-                    color="#d62728", linewidth=2.0, zorder=4,
-                )
+        # high-symmetry points + labels (only those on the path)
+        for disp, xyz in labelled.items():
+            ax.scatter(*xyz, color="#d62728", s=35, depthshade=False, zorder=5)
+            ax.text(xyz[0], xyz[1], xyz[2], f"  {disp}", fontsize=11, zorder=6)
 
         # cosmetics: equal aspect, clean background, sensible view
         _set_equal_3d(ax, faces)
