@@ -18,6 +18,34 @@ _QUOTES: list[tuple[str, str]] = [
         "When your talent cannot yet support your ambition, you should calm down and learn.",
     ),
     (
+        "等到放晴的那天也许我会比较好一点。",
+        "Maybe I'll feel a little better when the day it clears up comes.",
+    ),
+    (
+        "缓缓飘落的枫叶像思念。",
+        "The maple leaves drifting slowly down are like longing.",
+    ),
+    (
+        "我用铅笔画得很仔细，素描那年天气。",
+        "With my pencil I draw with great care, sketching the weather of that year.",
+    ),
+    (
+        "那童年的希望是一台时光机。",
+        "That childhood hope is a time machine.",
+    ),
+    (
+        "明信片的邮戳，就当纪念过往的生活。",
+        "Let the postmark on the postcard be a keepsake of the life that has passed.",
+    ),
+    (
+        "院子落叶跟我的思念厚厚一叠。",
+        "The fallen leaves in the yard and my longing pile up thick, layer on layer.",
+    ),
+    (
+        "一味退让和一味索取一样，都不得善终。",
+        "Endless yielding, like endless taking, comes to no good end.",
+    ),
+    (
         "最曲折的路有时最简捷。",
         "The most winding road is sometimes the shortest.",
     ),
