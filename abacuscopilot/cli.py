@@ -69,7 +69,7 @@ Examples:
 def print_version():
     """Print abacuscopilot version."""
     from abacuscopilot import __version__
-    print(f"AbacusCopilot v{__version__} (2026-07-06)")
+    print(f"AbacusCopilot v{__version__} (2026-07-11)")
     print("Developer: Xu Yang (xuyangmark@foxmail.com)")
     print("           Rong-yu Zhang")
 
