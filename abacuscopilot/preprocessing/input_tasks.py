@@ -278,11 +278,15 @@ def _print_summary(console, params: InputParams):
     console.print()
 
 
-def _auto_prepare_files(console, params: InputParams) -> None:
+def _auto_prepare_files(console, params: InputParams, interactive: bool = True) -> None:
     """Optionally copy pseudopotential/orbital files for the current structure.
 
     Called after INPUT generation. Reads species from STRU, looks up library
     paths from config, and copies matching files to the current directory.
+    After copying, rewrites STRU so its ATOMIC_SPECIES upf (and NUMERICAL_ORBITAL
+    orb) filenames match the real library filenames — otherwise STRU may still
+    reference e.g. "K.upf" while the copied file is "K_ONCV_PBE-1.0.upf", and
+    ABACUS fails to find the pseudopotential (标准规范).
     """
     from abacuscopilot.preprocessing.system_tasks import (
         prepare_calculation_files,
@@ -341,6 +345,52 @@ def _auto_prepare_files(console, params: InputParams) -> None:
     if result["errors"]:
         for e in result["errors"]:
             console.print(f"  [yellow]![/yellow] {e}")
+    console.print()
+
+    # Rewrite STRU so its upf/orb filenames match the real (copied) library
+    # files. Only when a STRU exists here (species may have come from a CIF).
+    _sync_stru_filenames(console, params, interactive)
+
+
+def _sync_stru_filenames(console, params: InputParams, interactive: bool) -> None:
+    """Update STRU's ATOMIC_SPECIES/NUMERICAL_ORBITAL filenames to real library
+    names, per 标准规范. Preserves all other STRU content (m-flags, mag, velocity).
+
+    Interactive: ask whether to overwrite STRU (default yes); if no, save as
+    STRU-new. Non-interactive: overwrite in place.
+    """
+    stru_path = Path("STRU")
+    if not stru_path.exists():
+        return  # nothing to sync (e.g. species came from a CIF)
+
+    from abacuscopilot.core.standards import is_lcao_basis
+    from abacuscopilot.io.stru_file import read_stru
+    from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
+
+    try:
+        structure = read_stru("STRU")
+    except Exception:
+        return  # unreadable STRU — leave it untouched
+
+    is_lcao = is_lcao_basis(params.basis_type)
+
+    # Decide output target
+    target = "STRU"
+    if interactive:
+        choice = _prompt_choice(
+            console,
+            "Update STRU with resolved pseudopotential/orbital filenames?",
+            ["Overwrite STRU", "Save as STRU-new"],
+            "Overwrite STRU",
+        )
+        if "new" in choice.lower():
+            target = "STRU-new"
+
+    _write_stru_bare(structure, is_lcao=is_lcao, filepath=target)
+    if target == "STRU":
+        console.print("  [green]✓ STRU updated[/green] (filenames match library)")
+    else:
+        console.print(f"  [green]✓ Written {target}[/green] (original STRU unchanged)")
     console.print()
 
 
@@ -433,7 +483,7 @@ def task_scf_input(args: list[str] | None = None, interactive: bool = True,
     write_input(params)
 
     _print_summary(console, params)
-    _auto_prepare_files(console, params)
+    _auto_prepare_files(console, params, interactive)
 
 
 # =============================================================================
@@ -489,7 +539,7 @@ def task_relax_input(args: list[str] | None = None, interactive: bool = True,
     write_input(params)
 
     _print_summary(console, params)
-    _auto_prepare_files(console, params)
+    _auto_prepare_files(console, params, interactive)
 
 
 # =============================================================================
@@ -663,7 +713,7 @@ def task_md_input(args: list[str] | None = None, interactive: bool = True,
                 console.print("  [dim]STRU already has upf/orb info[/dim]")
         except Exception:
             console.print("  [yellow]! STRU not found, skipping file check[/yellow]")
-        _auto_prepare_files(console, params)
+        _auto_prepare_files(console, params, interactive)
     console.print()
 
 
@@ -729,7 +779,7 @@ def task_band_input(args: list[str] | None = None, interactive: bool = True,
     console.print(f"  symmetry: {params.symmetry} (off for band path)")
     console.print()
 
-    _auto_prepare_files(console, params)
+    _auto_prepare_files(console, params, interactive)
 
     # Check for charge density file — show last so it's not buried
     _check_charge_density(console)
@@ -792,7 +842,7 @@ def task_dos_input(args: list[str] | None = None, interactive: bool = True,
     console.print(f"  Energy range: [{params.dos_emin_ev}, {params.dos_emax_ev}] eV")
     console.print(f"  Basis: {params.basis_type}, ks_solver: {params.ks_solver}")
     console.print()
-    _auto_prepare_files(console, params)
+    _auto_prepare_files(console, params, interactive)
 
     _check_charge_density(console)
     console.print()
@@ -854,7 +904,7 @@ def task_wf_input(args: list[str] | None = None, interactive: bool = True,
     console.print("  out_pot=True (needed for work function analysis)")
     console.print(f"  Basis: {params.basis_type}, ecutwfc: {params.ecutwfc} Ry")
     console.print()
-    _auto_prepare_files(console, params)
+    _auto_prepare_files(console, params, interactive)
 
 
 # =============================================================================
@@ -1370,4 +1420,4 @@ def task_neb_input(args: list[str] | None = None, interactive: bool = True,
     console.print(f"  NEB images: {n_images}")
     console.print("  [dim]Place 00/ → NN/ subdirectories with POSCAR files[/dim]")
     console.print()
-    _auto_prepare_files(console, params)
+    _auto_prepare_files(console, params, interactive)
