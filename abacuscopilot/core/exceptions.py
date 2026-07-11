@@ -1,11 +1,15 @@
 """Custom exception hierarchy for abacuscopilot."""
 
 
-class AbacusKitError(Exception):
+class AbacusCopilotError(Exception):
     """Base exception for all abacuscopilot errors."""
 
 
-class FileFormatError(AbacusKitError):
+# Backward-compatible alias (software was formerly named "AbacusKit").
+AbacusKitError = AbacusCopilotError
+
+
+class FileFormatError(AbacusCopilotError):
     """Raised when an input file has invalid or unexpected format."""
 
     def __init__(self, filepath: str, message: str = ""):
@@ -13,7 +17,7 @@ class FileFormatError(AbacusKitError):
         super().__init__(f"Format error in '{filepath}': {message}")
 
 
-class FileNotFoundError_(AbacusKitError):
+class FileNotFoundError_(AbacusCopilotError):
     """Raised when a required input file is missing."""
 
     def __init__(self, filepath: str, message: str = ""):
@@ -28,7 +32,7 @@ class MissingSectionError(FileFormatError):
         super().__init__(filepath, f"Missing required section: '{section}'")
 
 
-class ParameterError(AbacusKitError):
+class ParameterError(AbacusCopilotError):
     """Raised for invalid parameter values."""
 
     def __init__(self, param: str, value, expected: str = ""):
@@ -40,7 +44,7 @@ class ParameterError(AbacusKitError):
         super().__init__(msg)
 
 
-class TaskNotFoundError(AbacusKitError):
+class TaskNotFoundError(AbacusCopilotError):
     """Raised when a requested task ID is not registered."""
 
     def __init__(self, task_id: int):
@@ -48,15 +52,15 @@ class TaskNotFoundError(AbacusKitError):
         super().__init__(f"Task {task_id} not found. Use --list-tasks to see available tasks.")
 
 
-class ConvergenceError(AbacusKitError):
+class ConvergenceError(AbacusCopilotError):
     """Raised when SCF or geometry optimization fails to converge."""
 
 
-class SymmetryError(AbacusKitError):
+class SymmetryError(AbacusCopilotError):
     """Raised when symmetry analysis fails (e.g., spglib not available)."""
 
 
-class ASEImportError(AbacusKitError):
+class ASEImportError(AbacusCopilotError):
     """Raised when ASE-dependent functionality is used but ASE is not installed."""
 
     def __init__(self, feature: str = ""):

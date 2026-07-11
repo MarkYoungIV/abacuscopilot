@@ -12,7 +12,7 @@ from typing import Any
 import matplotlib as mpl
 
 # Default abacuscopilot style
-ABACUSKIT_STYLE: dict[str, Any] = {
+ABACUSCOPILOT_STYLE: dict[str, Any] = {
     "figure.figsize": (8, 6),
     "figure.dpi": 300,
     "figure.facecolor": "white",
@@ -50,7 +50,7 @@ def apply_style(style_name: str = "abacuscopilot") -> None:
         style_name: 'abacuscopilot' (default), or a path to a custom style file.
     """
     if style_name == "abacuscopilot":
-        _apply_dict_style(ABACUSKIT_STYLE)
+        _apply_dict_style(ABACUSCOPILOT_STYLE)
     else:
         # Try loading from ~/.abacuscopilot/ or as a direct path
         custom_path = Path(style_name)
@@ -59,7 +59,7 @@ def apply_style(style_name: str = "abacuscopilot") -> None:
         if custom_path.exists():
             mpl.style.use(str(custom_path))
         else:
-            _apply_dict_style(ABACUSKIT_STYLE)
+            _apply_dict_style(ABACUSCOPILOT_STYLE)
 
 
 def _apply_dict_style(style: dict[str, Any]) -> None:

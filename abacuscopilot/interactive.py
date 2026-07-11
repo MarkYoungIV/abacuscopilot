@@ -234,7 +234,7 @@ def _show_category_submenu(console, category_key: str, tasks: list) -> None:
 def _show_help(console) -> None:
     """Display help information."""
     console.print()
-    console.print("[bold]AbacusKit Help[/bold]")
+    console.print("[bold]AbacusCopilot Help[/bold]")
     console.print()
     console.print("  [green]abacuscopilot[/green]           Launch interactive mode (this)")
     console.print("  [green]abacuscopilot -task N[/green]   Run specific task N")
@@ -353,7 +353,7 @@ def run_interactive():
 
         if cmd == "version":
             from abacuscopilot import __version__
-            console.print(f"AbacusKit v{__version__}")
+            console.print(f"AbacusCopilot v{__version__}")
             continue
 
         # --- Navigation ---

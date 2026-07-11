@@ -53,10 +53,6 @@ dev = [
 [project.scripts]
 abacuscopilot = "abacuscopilot.cli:main"
 
-[project.urls]
-Homepage = "https://github.com/abacuskit/abacus-kit"
-Repository = "https://github.com/abacuskit/abacus-kit"
-
 [tool.setuptools.packages.find]
 include = ["abacuscopilot*"]
 

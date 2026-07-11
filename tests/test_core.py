@@ -12,7 +12,7 @@ from abacuscopilot.core.constants import (
     RY_TO_EV,
 )
 from abacuscopilot.core.exceptions import (
-    AbacusKitError,
+    AbacusCopilotError,
     ASEImportError,
     FileFormatError,
     FileNotFoundError_,
@@ -317,8 +317,8 @@ class TestInputParams:
 
 class TestExceptions:
     def test_base(self):
-        with pytest.raises(AbacusKitError):
-            raise AbacusKitError("test")
+        with pytest.raises(AbacusCopilotError):
+            raise AbacusCopilotError("test")
 
     def test_file_format_error(self):
         e = FileFormatError("test.txt", "bad format")

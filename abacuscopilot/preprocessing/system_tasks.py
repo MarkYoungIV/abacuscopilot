@@ -315,7 +315,7 @@ def task_system_setup(args: list[str] | None = None, interactive: bool = True) -
 
     console.print()
     console.print("[bold cyan]====================================[/bold cyan]")
-    console.print("[bold cyan]  AbacusKit System Setup Wizard[/bold cyan]")
+    console.print("[bold cyan]  AbacusCopilot System Setup Wizard[/bold cyan]")
     console.print("[bold cyan]====================================[/bold cyan]")
     console.print()
     console.print("[dim]This wizard will help you configure abacuscopilot.[/dim]")
