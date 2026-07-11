@@ -14,6 +14,7 @@ from typing import Any
 
 from abacuscopilot.config import load_config, save_config
 from abacuscopilot.console_utils import _get_console, _prompt, _prompt_choice
+from abacuscopilot.core.standards import is_lcao_basis
 from abacuscopilot.tasks import task
 
 
@@ -86,6 +87,41 @@ def read_species_from_stru(stru_path: str | Path = "STRU") -> list[str]:
     return species
 
 
+def resolve_basis_type(structure=None, interactive: bool = True,
+                       default: str = "lcao") -> str:
+    """Authoritative determination of basis_type for a STRU-writing task.
+
+    Standard规范: geometry-editing tasks (supercell, slab, fix atoms, ...) have
+    no intrinsic basis_type, so resolve it consistently:
+      1. A nearby INPUT file (its basis_type is authoritative).
+      2. Whether the source structure carries orbital files (loaded from an
+         LCAO STRU) — implies lcao.
+      3. Interactive prompt (lcao / pw) when running interactively.
+      4. Fall back to `default`.
+    """
+    # 1. nearby INPUT is authoritative
+    input_path = Path("INPUT")
+    if input_path.exists():
+        try:
+            from abacuscopilot.io.input_file import read_input
+            bt = read_input(input_path).basis_type
+            if bt:
+                return bt
+        except Exception:
+            pass
+
+    # 2. source structure already has orbital files -> lcao
+    if structure is not None and getattr(structure, "orbital_files", None):
+        return "lcao"
+
+    # 3. ask the user
+    if interactive:
+        return _prompt_choice(_get_console(), "Basis type", ["lcao", "pw"], default)
+
+    # 4. fallback
+    return default
+
+
 def prepare_calculation_files(
     species: list[str],
     basis_type: str,
@@ -115,7 +151,7 @@ def prepare_calculation_files(
             result["errors"].append(f"Pseudopotential library not found: {pseudo_library}")
         return result
 
-    is_lcao = basis_type.startswith("lcao")
+    is_lcao = is_lcao_basis(basis_type)
 
     for elem in species:
         # --- Pseudopotential ---

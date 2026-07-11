@@ -344,6 +344,13 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
 
     console.print(f"  Species: {', '.join(species)}")
 
+    # Basis type decides the standard规范: lcao writes+copies orb, pw does not.
+    from abacuscopilot.core.standards import is_lcao_basis, solver_for
+    basis_type = "lcao"
+    if interactive:
+        basis_type = _prompt_choice(console, "Basis type", ["lcao", "pw"], "lcao")
+    is_lcao = is_lcao_basis(basis_type)
+
     # Read cell for KPT auto-calculation
     cell_a = np.eye(3)
     if stru_file.exists():
@@ -364,7 +371,8 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     orb_map = {}
     if stru_file.exists():
         pp_map = dict(structure.pseudo_files)
-        orb_map = dict(structure.orbital_files)
+        if is_lcao:
+            orb_map = dict(structure.orbital_files)
     for sp in species:
         if sp not in pp_map or not pp_map[sp]:
             upfs = sorted(Path(".").glob(f"{sp}_*.upf"))
@@ -375,6 +383,8 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
                 pp_map[sp] = found if found else f"{sp}.upf"
             else:
                 pp_map[sp] = f"{sp}.upf"
+        if not is_lcao:
+            continue  # pw: no orbital files (标准规范)
         if sp not in orb_map or not orb_map[sp]:
             orbs = sorted(Path(".").glob(f"{sp}_*.orb"))
             if orbs:
@@ -396,7 +406,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
             if src.exists():
                 shutil.copy2(src, ".")
                 copied.append(pp_file)
-        orb_file = orb_map.get(sp, f"{sp}.orb")
+        orb_file = orb_map.get(sp) if is_lcao else None
         if orb_file and not Path(orb_file).exists() and orbital_lib:
             src = Path(orbital_lib) / orb_file
             if src.exists():
@@ -411,7 +421,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
             pp = pp_map.get(sp, f"{sp}.upf")
             if Path(pp).exists() and not (d / pp).exists():
                 shutil.copy2(pp, d / pp)
-            orb = orb_map.get(sp, f"{sp}.orb")
+            orb = orb_map.get(sp) if is_lcao else None
             if orb and Path(orb).exists() and not (d / orb).exists():
                 shutil.copy2(orb, d / orb)
     console.print(f"  [green]Files distributed to {len(image_dirs)} image dirs[/green]")
@@ -422,12 +432,28 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     use_kpt = False
     kspacing = "0.14"
     kpt_grid = [1, 1, 1]
-    n_cores = "8"
     climb = True
     do_two_stage = True
+    # Basis + hardware defaults. Standard规范 (ABACUS manual):
+    #   pw   -> dav_subspace (cpu/gpu);  lcao -> genelpa (cpu) / cusolver (gpu single card)
+    is_gpu = False
+    device = "cpu"
+    n_mpi = 8
+    n_omp = 1
 
     if interactive:
-        n_cores = _prompt(console, "MPI cores per image", "8")
+        hw = _prompt_choice(console, "Target hardware",
+                            ["CPU (single node)", "GPU (single card)"],
+                            "CPU (single node)")
+        is_gpu = "GPU" in hw
+        if is_gpu:
+            device = "gpu"
+            n_mpi = 1             # cusolver uses one GPU card
+            n_omp = int(_prompt(console, "OMP threads per image", "12"))
+        else:
+            device = "cpu"
+            n_mpi = int(_prompt(console, "MPI cores per image", "8"))
+            n_omp = 1
         kpt_mode = _prompt_choice(console, "K-point mode",
                                    ["kspacing (auto mesh)", "KPT (explicit grid)"],
                                    "kspacing (auto mesh)")
@@ -455,6 +481,8 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
                                     ["Yes", "No"], "Yes")
         do_two_stage = "Yes" in two_stage
 
+    solver = solver_for(basis_type, device)
+
     # Use existing .traj if available
     traj_files = sorted(Path(".").glob("path_*frames.traj"))
     init_chain = str(traj_files[0]) if traj_files else [str(d / "POSCAR") for d in image_dirs]
@@ -462,6 +490,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
         console.print(f"  [dim]Using: {init_chain}[/dim]")
 
     # Build YAML config
+    n_images = len(image_dirs)
     calc_section = {
         "type": "neb",
         "init_chain": init_chain,
@@ -474,15 +503,16 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     calc_section["fmax"] = 0.05
     calc_section["k"] = 0.1
     calc_section["algorism"] = "improvedtangent"
-    calc_section["parallel"] = True
+    calc_section["parallel"] = not is_gpu
     calc_section["optimizer"] = "FIRE"
     calc_section["max_steps"] = 200
 
     abacus_params = {
         "calculation": "scf",
         "ecutwfc": 100,
-        "basis_type": "lcao",
-        "ks_solver": "genelpa",
+        "basis_type": basis_type,
+        "device": device,
+        "ks_solver": solver,
         "dft_functional": "pbe",
         "scf_thr": 1e-7,
         "scf_nmax": 100,
@@ -500,18 +530,18 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
         "out_stru": 1,
         "out_chg": 0,
         "out_mul": 0,
-        "out_wfc_lcao": 0,
-        "out_bandgap": 0,
         "pseudo_dir": "./",
-        "orbital_dir": "./",
         "pseudopotentials": pp_map,
-        "basissets": orb_map,
     })
+    if is_lcao:
+        abacus_params["out_wfc_lcao"] = 0
+        abacus_params["orbital_dir"] = "./"
+        abacus_params["basissets"] = orb_map
 
     abacus_section = {
         "command": abacus_bin,
-        "mpi": int(n_cores),
-        "omp": 1,
+        "mpi": n_mpi,
+        "omp": n_omp,
         "directory": "run_neb",
     }
     if use_kpt:
@@ -540,7 +570,12 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
 
     console.print()
     console.print("[green]NEB config written: neb.yaml[/green]")
-    console.print(f"  Images: {len(image_dirs)} (parallel=True, MPI={n_cores})")
+    if is_gpu:
+        console.print(f"  Images: {len(image_dirs)} | Basis: {basis_type} | Hardware: GPU "
+                      f"(device=gpu, ks_solver={solver}, mpi={n_mpi}, omp={n_omp}, parallel=False)")
+    else:
+        console.print(f"  Images: {len(image_dirs)} | Basis: {basis_type} | Hardware: CPU "
+                      f"(ks_solver={solver}, mpi={n_mpi}, omp={n_omp}, parallel=True)")
     if use_kpt:
         console.print(f"  K-points: {kpt_grid[0]}x{kpt_grid[1]}x{kpt_grid[2]} (explicit)")
     else:
@@ -626,23 +661,48 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
             from abacuscopilot.config import save_config
             save_config(config)
 
+    # Basis type decides the standard规范 (lcao writes orb, pw does not).
+    from abacuscopilot.core.standards import is_lcao_basis, solver_for
+    basis_type = "lcao"
+    if interactive:
+        basis_type = _prompt_choice(console, "Basis type", ["lcao", "pw"], "lcao")
+    is_lcao = is_lcao_basis(basis_type)
+
     # Build PP/orb maps (same logic as 1603)
     pp_map = {}
     orb_map = {}
     if stru_file.exists():
         pp_map = dict(structure.pseudo_files)
-        orb_map = dict(structure.orbital_files)
+        if is_lcao:
+            orb_map = dict(structure.orbital_files)
     for sp in species:
         if sp not in pp_map or not pp_map[sp]:
             upfs = sorted(Path(".").glob(f"{sp}_*.upf"))
             pp_map[sp] = upfs[0].name if upfs else f"{sp}.upf"
-        if sp not in orb_map or not orb_map[sp]:
+        if is_lcao and (sp not in orb_map or not orb_map[sp]):
             orbs = sorted(Path(".").glob(f"{sp}_*.orb"))
             orb_map[sp] = orbs[0].name if orbs else f"{sp}.orb"
 
     # Interactive config
+    # Hardware defaults (CPU single node). device=cpu -> genelpa;
+    # device=gpu (single card) -> cusolver (ABACUS manual).
+    is_gpu = False
+    device = "cpu"
+    n_mpi = 8
+    n_omp = 1
     if interactive:
-        n_cores = _prompt(console, "MPI cores per image", "8")
+        hw = _prompt_choice(console, "Target hardware",
+                            ["CPU (single node)", "GPU (single card)"],
+                            "CPU (single node)")
+        is_gpu = "GPU" in hw
+        if is_gpu:
+            device = "gpu"
+            n_mpi = 1             # cusolver uses one GPU card
+            n_omp = int(_prompt(console, "OMP threads per image", "12"))
+        else:
+            device = "cpu"
+            n_mpi = int(_prompt(console, "MPI cores per image", "8"))
+            n_omp = 1
         kpt_mode = _prompt_choice(console, "K-point mode",
                                    ["kspacing (auto mesh)", "KPT (explicit grid)"],
                                    "kspacing (auto mesh)")
@@ -674,12 +734,13 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
         two_stage = _prompt_choice(console, "Two-stage optimization?", ["Yes", "No"], "Yes")
         do_two_stage = "Yes" in two_stage
     else:
-        n_cores = "8"
         use_kpt = False
         kspacing_val = 0.14
         kpt_grid = None
         climb = True
         do_two_stage = True
+
+    solver = solver_for(basis_type, device)
 
     # Use .traj if available
     traj_files = sorted(Path(".").glob("path_*frames.traj"))
@@ -689,7 +750,21 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
 
     # Build the Python script
     pp_block = "    " + "\n    ".join(f'"{sp}": "{pp_map[sp]}",' for sp in species)
-    orb_block = "    " + "\n    ".join(f'"{sp}": "{orb_map[sp]}",' for sp in species)
+
+    # LCAO-only blocks (标准规范: pw writes no orbital info)
+    if is_lcao:
+        orb_block = "    " + "\n    ".join(f'"{sp}": "{orb_map[sp]}",' for sp in species)
+        orbital_dir_line = f'ORBITAL_DIR = "{orbital_lib or "./"}"\n'
+        profile_orb_line = "    orbital_dir=ORBITAL_DIR,\n"
+        basissets_block = f"basissets = {{\n{orb_block}\n}}\n"
+        inp_orbital_lines = '    "out_wfc_lcao": 0,\n'
+        calc_basissets_arg = "        basissets=basissets,\n"
+    else:
+        orbital_dir_line = ""
+        profile_orb_line = ""
+        basissets_block = ""
+        inp_orbital_lines = ""
+        calc_basissets_arg = ""
 
     kpt_lines = ""
     if use_kpt:
@@ -698,8 +773,9 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
         kpt_lines = f'        "kspacing": {kspacing_val},\n'
 
     two_stage_block = ""
+    par = "True" if not is_gpu else "False"
     if do_two_stage:
-        two_stage_block = """neb = NEB(images, climb=True, k=0.1, parallel=True,
+        two_stage_block = f"""neb = NEB(images, climb=True, k=0.1, parallel={par},
             method="improvedtangent")
 # Stage 1: coarse optimization
 opt1 = FIRE(neb, trajectory="neb_stage1.traj")
@@ -710,7 +786,7 @@ opt2 = FIRE(neb, trajectory="neb_stage2.traj")
 opt2.run(fmax=0.05, steps=200)
 """
     else:
-        two_stage_block = """neb = NEB(images, climb=True, k=0.1, parallel=True,
+        two_stage_block = f"""neb = NEB(images, climb=True, k=0.1, parallel={par},
             method="improvedtangent")
 opt = FIRE(neb, trajectory="neb.traj")
 opt.run(fmax=0.05, steps=200)
@@ -743,7 +819,7 @@ if CHECK_ONLY:
     # Energy span estimate (final - initial displacement)
     d = np.linalg.norm(images[-1].get_positions() - images[0].get_positions(), axis=1)
     print(f"  Max displacement: {{np.max(d):.4f}} A")
-    print(f"  Suggested MPI cores: {n_cores} per image x {{n-2}} active = {{{n_cores}*(n-2)}} total")
+    print(f"  Hardware: {device} | MPI={n_mpi}/image, OMP={n_omp}, parallel={par}")
     print("Validation passed — ready to run on server with ABACUS.")
     sys.exit(0)
 
@@ -763,31 +839,28 @@ if _ABACUS_SRC and _ABACUS_SRC not in sys.path:
 from abacuslite import Abacus, AbacusProfile
 
 # === Configuration ===
-N_CORES = {n_cores}
+N_MPI = {n_mpi}
+N_OMP = {n_omp}
 TRAJ_FILE = "{traj_path}"
 PSEUDO_DIR = "{pseudo_lib or './'}"
-ORBITAL_DIR = "{orbital_lib or './'}"
-
+{orbital_dir_line}
 profile = AbacusProfile(
-    command="{mpirun} -np {n_cores} {abacus_bin}",
-    omp_num_threads=1,
+    command="{mpirun} -np {n_mpi} {abacus_bin}",
+    omp_num_threads={n_omp},
     pseudo_dir=PSEUDO_DIR,
-    orbital_dir=ORBITAL_DIR,
-)
+{profile_orb_line})
 
 pseudopotentials = {{
 {pp_block}
 }}
 
-basissets = {{
-{orb_block}
-}}
-
+{basissets_block}
 inp_params = {{
     "calculation": "scf",
     "ecutwfc": 100,
-    "basis_type": "lcao",
-    "ks_solver": "genelpa",
+    "basis_type": "{basis_type}",
+    "device": "{device}",
+    "ks_solver": "{solver}",
     "dft_functional": "pbe",
     "scf_thr": 1e-7,
     "scf_nmax": 100,
@@ -801,9 +874,7 @@ inp_params = {{
     "out_stru": 1,
     "out_chg": 0,
     "out_mul": 0,
-    "out_wfc_lcao": 0,
-    "out_bandgap": 0,
-{kpt_lines}}}
+{inp_orbital_lines}{kpt_lines}}}
 
 # === Read NEB chain ===
 images = read(TRAJ_FILE, index=":")
@@ -816,13 +887,12 @@ for i, img in enumerate(images):
         profile=profile,
         directory=f"neb-{{i}}",
         pseudopotentials=pseudopotentials,
-        basissets=basissets,
-        inp=inp_params,
+{calc_basissets_arg}        inp=inp_params,
     )
     print(f"  Image {{i}}: directory=neb-{{i}}")
 
 # === Run NEB ===
-print(f"Running NEB ({{n_images}} images, parallel=True)...")
+print(f"Running NEB ({{n_images}} images, parallel={par})...")
 {two_stage_block}
 
 # === Collect energies ===
@@ -847,12 +917,34 @@ print("Done! Trajectory saved to neb.traj")
     console.print()
     # Also generate SLURM script
     n_active = len(image_dirs) - 2  # exclude endpoints
-    total_cores = int(n_cores) * n_active
-    slurm_script = f'''#!/bin/bash
+    if is_gpu:
+        # GPU single card: one MPI task, one GPU. NEB images run sequentially
+        # (parallel=False) since a single card can't split across images.
+        slurm_script = f'''#!/bin/bash
+#SBATCH --job-name=neb
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task={n_omp}
+#SBATCH --gres=gpu:1
+#SBATCH --output=neb_%j.out
+#SBATCH --error=neb_%j.err
+
+source ~/softwares/abacus-develop-LTSv3.10.0/toolchain/abacus_env.sh
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export CUDA_VISIBLE_DEVICES=0
+
+# Add ABACUS ASE interface to Python path
+export PYTHONPATH="{abacus_src}/interfaces/ASE_interface:$PYTHONPATH"
+
+python neb_run.py
+'''
+    else:
+        # CPU: one MPI task per active image, n_mpi cores each (parallel=True).
+        slurm_script = f'''#!/bin/bash
 #SBATCH --job-name=neb
 #SBATCH --nodes=1
 #SBATCH --ntasks={n_active}
-#SBATCH --cpus-per-task={n_cores}
+#SBATCH --cpus-per-task={n_mpi}
 #SBATCH --output=neb_%j.out
 #SBATCH --error=neb_%j.err
 
@@ -872,8 +964,14 @@ python neb_run.py
 
     console.print(f"[green]ASE NEB script written: {out_path}[/green]")
     console.print(f"[green]SLURM script written: {slurm_path}[/green]")
-    console.print(f"  Images: {len(image_dirs)} ({n_active} active, parallel=True)")
-    console.print(f"  Cores: {n_cores}/image × {n_active} = {total_cores} total")
+    if is_gpu:
+        console.print(f"  Images: {len(image_dirs)} ({n_active} active) | Hardware: GPU "
+                      f"(device=gpu, ks_solver={solver}, omp={n_omp}, parallel=False)")
+    else:
+        total_cores = n_mpi * n_active
+        console.print(f"  Images: {len(image_dirs)} ({n_active} active) | Hardware: CPU "
+                      f"(ks_solver={solver}, parallel=True)")
+        console.print(f"  Cores: {n_mpi}/image × {n_active} = {total_cores} total")
     if use_kpt and kpt_grid:
         console.print(f"  K-points: {kpt_grid[0]}x{kpt_grid[1]}x{kpt_grid[2]}")
     else:
@@ -886,4 +984,203 @@ python neb_run.py
     console.print("  [bold]Usage (SLURM):[/bold]")
     console.print(f"    sbatch {slurm_path}")
     console.print("  [dim]Requires: ase + abacuslite + ABACUS toolchain[/dim]")
+    console.print()
+
+
+# =============================================================================
+# Task 1605: NEB result analysis
+# =============================================================================
+
+@task(1605, category="Reaction Dynamics", name="NEB Analysis",
+      description="Analyze NEB results: energy barrier, saddle point, convergence")
+def task_neb_analysis(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Analyze NEB trajectory and plot the energy barrier profile."""
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== NEB Result Analysis ===[/bold cyan]")
+    console.print()
+
+    # Find NEB trajectory
+    traj_path = None
+    for candidate in ("neb.traj", "neb_stage2.traj"):
+        p = Path(candidate)
+        if p.exists():
+            traj_path = str(p)
+            break
+    if traj_path is None:
+        for p in sorted(Path(".").glob("neb*.traj")):
+            if "idpp" not in p.name:  # skip idpp.traj (optimization history)
+                traj_path = str(p)
+                break
+
+    if interactive and traj_path:
+        console.print(f"  [dim]Default: {traj_path}[/dim]")
+        inp = console.input("  NEB trajectory file: ").strip()
+        if inp:
+            traj_path = inp
+    elif not traj_path:
+        console.print("  [dim]Looking for neb.traj...[/dim]")
+        inp = console.input("  NEB trajectory file: ").strip()
+        traj_path = inp if inp else "neb.traj"
+
+    if not traj_path or not Path(traj_path).exists():
+        console.print("[red]NEB trajectory not found.[/red]")
+        console.print("[dim]Look for neb.traj or path_*frames.traj in the working directory.[/dim]")
+        return
+
+    try:
+        from ase.io import read as ase_read
+        all_frames = ase_read(traj_path, index=":")
+    except Exception as e:
+        console.print(f"[red]Failed to read trajectory: {e}[/red]")
+        return
+
+    n_total = len(all_frames)
+    console.print(f"  Total frames in trajectory: {n_total}")
+
+    # Detect NEB chain size: read init_chain from neb.yaml if present
+    n_chain = None
+    yaml_path = Path("neb.yaml")
+    if yaml_path.exists():
+        import yaml
+        try:
+            cfg = yaml.safe_load(yaml_path.read_text())
+            init = cfg.get("calculation", {}).get("init_chain", None)
+            if isinstance(init, list):
+                n_chain = len(init)
+            elif isinstance(init, str) and Path(init).exists():
+                chain = ase_read(init, index=":")
+                n_chain = len(chain)
+        except Exception:
+            pass
+
+    if n_chain is None and interactive:
+        n_chain = int(_prompt(console, "Number of images in NEB chain", "5"))
+
+    if n_chain is None or n_chain < 2 or n_chain > n_total:
+        # Fallback: auto-detect by finding repeating atom count pattern
+        n_atoms = len(all_frames[0])
+        for period in range(2, min(n_total // 2 + 1, 50)):
+            if n_total % period == 0 and all(len(f) == n_atoms for f in all_frames[-period:]):
+                n_chain = period
+                break
+
+    if n_chain is None or n_chain > n_total:
+        console.print("[red]Cannot determine NEB chain size.[/red]")
+        console.print("[dim]neb.traj contains optimization history — specify number of images.[/dim]")
+        return
+
+    # Take only the final converged chain (last n_chain frames)
+    images = all_frames[-n_chain:]
+    console.print(f"  NEB chain: {n_chain} images (using last {n_chain} of {n_total} frames)")
+    if n_chain < 2:
+        console.print("[red]Need at least 2 images.[/red]")
+        return
+
+    # Extract energies
+    energies = np.zeros(len(images))
+    for i, img in enumerate(images):
+        try:
+            energies[i] = img.get_potential_energy()
+        except Exception:
+            energies[i] = np.nan
+
+    # Relative to initial
+    if np.isnan(energies[0]):
+        console.print("[red]Energies not available — run with ABACUS calculator first.[/red]")
+        return
+
+    e_rel = energies - energies[0]
+    barrier = np.max(e_rel)
+    saddle_idx = int(np.argmax(e_rel))
+
+    console.print(f"  Initial energy: {energies[0]:.6f} eV")
+    console.print(f"  Final energy:   {energies[-1]:.6f} eV")
+    console.print(f"  ΔE (final-init): {energies[-1] - energies[0]:.4f} eV")
+    console.print(f"  Energy barrier: {barrier:.4f} eV")
+    console.print(f"  Saddle point:   image {saddle_idx} (E = {energies[saddle_idx]:.6f} eV)")
+
+    # Cubic spline interpolation (VTST neb.results.pl style)
+    x_raw = np.arange(len(images))
+    n_img = len(images)
+    try:
+        from scipy.interpolate import CubicSpline
+        cs = CubicSpline(x_raw, e_rel, bc_type="natural")
+        x_fine = np.linspace(0, n_img - 1, (n_img - 1) * 20 + 1)
+        e_fine = cs(x_fine)
+        # Find precise saddle point from spline
+        spline_max_idx = np.argmax(e_fine)
+        spline_saddle_x = x_fine[spline_max_idx]
+        spline_saddle_e = e_fine[spline_max_idx]
+        has_spline = True
+    except Exception:
+        has_spline = False
+        spline_saddle_x = float(saddle_idx)
+        spline_saddle_e = e_rel[saddle_idx]
+
+    if has_spline:
+        console.print(f"  Spline-fitted saddle: image {spline_saddle_x:.2f}, barrier = {spline_saddle_e:.4f} eV")
+    console.print()
+
+    # Plot options
+    show_saddle = True
+    if interactive:
+        show_saddle = "Yes" in _prompt_choice(console, "Mark saddle point on plot?",
+                                               ["Yes", "No"], "Yes")
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from abacuscopilot.plotting.style import load_style_from_config
+    load_style_from_config()
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    # Raw data points
+    ax.plot(x_raw, e_rel, "o", color="#1f77b4", markersize=8, zorder=5,
+            label="NEB images")
+    # Spline curve
+    if has_spline:
+        ax.plot(x_fine, e_fine, "-", color="#1f77b4", linewidth=1.2, alpha=0.7,
+                label="Cubic spline")
+        if show_saddle:
+            ax.axvline(x=spline_saddle_x, color="#d62728", linestyle="--", linewidth=0.8,
+                       label=f"Saddle: {spline_saddle_e:.3f} eV @ image {spline_saddle_x:.2f}")
+    else:
+        ax.plot(x_raw, e_rel, "-", color="#1f77b4", linewidth=1.2)
+        if show_saddle:
+            ax.axvline(x=saddle_idx, color="#d62728", linestyle="--", linewidth=0.8,
+                       label=f"Saddle: {e_rel[saddle_idx]:.3f} eV @ image {saddle_idx}")
+    ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
+    ax.set_xlabel("NEB image index")
+    ax.set_ylabel("Relative energy (eV)")
+    title = f"NEB Energy Barrier — {barrier:.4f} eV"
+    if has_spline and show_saddle:
+        title += f" (spline: {spline_saddle_e:.4f})"
+    ax.set_title(title)
+    ax.legend()
+    ax.spines["top"].set_visible(True)
+    ax.spines["right"].set_visible(True)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.5)
+    ax.tick_params(axis="both", direction="out")
+    fig.tight_layout(pad=1.2)
+
+    out_png = "neb_barrier.png"
+    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # Save data (raw + spline)
+    out_dat = "neb_barrier.dat"
+    with open(out_dat, "w") as f:
+        f.write("# image  E_rel(eV)  E_spline(eV)\n")
+        for i in range(len(x_raw)):
+            e_s = float(cs(x_raw[i])) if has_spline else e_rel[i]
+            f.write(f"{i}  {e_rel[i]:.8f}  {e_s:.8f}\n")
+
+    console.print(f"[green]✓ Energy profile: {out_png}[/green]")
+    console.print(f"[green]✓ Data file: {out_dat}[/green]")
+    console.print(f"  Barrier: {barrier:.4f} eV, Saddle: image {saddle_idx}/{n_img - 1}")
+    if has_spline:
+        console.print(f"  Spline-fit: barrier = {spline_saddle_e:.4f} eV at image {spline_saddle_x:.2f}")
     console.print()

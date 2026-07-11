@@ -421,22 +421,30 @@ def task_extract_frames(args: list[str] | None = None, interactive: bool = True)
 
 
 def _read_md_dt(md_path: str) -> float:
-    """Read md_dt (fs) from the INPUT file in the same directory as MD_dump.
+    """Read md_dt (fs) from INPUT or running_md.log.
 
-    Raises FileNotFoundError if INPUT is missing, or ValueError if
-    md_dt is not found in INPUT.
+    Looks in order:
+    1. INPUT file next to MD_dump
+    2. OUT.ABACUS/INPUT.info (DP-MD convention)
+    3. OUT.ABACUS/running_md.log (fallback — md_dt is logged there)
     """
-
-    input_path = Path(md_path).parent / "INPUT"
-    if not input_path.exists():
-        raise FileNotFoundError(f"INPUT not found next to MD_dump: {input_path}")
-
-    content = input_path.read_text()
-    m = re.search(r"md_dt\s+([\d.]+)", content)
-    if not m:
-        raise ValueError(f"md_dt not found in {input_path}")
-
-    return float(m.group(1))
+    md_dir = Path(md_path).parent
+    for candidate in (md_dir / "INPUT", md_dir / "INPUT.info",
+                      md_dir.parent / "INPUT", md_dir / "running_md.log"):
+        if not candidate.exists():
+            continue
+        content = candidate.read_text()
+        m = re.search(r"md_dt\s+([\d.]+)", content)
+        if m:
+            return float(m.group(1))
+    # Also try OUT.ABACUS/running_md.log if md_dir is not already OUT.ABACUS
+    out_log = md_dir / "OUT.ABACUS" / "running_md.log"
+    if out_log.exists() and out_log != md_dir / "running_md.log":
+        content = out_log.read_text()
+        m = re.search(r"md_dt\s+([\d.]+)", content)
+        if m:
+            return float(m.group(1))
+    raise FileNotFoundError(f"md_dt not found — no INPUT or running_md.log near {md_path}")
 
 
 def _plot_msd(data_file: str, species: str, dt_fs: float) -> None:

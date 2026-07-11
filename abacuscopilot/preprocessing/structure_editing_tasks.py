@@ -14,7 +14,14 @@ import numpy as np
 
 from abacuscopilot.console_utils import _get_console, _prompt, _prompt_choice
 from abacuscopilot.core.models import Atom, Lattice, Structure
+from abacuscopilot.core.standards import is_lcao_basis
 from abacuscopilot.tasks import task
+
+
+def _resolve_bt(structure, interactive: bool) -> str:
+    """Resolve basis_type for a geometry-editing task (标准规范)."""
+    from abacuscopilot.preprocessing.system_tasks import resolve_basis_type
+    return resolve_basis_type(structure, interactive)
 
 # =============================================================================
 # Task 401: Build supercell
@@ -122,7 +129,7 @@ def task_supercell(args: list[str] | None = None, interactive: bool = True) -> N
 
     # Write supercell STRU
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
-    is_lcao = bool(structure.orbital_files)
+    is_lcao = is_lcao_basis(_resolve_bt(structure, interactive))
     _write_stru_bare(new_structure, is_lcao=is_lcao, filepath=out_stru)
 
     # Write TRANSFORM matrix
@@ -334,7 +341,7 @@ def task_redefine_lattice(args: list[str] | None = None, interactive: bool = Tru
 
     # Write
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
-    is_lcao = bool(structure.orbital_files)
+    is_lcao = is_lcao_basis(_resolve_bt(structure, interactive))
     _write_stru_bare(new_structure, is_lcao=is_lcao, filepath="Redefined.STRU")
 
     # Write TRANSFORM
@@ -446,7 +453,7 @@ def task_coord_convert(args: list[str] | None = None, interactive: bool = True) 
         out_path = "STRU_Cartesian_bohr"
     else:
         out_path = "STRU_Cartesian"
-    _write_stru_bare(structure, is_lcao=bool(structure.orbital_files), filepath=out_path)
+    _write_stru_bare(structure, is_lcao=is_lcao_basis(_resolve_bt(structure, interactive)), filepath=out_path)
 
     console.print()
     console.print(f"[green]✓ Converted to {structure.coordinate_type} → {out_path}[/green]")
@@ -640,7 +647,7 @@ def task_fix_atoms(args: list[str] | None = None, interactive: bool = True) -> N
 
     # Write to Fixed.STRU (never overwrite original STRU)
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
-    _write_stru_bare(structure, is_lcao=bool(structure.orbital_files),
+    _write_stru_bare(structure, is_lcao=is_lcao_basis(_resolve_bt(structure, interactive)),
                      filepath="Fixed.STRU")
 
     console.print()
@@ -729,7 +736,7 @@ def task_slab_builder(args: list[str] | None = None, interactive: bool = True) -
     new_structure.coordinate_type = "Cartesian_angstrom"
 
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
-    is_lcao = bool(new_structure.orbital_files)
+    is_lcao = is_lcao_basis(_resolve_bt(new_structure, interactive))
     out_path = f"Slab_{h}{k}{l}.STRU"
     _write_stru_bare(new_structure, is_lcao=is_lcao, filepath=out_path)
 
@@ -802,7 +809,7 @@ def task_vacuum_layer(args: list[str] | None = None, interactive: bool = True) -
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
     axis_label = "abc"[ax]
     out_path = f"Vacuum_{axis_label}_{vacuum:.1f}.STRU"
-    _write_stru_bare(structure, is_lcao=bool(structure.orbital_files), filepath=out_path)
+    _write_stru_bare(structure, is_lcao=is_lcao_basis(_resolve_bt(structure, interactive)), filepath=out_path)
 
     new_cell = structure.lattice.cell_angstrom
     console.print()
@@ -904,7 +911,7 @@ def task_shift_atoms(args: list[str] | None = None, interactive: bool = True) ->
 
     # Write
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
-    _write_stru_bare(structure, is_lcao=bool(structure.orbital_files),
+    _write_stru_bare(structure, is_lcao=is_lcao_basis(_resolve_bt(structure, interactive)),
                      filepath="Shifted.STRU")
 
     console.print()
@@ -970,7 +977,7 @@ def task_sort_atoms(args: list[str] | None = None, interactive: bool = True) -> 
     structure.atoms = new_atoms
 
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
-    _write_stru_bare(structure, is_lcao=bool(structure.orbital_files),
+    _write_stru_bare(structure, is_lcao=is_lcao_basis(_resolve_bt(structure, interactive)),
                      filepath="Sorted.STRU")
 
     axis_name = "xyz"[axis_idx]

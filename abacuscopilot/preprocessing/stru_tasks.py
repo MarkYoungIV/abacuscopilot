@@ -147,6 +147,7 @@ def _run_full_calculation_setup(
     from abacuscopilot.preprocessing.input_tasks import (
         _apply_template,
         _ask_basis_and_calc,
+        _ask_lcao_solver,
         _get_template,
     )
     from abacuscopilot.preprocessing.system_tasks import (
@@ -173,6 +174,9 @@ def _run_full_calculation_setup(
     template = _get_template(basis, calc)
     if template:
         _apply_template(params, template)
+
+    # Ask CPU/GPU so LCAO gets the correct ks_solver (genelpa/cusolver).
+    _ask_lcao_solver(console, params)
 
     # Override specific params for MD
     if calc == "md":
@@ -296,14 +300,13 @@ def task_stru_from_cif(args: list[str] | None = None, interactive: bool = True) 
     else:
         mode = "Just convert structure"
 
-    # --- resolve upf/orb info ---
-    write_orb = False
+    # --- resolve upf/orb info (标准规范: basis_type decides orbital section) ---
     if "full" in mode.lower() or "configure" in mode.lower():
-        write_orb = True
-    elif interactive:
-        want_orb = _prompt_choice(console, "Resolve orb filenames in STRU?",
-                                  ["Yes", "No"], "Yes")
-        write_orb = "Yes" in want_orb
+        write_orb = True  # full setup re-writes STRU with the chosen basis anyway
+    else:
+        from abacuscopilot.core.standards import is_lcao_basis
+        from abacuscopilot.preprocessing.system_tasks import resolve_basis_type
+        write_orb = is_lcao_basis(resolve_basis_type(structure, interactive))
 
     _write_stru_bare(structure, is_lcao=write_orb)
 
@@ -387,14 +390,13 @@ def task_stru_from_poscar(args: list[str] | None = None, interactive: bool = Tru
     else:
         mode = "Just convert structure"
 
-    # --- resolve upf/orb info ---
-    write_orb = False
+    # --- resolve upf/orb info (标准规范: basis_type decides orbital section) ---
     if "full" in mode.lower() or "configure" in mode.lower():
-        write_orb = True
-    elif interactive:
-        want_orb = _prompt_choice(console, "Resolve orb filenames in STRU?",
-                                  ["Yes", "No"], "Yes")
-        write_orb = "Yes" in want_orb
+        write_orb = True  # full setup re-writes STRU with the chosen basis anyway
+    else:
+        from abacuscopilot.core.standards import is_lcao_basis
+        from abacuscopilot.preprocessing.system_tasks import resolve_basis_type
+        write_orb = is_lcao_basis(resolve_basis_type(structure, interactive))
 
     _write_stru_bare(structure, is_lcao=write_orb)
 
@@ -511,8 +513,11 @@ def task_coord_convert(args: list[str] | None = None, interactive: bool = True) 
     else:
         out_path = f"{stem}_Cartesian" if stem != "STRU" else "STRU_Cartesian"
 
+    from abacuscopilot.core.standards import is_lcao_basis
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
-    _write_stru_bare(structure, is_lcao=bool(structure.orbital_files),
+    from abacuscopilot.preprocessing.system_tasks import resolve_basis_type
+    _write_stru_bare(structure,
+                     is_lcao=is_lcao_basis(resolve_basis_type(structure, interactive)),
                      filepath=out_path)
 
     console.print()

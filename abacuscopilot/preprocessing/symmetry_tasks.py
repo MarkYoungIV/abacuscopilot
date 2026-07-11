@@ -290,15 +290,19 @@ def task_primitive_cell(args: list[str] | None = None, interactive: bool = True)
     for i, (label, pos) in enumerate(zip(atom_labels, prim_scaled_pos)):
         prim_structure.atoms.append(Atom(species=label, position=pos))
 
-    # Copy pseudopotential info
+    # Copy pseudopotential + orbital info from the original structure
     for species in prim_structure.species_order:
         if species in structure.pseudo_files:
             prim_structure.pseudo_files[species] = structure.pseudo_files[species]
+        if species in structure.orbital_files:
+            prim_structure.orbital_files[species] = structure.orbital_files[species]
 
     # Write to Primitive.STRU (never overwrite original STRU)
+    from abacuscopilot.core.standards import is_lcao_basis
     from abacuscopilot.io.stru_file import write_stru
+    from abacuscopilot.preprocessing.system_tasks import resolve_basis_type
     write_stru(prim_structure, filepath="Primitive.STRU",
-               is_lcao=bool(structure.orbital_files))
+               is_lcao=is_lcao_basis(resolve_basis_type(structure, interactive)))
 
     console.print()
     console.print("[green]✓ Primitive cell written to Primitive.STRU[/green]")

@@ -236,7 +236,8 @@ def _ask_lcao_solver(console, params: InputParams) -> None:
     GPU servers should use cusolver (CUDA-optimised).  CPU servers use
     genelpa (default).  Only called when basis_type is lcao / lcao_in_pw.
     """
-    if not params.basis_type.startswith("lcao"):
+    from abacuscopilot.core.standards import is_lcao_basis, solver_for
+    if not is_lcao_basis(params.basis_type):
         return
     choice = _prompt_choice(
         console,
@@ -244,7 +245,22 @@ def _ask_lcao_solver(console, params: InputParams) -> None:
         ["CPU (genelpa)", "GPU (cusolver)"],
         "CPU (genelpa)",
     )
-    params.ks_solver = "cusolver" if "GPU" in choice else "genelpa"
+    device = "gpu" if "GPU" in choice else "cpu"
+    params.device = device
+    params.ks_solver = solver_for(params.basis_type, device)
+
+
+def _apply_solver_override(console, params: InputParams, solver: str) -> None:
+    """Apply a non-interactive --solver override, validated against the标准规范.
+
+    Invalid combinations (e.g. --basis pw --solver genelpa) are auto-corrected
+    to the规范 default with a warning, so output is always consistent.
+    """
+    from abacuscopilot.core.standards import validate_solver
+    corrected, warning = validate_solver(params.basis_type, solver, params.device)
+    if warning:
+        console.print(f"  [yellow]![/yellow] {warning}")
+    params.ks_solver = corrected
 
 
 def _print_summary(console, params: InputParams):
@@ -411,7 +427,7 @@ def task_scf_input(args: list[str] | None = None, interactive: bool = True,
     if interactive:
         _ask_lcao_solver(console, params)
     elif parsed_args and parsed_args.solver:
-        params.ks_solver = parsed_args.solver
+        _apply_solver_override(console, params, parsed_args.solver)
 
     from abacuscopilot.io.input_file import write_input
     write_input(params)
@@ -467,7 +483,7 @@ def task_relax_input(args: list[str] | None = None, interactive: bool = True,
     if interactive:
         _ask_lcao_solver(console, params)
     elif parsed_args and parsed_args.solver:
-        params.ks_solver = parsed_args.solver
+        _apply_solver_override(console, params, parsed_args.solver)
 
     from abacuscopilot.io.input_file import write_input
     write_input(params)
@@ -586,7 +602,7 @@ def task_md_input(args: list[str] | None = None, interactive: bool = True,
     if interactive and params.esolver_type != "dp":
         _ask_lcao_solver(console, params)
     elif parsed_args and parsed_args.solver:
-        params.ks_solver = parsed_args.solver
+        _apply_solver_override(console, params, parsed_args.solver)
 
     from abacuscopilot.io.input_file import write_input
     write_input(params)
@@ -699,7 +715,7 @@ def task_band_input(args: list[str] | None = None, interactive: bool = True,
         params.out_proj_band = "Yes" in want_proj
     elif parsed_args:
         if parsed_args.solver:
-            params.ks_solver = parsed_args.solver
+            _apply_solver_override(console, params, parsed_args.solver)
         if parsed_args.proj:
             params.out_proj_band = True
 
@@ -826,7 +842,7 @@ def task_wf_input(args: list[str] | None = None, interactive: bool = True,
     if interactive:
         _ask_lcao_solver(console, params)
     elif parsed_args and parsed_args.solver:
-        params.ks_solver = parsed_args.solver
+        _apply_solver_override(console, params, parsed_args.solver)
 
     params.out_pot = 2  # electrostatic potential (needed for work function)
 
@@ -1343,7 +1359,7 @@ def task_neb_input(args: list[str] | None = None, interactive: bool = True,
     if interactive:
         _ask_lcao_solver(console, params)
     elif parsed_args and parsed_args.solver:
-        params.ks_solver = parsed_args.solver
+        _apply_solver_override(console, params, parsed_args.solver)
 
     from abacuscopilot.io.input_file import write_input
     write_input(params)
