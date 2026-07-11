@@ -68,7 +68,16 @@ def parse_scf_log(filepath: str | Path) -> dict[str, Any]:
         r"(?:delta E|dE|energy diff)\s*[=:]\s*(\d+\.?\d*(?:[eE][+-]?\d+)?)",
         re.IGNORECASE,
     )
-    converged_re = re.compile(r"converge[nc]ed|convergence\s+is\s+achieved|SCF\s+done|reach", re.IGNORECASE)
+    # Convergence markers differ between ABACUS builds:
+    #   CPU build: "charge density convergence is achieved"
+    #   GPU build: "#SCF IS CONVERGED#"
+    # (NOTE: the old pattern "converge[nc]ed" was a typo — it matched
+    #  "convergned"/"convergced", never the real word "converged", so GPU
+    #  logs were wrongly reported as not converged.)
+    converged_re = re.compile(
+        r"converged|convergence\s+is\s+achieved|SCF\s+is\s+converged|SCF\s+done|reach",
+        re.IGNORECASE,
+    )
 
     with open(filepath, errors="ignore") as f:
         content = f.read()
@@ -473,9 +482,14 @@ def _parse_calculation_status(out_dir: Path) -> dict:
     )
     result["completed"] = bool(completed_re.search(content))
 
-    # SCF convergence
+    # SCF convergence. Markers differ between ABACUS builds:
+    #   CPU build: "charge density convergence is achieved"
+    #   GPU build: "#SCF IS CONVERGED#"
+    # (The old "converge[nc]ed" was a typo matching "convergned"/"convergced",
+    #  never the real "converged", so GPU logs read as not converged.)
     converged_re = re.compile(
-        r"(?:converge[nc]ed|convergence\s+is\s+achieved|SCF\s+done|reach\s+convergence)",
+        r"(?:converged|convergence\s+is\s+achieved|SCF\s+is\s+converged"
+        r"|SCF\s+done|reach\s+convergence)",
         re.IGNORECASE,
     )
     result["converged"] = bool(converged_re.search(content))
