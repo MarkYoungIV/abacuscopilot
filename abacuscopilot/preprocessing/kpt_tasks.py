@@ -11,107 +11,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-
 from abacuscopilot.config import load_config
 from abacuscopilot.console_utils import _get_console, _prompt
 from abacuscopilot.core.constants import DEFAULT_KSPACING
 from abacuscopilot.core.models import KPoints, Lattice
 from abacuscopilot.tasks import task
-
-# Common high-symmetry k-path definitions for standard Bravais lattices
-# Format: list of (label, coordinates) where coordinates are in fractional units
-
-HIGH_SYMMETRY_PATHS: dict[str, list[tuple[str, tuple[float, float, float]]]] = {
-    "SC": [
-        ("GAMMA", (0, 0, 0)), ("X", (0.5, 0, 0)), ("M", (0.5, 0.5, 0)),
-        ("R", (0.5, 0.5, 0.5)), ("GAMMA", (0, 0, 0)),
-    ],
-    "FCC": [
-        ("GAMMA", (0, 0, 0)), ("X", (0.5, 0, 0.5)), ("U", (0.625, 0.25, 0.625)),
-        ("K", (0.375, 0.375, 0.75)), ("GAMMA", (0, 0, 0)), ("L", (0.5, 0.5, 0.5)),
-        ("W", (0.5, 0.25, 0.75)), ("X", (0.5, 0, 0.5)),
-    ],
-    "BCC": [
-        ("GAMMA", (0, 0, 0)), ("H", (0.5, -0.5, 0.5)), ("N", (0, 0, 0.5)),
-        ("P", (0.25, 0.25, 0.25)), ("GAMMA", (0, 0, 0)), ("N", (0, 0, 0.5)),
-    ],
-    "HEX": [
-        ("GAMMA", (0, 0, 0)), ("M", (0.5, 0, 0)), ("K", (1/3, 1/3, 0)),
-        ("GAMMA", (0, 0, 0)), ("A", (0, 0, 0.5)), ("L", (0.5, 0, 0.5)),
-        ("H", (1/3, 1/3, 0.5)), ("A", (0, 0, 0.5)),
-    ],
-    "TET": [
-        ("GAMMA", (0, 0, 0)), ("X", (0.5, 0, 0)), ("M", (0.5, 0.5, 0)),
-        ("GAMMA", (0, 0, 0)), ("Z", (0, 0, 0.5)), ("R", (0.5, 0, 0.5)),
-        ("A", (0.5, 0.5, 0.5)), ("Z", (0, 0, 0.5)),
-    ],
-    "ORC": [
-        ("GAMMA", (0, 0, 0)), ("X", (0.5, 0, 0)), ("S", (0.5, 0.5, 0)),
-        ("Y", (0, 0.5, 0)), ("GAMMA", (0, 0, 0)), ("Z", (0, 0, 0.5)),
-        ("U", (0.5, 0, 0.5)), ("R", (0.5, 0.5, 0.5)), ("T", (0, 0.5, 0.5)),
-        ("Z", (0, 0, 0.5)),
-    ],
-}
-
-# Aliases
-HIGH_SYMMETRY_PATHS["CUB"] = HIGH_SYMMETRY_PATHS["SC"]
-HIGH_SYMMETRY_PATHS["HCP"] = HIGH_SYMMETRY_PATHS["HEX"]
-
-
-def _guess_lattice_type(lattice: Lattice, structure=None) -> str:
-    """Guess the Bravais lattice type from cell vectors and (optionally) spglib.
-
-    Uses spglib for reliable SC/BCC/FCC distinction when a structure is
-    available; falls back to cell-vector heuristics otherwise.
-    """
-    from abacuscopilot.core.constants import BOHR_TO_ANGSTROM
-
-    cell = lattice.cell * BOHR_TO_ANGSTROM  # Angstrom
-    a_vec, b_vec, c_vec = cell[0], cell[1], cell[2]
-
-    a = np.linalg.norm(a_vec)
-    b = np.linalg.norm(b_vec)
-    c = np.linalg.norm(c_vec)
-
-    alpha = np.degrees(np.arccos(np.dot(b_vec, c_vec) / (b * c)))
-    beta = np.degrees(np.arccos(np.dot(a_vec, c_vec) / (a * c)))
-    gamma = np.degrees(np.arccos(np.dot(a_vec, b_vec) / (a * b)))
-
-    # Cubic: a == b == c, all angles 90
-    if (abs(a - b) / a < 0.01 and abs(b - c) / a < 0.01 and
-        abs(alpha - 90) < 1 and abs(beta - 90) < 1 and abs(gamma - 90) < 1):
-        # Try spglib to distinguish SC / BCC / FCC
-        if structure is not None:
-            try:
-                from abacuscopilot.preprocessing.symmetry_tasks import _get_spglib_info
-                info = _get_spglib_info(structure)
-                if info and info.get("number"):
-                    sg = info["number"]
-                    # FCC: 195-230 except BCC (229, 230...)
-                    if sg in (216, 225, 227):
-                        return "FCC"
-                    # BCC: 229, 230
-                    if sg in (229, 230, 217, 220):
-                        return "BCC"
-            except Exception:
-                pass
-        return "CUB"
-
-    # Hexagonal: a == b, gamma == 120
-    if abs(a - b) / a < 0.01 and abs(gamma - 120) < 1:
-        return "HEX"
-
-    # Tetragonal: a == b != c, all angles 90
-    if (abs(a - b) / a < 0.01 and abs(a - c) / a > 0.01 and
-        abs(alpha - 90) < 1 and abs(beta - 90) < 1 and abs(gamma - 90) < 1):
-        return "TET"
-
-    # Orthorhombic: all angles 90
-    if abs(alpha - 90) < 1 and abs(beta - 90) < 1 and abs(gamma - 90) < 1:
-        return "ORC"
-
-    return "CUB"  # Default
 
 
 # =============================================================================
@@ -273,32 +177,18 @@ def task_band_kpt(args: list[str] | None = None, interactive: bool = True) -> No
     else:
         npts = 20
 
-    # --- Generate k-path ---
-    use_seekpath = False
+    # --- Generate k-path via seekpath (required) ---
     try:
         kpts, path_str = _generate_kpt_via_seekpath(structure, npts)
-        use_seekpath = True
         console.print(f"\n  [bold]High-symmetry path (seekpath):[/bold] {path_str}")
-    except Exception:
-        # Fallback to built-in paths
-        lattice_type = _guess_lattice_type(structure.lattice, structure)
-        if lattice_type not in HIGH_SYMMETRY_PATHS:
-            lattice_type = "CUB"
-        path = HIGH_SYMMETRY_PATHS[lattice_type]
-
-        segments = []
-        labels = []
-        for i in range(len(path) - 1):
-            start_label, start_coords = path[i]
-            end_label, end_coords = path[i + 1]
-            segments.append((list(start_coords), list(end_coords), npts))
-            labels.append(start_label)
-        labels.append(path[-1][0])
-
-        from abacuscopilot.io.kpt_file import line_mode_kpts_from_path
-        kpts = line_mode_kpts_from_path(segments, labels=labels)
-        console.print(f"\n  [bold]High-symmetry path ({lattice_type}):[/bold] {' — '.join(labels)}")
-        console.print("  [dim](install seekpath for automatic detection: pip install seekpath)[/dim]")
+    except ImportError:
+        console.print("[red]seekpath is required for automatic k-path detection.[/red]")
+        console.print("[dim]Install it with: pip install seekpath[/dim]")
+        return
+    except Exception as e:
+        console.print(f"[red]seekpath failed to generate a k-path: {e}[/red]")
+        console.print("[dim]Check that STRU is a valid crystal structure.[/dim]")
+        return
 
     console.print()
 
@@ -371,26 +261,18 @@ def task_phonon_kpt(args: list[str] | None = None, interactive: bool = True) -> 
     else:
         dim, mesh, npts = "2 2 2", "8 8 8", 101
 
-    # Generate q-path via seekpath
+    # Generate q-path via seekpath (required)
     try:
         kpts, path_str = _generate_kpt_via_seekpath(structure, npts)
         console.print(f"\n  [bold]High-symmetry path (seekpath):[/bold] {path_str}")
-    except Exception:
-        lattice_type = _guess_lattice_type(structure.lattice, structure)
-        if lattice_type not in HIGH_SYMMETRY_PATHS:
-            lattice_type = "CUB"
-        path = HIGH_SYMMETRY_PATHS[lattice_type]
-        segments = []
-        labels = []
-        for i in range(len(path) - 1):
-            start_label, start_coords = path[i]
-            end_label, end_coords = path[i + 1]
-            segments.append((list(start_coords), list(end_coords), npts))
-            labels.append(start_label)
-        labels.append(path[-1][0])
-        from abacuscopilot.io.kpt_file import line_mode_kpts_from_path
-        kpts = line_mode_kpts_from_path(segments, labels=labels)
-        console.print(f"\n  [bold]High-symmetry path ({lattice_type}):[/bold] {' — '.join(labels)}")
+    except ImportError:
+        console.print("[red]seekpath is required for automatic q-path detection.[/red]")
+        console.print("[dim]Install it with: pip install seekpath[/dim]")
+        return
+    except Exception as e:
+        console.print(f"[red]seekpath failed to generate a q-path: {e}[/red]")
+        console.print("[dim]Check that STRU is a valid crystal structure.[/dim]")
+        return
 
     # Build BAND line (coordinates only) and BAND_LABELS
     band_coords = []

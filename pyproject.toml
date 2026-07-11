@@ -33,11 +33,11 @@ dependencies = [
     "rich>=13.0",
     "pyyaml>=6.0",
     "ase>=3.22",
+    "seekpath>=2.0",
 ]
 
 [project.optional-dependencies]
 symmetry = ["spglib>=2.0"]
-kpath = ["seekpath>=2.0"]
 xml = ["lxml>=4.9"]
 full = [
     "abacuscopilot[symmetry,xml]",
