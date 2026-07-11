@@ -1,4 +1,4 @@
-"""Mao Zedong quotations for the farewell screen.
+"""Quotations for the farewell screen.
 
 Each quote is a (chinese, english) pair.  ``random_quote()`` picks one;
 ``farewell(console)`` prints the quote and the goodbye line.
@@ -9,6 +9,38 @@ from __future__ import annotations
 import random
 
 _QUOTES: list[tuple[str, str]] = [
+    (
+        "所有的困难都是暂时的。",
+        "All difficulties are temporary.",
+    ),
+    (
+        "当你的才华还撑不起你的野心时，那你就应该静下心来学习。",
+        "When your talent cannot yet support your ambition, you should calm down and learn.",
+    ),
+    (
+        "最曲折的路有时最简捷。",
+        "The most winding road is sometimes the shortest.",
+    ),
+    (
+        "逆境展示奇才，顺境隐没英才。",
+        "Adversity reveals genius; prosperity conceals it.",
+    ),
+    (
+        "人生如逆旅，我亦是行人。",
+        "Life is like an inn we pass through; I too am but a traveler.",
+    ),
+    (
+        "山桃红花满上头，蜀江春水拍山流。",
+        "Red mountain-peach blossoms crown the heights, as the spring waters of the Shu River lap against the hills.",
+    ),
+    (
+        "他年我若为青帝，报与桃花一处开。",
+        "If one day I become the Lord of Spring, I will let the peach blossoms all bloom together.",
+    ),
+    (
+        "多算胜，少算不胜，而况于无算乎。",
+        "With much calculation one wins; with little one loses — how much more so with none at all.",
+    ),
     (
         "星星之火，可以燎原。",
         "A single spark can start a prairie fire.",
@@ -242,10 +274,6 @@ _QUOTES: list[tuple[str, str]] = [
         "We should support whatever the enemy opposes and oppose whatever the enemy supports.",
     ),
     (
-        "我们共产党人好比种子，人民好比土地。",
-        "We Communists are like seeds, and the people are like the soil.",
-    ),
-    (
         "群众是真正的英雄。",
         "The masses are the real heroes.",
     ),
@@ -284,10 +312,6 @@ _QUOTES: list[tuple[str, str]] = [
     (
         "你们青年人朝气蓬勃，正在兴旺时期，好像早晨八九点钟的太阳。",
         "You young people, full of vigor and vitality, are in the bloom of life, like the sun at eight or nine in the morning.",
-    ),
-    (
-        "妇女能顶半边天。",
-        "Women hold up half the sky.",
     ),
     (
         "没有文化的军队是愚蠢的军队。",

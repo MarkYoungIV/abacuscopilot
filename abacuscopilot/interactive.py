@@ -332,7 +332,7 @@ def run_interactive():
             console.print("\n[yellow]Interrupted. Type '0' to quit, '9' for main menu.[/yellow]")
             continue
         except EOFError:
-            from abacuscopilot.mao_quotes import farewell
+            from abacuscopilot.quotes import farewell
             farewell(console)
             break
 
@@ -343,7 +343,7 @@ def run_interactive():
 
         # --- Global text commands ---
         if cmd in ("quit", "exit", "q"):
-            from abacuscopilot.mao_quotes import farewell
+            from abacuscopilot.quotes import farewell
             farewell(console)
             break
 
@@ -358,7 +358,7 @@ def run_interactive():
 
         # --- Navigation ---
         if cmd == "0":
-            from abacuscopilot.mao_quotes import farewell
+            from abacuscopilot.quotes import farewell
             farewell(console)
             break
 
@@ -388,7 +388,7 @@ def run_interactive():
                 current = cat_index[num]
             elif num in all_task_ids:
                 if _dispatch_task(registry, num, console):
-                    from abacuscopilot.mao_quotes import farewell
+                    from abacuscopilot.quotes import farewell
                     farewell(console)
                     break
             else:
@@ -400,7 +400,7 @@ def run_interactive():
             # Sub-menu: any number is treated as a task ID
             if num in all_task_ids:
                 if _dispatch_task(registry, num, console):
-                    from abacuscopilot.mao_quotes import farewell
+                    from abacuscopilot.quotes import farewell
                     farewell(console)
                     break
             else:
