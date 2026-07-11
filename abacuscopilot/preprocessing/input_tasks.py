@@ -175,7 +175,7 @@ TEMPLATE_LCAO_MD = {
 }
 
 TEMPLATE_PW_MD = {
-    "calculation": "md", "symmetry": 1, "gamma_only": 1,
+    "calculation": "md", "symmetry": 0, "gamma_only": 1,
     "precision": ("double", "or single"),
     "ecutwfc": 80.0, "pw_diag_nmax": 20, "pw_diag_ndim": 2,
     "basis_type": ("pw", "or lcao"),
