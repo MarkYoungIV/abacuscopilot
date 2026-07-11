@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from abacuscopilot.config import load_config
-from abacuscopilot.console_utils import _get_console, _prompt
+from abacuscopilot.console_utils import _get_console, _prompt, _prompt_choice
 from abacuscopilot.core.constants import DEFAULT_KSPACING
 from abacuscopilot.core.models import KPoints, Lattice
 from abacuscopilot.tasks import task
@@ -104,7 +104,9 @@ def _get_stru_for_seekpath(structure):
 def _generate_kpt_via_seekpath(structure, npts: int):
     """Use seekpath to auto-generate a high-symmetry k-path.
 
-    Returns (KPoints, path_labels_str) or raises an exception on failure.
+    Returns (KPoints, path_labels_str, bz_data) or raises on failure.
+    bz_data carries the reciprocal lattice / point coords / path for an
+    optional Brillouin-zone plot.
     """
     import seekpath
 
@@ -138,7 +140,13 @@ def _generate_kpt_via_seekpath(structure, npts: int):
     kpts = line_mode_kpts_from_path(segments, labels=labels)
 
     path_str = " — ".join(labels)
-    return kpts, path_str
+    # Data needed to draw the path inside the Brillouin zone (optional plot).
+    bz_data = {
+        "recip_lattice": result["reciprocal_primitive_lattice"],
+        "point_coords": point_coords,
+        "path": path,
+    }
+    return kpts, path_str, bz_data
 
 
 @task(302, category="KPT", name="KPT (band path)",
@@ -179,7 +187,7 @@ def task_band_kpt(args: list[str] | None = None, interactive: bool = True) -> No
 
     # --- Generate k-path via seekpath (required) ---
     try:
-        kpts, path_str = _generate_kpt_via_seekpath(structure, npts)
+        kpts, path_str, bz_data = _generate_kpt_via_seekpath(structure, npts)
         console.print(f"\n  [bold]High-symmetry path (seekpath):[/bold] {path_str}")
     except ImportError:
         console.print("[red]seekpath is required for automatic k-path detection.[/red]")
@@ -212,6 +220,23 @@ def task_band_kpt(args: list[str] | None = None, interactive: bool = True) -> No
     console.print(f"  Path: {' — '.join(disp_labels)}")
     console.print(f"  Total segments: {len(kpts.line_path)}")
     console.print()
+
+    # --- Optional: plot the path inside the Brillouin zone ---
+    if interactive:
+        want_bz = "Yes" in _prompt_choice(
+            console, "Plot the path in the Brillouin zone?", ["Yes", "No"], "Yes"
+        )
+    else:
+        want_bz = True
+    if want_bz:
+        from abacuscopilot.plotting.brillouin import plot_brillouin_zone
+        out = plot_brillouin_zone(
+            bz_data["recip_lattice"], bz_data["point_coords"], bz_data["path"],
+            out_png="brillouin_zone.png", title="Brillouin zone — band path",
+        )
+        if out:
+            console.print(f"  [green]✓ Brillouin-zone plot: {out}[/green]")
+            console.print()
 
 
 # =============================================================================
@@ -263,7 +288,7 @@ def task_phonon_kpt(args: list[str] | None = None, interactive: bool = True) -> 
 
     # Generate q-path via seekpath (required)
     try:
-        kpts, path_str = _generate_kpt_via_seekpath(structure, npts)
+        kpts, path_str, bz_data = _generate_kpt_via_seekpath(structure, npts)
         console.print(f"\n  [bold]High-symmetry path (seekpath):[/bold] {path_str}")
     except ImportError:
         console.print("[red]seekpath is required for automatic q-path detection.[/red]")
@@ -316,6 +341,24 @@ BAND_CONNECTION = .TRUE.
     console.print(f"  DIM = {dim}, MESH = {mesh}, BAND_POINTS = {npts}")
     console.print(f"  Run: phonopy -d --dim=\"{dim}\" --abacus && phonopy band.conf --abacus")
     console.print()
+
+    # --- Optional: plot the q-path inside the Brillouin zone ---
+    if interactive:
+        want_bz = "Yes" in _prompt_choice(
+            console, "Plot the path in the Brillouin zone?", ["Yes", "No"], "Yes"
+        )
+    else:
+        want_bz = True
+    if want_bz:
+        from abacuscopilot.plotting.brillouin import plot_brillouin_zone
+        out = plot_brillouin_zone(
+            bz_data["recip_lattice"], bz_data["point_coords"], bz_data["path"],
+            out_png="brillouin_zone_phonon.png",
+            title="Brillouin zone — phonon q-path",
+        )
+        if out:
+            console.print(f"  [green]✓ Brillouin-zone plot: {out}[/green]")
+            console.print()
 
 
 # =============================================================================
