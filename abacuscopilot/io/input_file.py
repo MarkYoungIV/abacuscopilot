@@ -174,6 +174,7 @@ def write_input(
     groups: list[tuple[str, list[str]]] = [
         ("System variables", [
             "calculation", "symmetry", "kspacing", "gamma_only", "precision",
+            "init_chg", "init_wfc",
         ]),
         ("Plane wave related variables", [
             "ecutwfc", "ecutrho", "pw_diag_nmax", "pw_diag_ndim",
