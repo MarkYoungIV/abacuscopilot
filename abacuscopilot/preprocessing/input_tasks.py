@@ -145,7 +145,8 @@ _NSCF_READ = {"read_file_dir": "./", "init_chg": "file"}
 
 TEMPLATE_LCAO_CELL_RELAX = {**_LCAO_BASE, "calculation": "cell-relax", **_RELAX_FIELDS, "cal_stress": 1}
 TEMPLATE_LCAO_RELAX      = {**_LCAO_BASE, "calculation": "relax",      **_RELAX_FIELDS, "cal_stress": 0}
-TEMPLATE_LCAO_SCF         = {**_LCAO_BASE, "calculation": "scf"}
+TEMPLATE_LCAO_SCF         = {**_LCAO_BASE, "calculation": "scf",
+    "_comment_hints": {"cal_force": "1", "cal_stress": "1"}}
 TEMPLATE_LCAO_BAND        = {**_LCAO_BASE, "calculation": "nscf", "symmetry": 0, "kspacing": None, **_NSCF_READ, "out_band": True}
 TEMPLATE_LCAO_DOS         = {**_LCAO_BASE, "calculation": "nscf", **_NSCF_READ, "out_dos": 1, "dos_emin_ev": -15.0, "dos_emax_ev": 15.0, "dos_edelta_ev": 0.01, "dos_sigma": 0.03}
 
