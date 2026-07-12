@@ -18,30 +18,6 @@ _QUOTES: list[tuple[str, str]] = [
         "When your talent cannot yet support your ambition, you should calm down and learn.",
     ),
     (
-        "等到放晴的那天也许我会比较好一点。",
-        "Maybe I'll feel a little better when the day it clears up comes.",
-    ),
-    (
-        "缓缓飘落的枫叶像思念。",
-        "The maple leaves drifting slowly down are like longing.",
-    ),
-    (
-        "我用铅笔画得很仔细，素描那年天气。",
-        "With my pencil I draw with great care, sketching the weather of that year.",
-    ),
-    (
-        "那童年的希望是一台时光机。",
-        "That childhood hope is a time machine.",
-    ),
-    (
-        "明信片的邮戳，就当纪念过往的生活。",
-        "Let the postmark on the postcard be a keepsake of the life that has passed.",
-    ),
-    (
-        "院子落叶跟我的思念厚厚一叠。",
-        "The fallen leaves in the yard and my longing pile up thick, layer on layer.",
-    ),
-    (
         "一味退让和一味索取一样，都不得善终。",
         "Endless yielding, like endless taking, comes to no good end.",
     ),
@@ -82,10 +58,6 @@ _QUOTES: list[tuple[str, str]] = [
         "Serve the people.",
     ),
     (
-        "好好学习，天天向上。",
-        "Study well and make progress every day.",
-    ),
-    (
         "世界是你们的，也是我们的，但是归根结底是你们的。",
         "The world is yours, as well as ours, but in the last analysis, it is yours.",
     ),
@@ -100,10 +72,6 @@ _QUOTES: list[tuple[str, str]] = [
     (
         "自己动手，丰衣足食。",
         "Do it yourself, and you'll have ample food and clothing.",
-    ),
-    (
-        "枪杆子里面出政权。",
-        "Political power grows out of the barrel of a gun.",
     ),
     (
         "人不犯我，我不犯人；人若犯我，我必犯人。",
@@ -182,16 +150,8 @@ _QUOTES: list[tuple[str, str]] = [
         "Proceed from actual facts in everything.",
     ),
     (
-        "没有正确的政治观点，就等于没有灵魂。",
-        "Without a correct political viewpoint, one is without a soul.",
-    ),
-    (
         "不但要团结和自己意见相同的人，而且要善于团结那些和自己意见不同的人。",
         "Not only unite with those who share your views, but also be good at uniting with those who disagree with you.",
-    ),
-    (
-        "在战略上要藐视敌人，在战术上要重视敌人。",
-        "Strategically, despise the enemy; tactically, take the enemy seriously.",
     ),
     (
         "一切从人民的利益出发。",
@@ -240,10 +200,6 @@ _QUOTES: list[tuple[str, str]] = [
     (
         "不管风吹浪打，胜似闲庭信步。",
         "Let the wind blow and the waves beat — better far than idly strolling in a courtyard.",
-    ),
-    (
-        "不到长城非好汉。",
-        "He who has not been to the Great Wall is not a true man.",
     ),
     (
         "数风流人物，还看今朝。",
@@ -298,10 +254,6 @@ _QUOTES: list[tuple[str, str]] = [
         "The plum blossom welcomes the whirling snow; it is no wonder that flies freeze to death.",
     ),
     (
-        "凡是敌人反对的，我们就要拥护；凡是敌人拥护的，我们就要反对。",
-        "We should support whatever the enemy opposes and oppose whatever the enemy supports.",
-    ),
-    (
         "群众是真正的英雄。",
         "The masses are the real heroes.",
     ),
@@ -346,10 +298,6 @@ _QUOTES: list[tuple[str, str]] = [
         "An army without culture is a stupid army.",
     ),
     (
-        "战争的目的不是别的，就是保存自己，消灭敌人。",
-        "The aim of war is none other than to preserve oneself and destroy the enemy.",
-    ),
-    (
         "读书是学习，使用也是学习，而且是更重要的学习。",
         "Reading is learning, but applying is also learning, and indeed the more important kind.",
     ),
@@ -360,6 +308,58 @@ _QUOTES: list[tuple[str, str]] = [
     (
         "错误常常是正确的先导。",
         "Error is often the precursor of what is correct.",
+    ),
+    (
+        "茫茫九派流中国，沉沉一线穿南北。",
+        "Wide, wide flow the nine streams through the land; dark, dark threads the line from south to north.",
+    ),
+    (
+        "命令昨颁，十万工农下吉安。",
+        "The order was issued yesterday: a hundred thousand workers and peasants march on Ji'an.",
+    ),
+    (
+        "唤起工农千百万，同心干，不周山下红旗乱。",
+        "Rousing millions of workers and peasants to strive as one, beneath Mount Buzhou the red flags riot.",
+    ),
+    (
+        "装点此关山，今朝更好看。",
+        "Adorning these passes and mountains, they look lovelier still today.",
+    ),
+    (
+        "踏遍青山人未老，风景这边独好。",
+        "Having crossed all the green hills, one is not yet old; the scenery here is beyond compare.",
+    ),
+    (
+        "不到长城非好汉，屈指行程二万。",
+        "If we fail to reach the Great Wall we are not true men; we have already counted twenty thousand li.",
+    ),
+    (
+        "俱往矣，数风流人物，还看今朝。",
+        "All are past and gone; for truly great men, look to this age alone.",
+    ),
+    (
+        "昨日文小姐，今日武将军。",
+        "Yesterday a refined young lady, today a martial general.",
+    ),
+    (
+        "戎衣犹铁甲，须眉等银冰。",
+        "The battle dress is still like iron armour; brows and beard are like silver ice.",
+    ),
+    (
+        "满宇频翘望，凯歌奏边城。",
+        "All under heaven look up in eager hope, as songs of triumph sound at the frontier town.",
+    ),
+    (
+        "风樯动，龟蛇静，起宏图。",
+        "Sails move in the wind; Tortoise and Snake hills are still; a grand plan takes shape.",
+    ),
+    (
+        "无限风光在险峰。",
+        "The boundless, magnificent view is found on the perilous peak.",
+    ),
+    (
+        "可上九天揽月，可下五洋捉鳖，谈笑凯歌还。",
+        "We can clasp the moon in the ninth heaven and seize turtles deep down in the five seas; we'll return amid triumphant song and laughter.",
     ),
 ]
 
