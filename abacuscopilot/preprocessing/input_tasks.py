@@ -153,7 +153,8 @@ TEMPLATE_LCAO_DOS         = {**_LCAO_BASE, "calculation": "nscf", **_NSCF_READ, 
 
 TEMPLATE_PW_CELL_RELAX = {**_PW_BASE, "calculation": "cell-relax", **_RELAX_FIELDS, "cal_stress": 1}
 TEMPLATE_PW_RELAX      = {**_PW_BASE, "calculation": "relax",      **_RELAX_FIELDS, "cal_stress": 0}
-TEMPLATE_PW_SCF         = {**_PW_BASE, "calculation": "scf"}
+TEMPLATE_PW_SCF         = {**_PW_BASE, "calculation": "scf",
+    "_comment_hints": {"cal_force": "1", "cal_stress": "1"}}
 TEMPLATE_PW_BAND        = {**_PW_BASE, "calculation": "nscf", "symmetry": 0, "kspacing": None, **_NSCF_READ, "out_band": True}
 TEMPLATE_PW_DOS         = {**_PW_BASE, "calculation": "nscf", **_NSCF_READ, "out_dos": 1, "dos_emin_ev": -15.0, "dos_emax_ev": 15.0, "dos_edelta_ev": 0.01, "dos_sigma": 0.03}
 
