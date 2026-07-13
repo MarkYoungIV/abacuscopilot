@@ -182,10 +182,12 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
 
     d_max = _compute_max_displacement(atoms_init, atoms_final)
     suggested = max(1, int(np.ceil(d_max / 0.8)))
-    console.print(f"  Max atomic displacement: {d_max:.4f} Å → suggested {suggested} images (d_max / 0.8)")
+    if suggested % 2 == 0:
+        suggested += 1  # odd → middle image can sit on saddle for symmetric reactions
+    console.print(f"  Max atomic displacement: {d_max:.4f} Å → suggested {suggested} images (odd)")
 
     if interactive:
-        n_images = int(_prompt(console, "Number of intermediate images", str(suggested)))
+        n_images = int(_prompt(console, "Number of intermediate images (odd recommended)", str(suggested)))
     else:
         n_images = suggested
 
@@ -266,10 +268,12 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
 
     d_max = _compute_max_displacement(atoms_init, atoms_final)
     suggested = max(1, int(np.ceil(d_max / 0.8)))
-    console.print(f"  Max atomic displacement: {d_max:.4f} Å → suggested {suggested} images (d_max / 0.8)")
+    if suggested % 2 == 0:
+        suggested += 1  # odd → middle image can sit on saddle for symmetric reactions
+    console.print(f"  Max atomic displacement: {d_max:.4f} Å → suggested {suggested} images (odd)")
 
     if interactive:
-        n_images = int(_prompt(console, "Number of intermediate images", str(suggested)))
+        n_images = int(_prompt(console, "Number of intermediate images (odd recommended)", str(suggested)))
     else:
         n_images = suggested
 
