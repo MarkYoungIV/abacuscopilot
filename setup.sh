@@ -59,9 +59,14 @@ else
     IS_UPGRADE=0
 fi
 
-# Activate the env
+# Activate the env.
+# Temporarily disable `set -u` (nounset): conda's own activate/deactivate.d
+# hook scripts (e.g. from gxx_linux-64) reference unset vars like
+# CONDA_BACKUP_CXX, which would abort the script under `set -u`.
+set +u
 eval "$(conda shell.bash hook)"
 conda activate "${ENV_NAME}"
+set -u
 PY_VER=$(python --version 2>&1)
 echo -e "        ${GREEN}${PY_VER}${NC}"
 
