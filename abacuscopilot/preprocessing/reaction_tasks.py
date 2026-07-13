@@ -676,7 +676,9 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
         basis_type = _prompt_choice(console, "Basis type", ["lcao", "pw"], "lcao")
     is_lcao = is_lcao_basis(basis_type)
 
-    # Build PP/orb maps (same logic as 1603)
+    # Build PP/orb maps — resolve real filenames from library (标准规范).
+    # Same logic as 1603: current dir first, then library, then bare fallback.
+    from abacuscopilot.preprocessing.system_tasks import _find_file_for_element
     pp_map = {}
     orb_map = {}
     if stru_file.exists():
@@ -686,10 +688,22 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     for sp in species:
         if sp not in pp_map or not pp_map[sp]:
             upfs = sorted(Path(".").glob(f"{sp}_*.upf"))
-            pp_map[sp] = upfs[0].name if upfs else f"{sp}.upf"
+            if upfs:
+                pp_map[sp] = upfs[0].name
+            elif pseudo_lib:
+                found = _find_file_for_element(pseudo_lib, sp, ".upf")
+                pp_map[sp] = found if found else f"{sp}.upf"
+            else:
+                pp_map[sp] = f"{sp}.upf"
         if is_lcao and (sp not in orb_map or not orb_map[sp]):
             orbs = sorted(Path(".").glob(f"{sp}_*.orb"))
-            orb_map[sp] = orbs[0].name if orbs else f"{sp}.orb"
+            if orbs:
+                orb_map[sp] = orbs[0].name
+            elif orbital_lib:
+                found = _find_file_for_element(orbital_lib, sp, ".orb")
+                orb_map[sp] = found if found else f"{sp}.orb"
+            else:
+                orb_map[sp] = f"{sp}.orb"
 
     # Interactive config
     # Hardware defaults (CPU single node). device=cpu -> genelpa;
