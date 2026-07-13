@@ -651,6 +651,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     abacus_bin = paths_cfg.get("abacus_binary", "abacus")
     mpirun = paths_cfg.get("mpirun", "mpirun")
     abacus_src = paths_cfg.get("abacus_source", "")
+    slurm_env = paths_cfg.get("slurm_env_file", "")
 
     if interactive:
         console.print(f"  [dim]ABACUS source (for PYTHONPATH): {abacus_src or 'not set'}[/dim]")
@@ -658,6 +659,13 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
         if src_in:
             abacus_src = src_in
             paths_cfg["abacus_source"] = src_in
+            from abacuscopilot.config import save_config
+            save_config(config)
+        console.print(f"  [dim]SLURM env file (CUDA/compiler setup): {slurm_env or 'not set'}[/dim]")
+        env_in = console.input("  SLURM env script path [Enter=skip]: ").strip()
+        if env_in:
+            slurm_env = env_in
+            paths_cfg["slurm_env_file"] = env_in
             from abacuscopilot.config import save_config
             save_config(config)
 
@@ -917,6 +925,29 @@ print("Done! Trajectory saved to neb.traj")
     console.print()
     # Also generate SLURM script
     n_active = len(image_dirs) - 2  # exclude endpoints
+    # SLURM environment setup — driven by config so each server can use its
+    # own CUDA/compiler/ABACUS env script.  When slurm_env_file is unset,
+    # the script has a commented placeholder for the user to fill in.
+    if slurm_env:
+        slurm_env_block = f"source {slurm_env}\n"
+    else:
+        slurm_env_block = (
+            "# === Environment: source your CUDA + ABACUS setup (configure in\n"
+            "#     abacuscopilot config → System Setup → 配置生成) ===\n"
+        )
+    # abacuslite PYTHONPATH — required for neb_run.py to import from
+    # ABACUS source (interfaces/ASE_interface/).
+    if abacus_src:
+        slurm_pp_block = (
+            f'# ABACUS ASE interface (abacuslite)\n'
+            f'export PYTHONPATH="{abacus_src}/interfaces/ASE_interface:$PYTHONPATH"\n'
+        )
+    else:
+        slurm_pp_block = (
+            "# ABACUS ASE interface (abacuslite) — set abacus_source in config:\n"
+            "# export PYTHONPATH=\"<ABACUS_source>/interfaces/ASE_interface:$PYTHONPATH\"\n"
+        )
+
     if is_gpu:
         # GPU single card: one MPI task, one GPU. NEB images run sequentially
         # (parallel=False) since a single card can't split across images.
@@ -929,13 +960,9 @@ print("Done! Trajectory saved to neb.traj")
 #SBATCH --output=neb_%j.out
 #SBATCH --error=neb_%j.err
 
-source ~/softwares/abacus-develop-LTSv3.10.0/toolchain/abacus_env.sh
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+{slurm_env_block}export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export CUDA_VISIBLE_DEVICES=0
-
-# Add ABACUS ASE interface to Python path
-export PYTHONPATH="{abacus_src}/interfaces/ASE_interface:$PYTHONPATH"
-
+{slurm_pp_block}
 python neb_run.py
 '''
     else:
@@ -948,12 +975,8 @@ python neb_run.py
 #SBATCH --output=neb_%j.out
 #SBATCH --error=neb_%j.err
 
-source ~/softwares/abacus-develop-LTSv3.10.0/toolchain/abacus_env.sh
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-
-# Add ABACUS ASE interface to Python path
-export PYTHONPATH="{abacus_src}/interfaces/ASE_interface:$PYTHONPATH"
-
+{slurm_env_block}export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+{slurm_pp_block}
 python neb_run.py
 '''
     slurm_path = "neb_slurm.sh"
