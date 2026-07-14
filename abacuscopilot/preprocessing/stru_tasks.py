@@ -1039,6 +1039,18 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
     n_atoms = max(n_atoms, len(positions))
     console.print(f"  [dim]Parsed {len(positions)} atoms, {len(masses)} types[/dim]")
 
+    # --- Fallback: compute box from atomic positions if no box info found ---
+    if xlo == xhi == ylo == yhi == zlo == zhi == 0.0:
+        xs = [p[1] for p in positions]
+        ys = [p[2] for p in positions]
+        zs = [p[3] for p in positions]
+        margin = 2.0  # Å — small padding so atoms aren't flush with box edges
+        xlo, xhi = min(xs) - margin, max(xs) + margin
+        ylo, yhi = min(ys) - margin, max(ys) + margin
+        zlo, zhi = min(zs) - margin, max(zs) + margin
+        xy = xz = yz = 0.0
+        console.print("  [yellow]No box info in file — computed from atom positions[/yellow]")
+
     # --- Match masses to elements ---
     from abacuscopilot.io.stru_file import _ATOMIC_MASSES
     # Build reverse lookup: element → mass (keep only most common isotope)
@@ -1096,10 +1108,11 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
     c = [xz, yz, zhi - zlo]
     lattice = Lattice()
     cell_ang = np.array([a, b, c], dtype=float)
-    # STRU stores lattice vectors in Bohr; constant=1 keeps them as-is
+    # STRU stores lattice as: constant (Bohr) × vectors (unitless).
+    # We set constant=1 Bohr so vectors carry the full cell in Bohr.
     from abacuscopilot.core.constants import ANGSTROM_TO_BOHR
     lattice.constant = 1.0
-    lattice._vectors = cell_ang * ANGSTROM_TO_BOHR  # Angstrom → Bohr
+    lattice.vectors = cell_ang * ANGSTROM_TO_BOHR  # Angstrom → Bohr
 
     # Atoms in Cartesian Angstrom
     struct = Structure()
