@@ -823,6 +823,19 @@ def task_view_structure(args: list[str] | None = None, interactive: bool = True)
             console.print(f"[red]Failed to read MD_dump: {e}[/red]")
             return
 
+    # Launch ASE GUI
+    import shutil
+    import subprocess
+    import threading
+    console.print(f"  [dim]Launching ase gui {open_path} ...[/dim]")
+    proc = subprocess.Popen(["ase", "gui", open_path])
+    if tmpdir:
+        threading.Thread(
+            target=lambda: (proc.wait(), shutil.rmtree(tmpdir, ignore_errors=True)),
+            daemon=True,
+        ).start()
+    console.print()
+
 
 # =============================================================================
 # Task 208: STRU to LAMMPS data file
