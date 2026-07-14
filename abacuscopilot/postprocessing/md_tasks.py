@@ -36,8 +36,9 @@ def parse_md_dump(filepath: str | Path) -> list[dict]:
     current_frame: dict | None = None
     in_table = False
     lat_vecs: list[list[float]] | None = None  # None = not collecting, [] = collecting
-    # DP MD_dump writes lattice info only every ~20 frames.  Carry the last
-    # seen lattice forward so every frame has it (needed for POSCAR export etc.)
+    # NVT MD_dump writes lattice info only on the first frame (volume is
+    # constant).  NPT writes it on every frame.  Carry the last-seen lattice
+    # forward so NVT frames also have it (needed for POSCAR export etc.).
     last_lc: float | None = None
     last_lv: np.ndarray | None = None
 
