@@ -1096,6 +1096,9 @@ def task_kspacing_test(args: list[str] | None = None, interactive: bool = True) 
     console.print("[bold cyan]=== Kspacing Convergence Test ===[/bold cyan]")
     console.print()
 
+    # Basis type — kspacing convergence is meaningful for both PW and LCAO.
+    basis_type = _prompt_choice(console, "Basis type", ["lcao", "pw"], "lcao") if interactive else "lcao"
+
     params = InputParams()
     params.suffix = "ABACUS"
     if Path("INPUT").exists():
@@ -1104,9 +1107,9 @@ def task_kspacing_test(args: list[str] | None = None, interactive: bool = True) 
             params = read_input("INPUT")
             console.print("  [dim]Loaded base INPUT[/dim]")
         except Exception:
-            _apply_template(params, TEMPLATE_LCAO_SCF)
+            _apply_template(params, TEMPLATE_LCAO_SCF if basis_type == "lcao" else TEMPLATE_PW_SCF)
     else:
-        _apply_template(params, TEMPLATE_LCAO_SCF)
+        _apply_template(params, TEMPLATE_LCAO_SCF if basis_type == "lcao" else TEMPLATE_PW_SCF)
 
     if not Path("STRU").exists():
         console.print("[red]No STRU found.[/red]")
