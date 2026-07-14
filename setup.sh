@@ -87,12 +87,17 @@ if [[ "${IS_UPGRADE}" == "1" ]] && pip show abacuscopilot >/dev/null 2>&1; then
     pip uninstall -y abacuscopilot >/dev/null 2>&1 || true
 fi
 
-# 3c. Editable install (errors are NOT swallowed — failure aborts the script).
-if ! pip install -e . --upgrade -i "${PIP_INDEX}"; then
-    echo -e "  ${RED}Error: pip install failed.${NC}"
-    echo -e "  Try re-running, or install without the mirror:"
-    echo -e "    conda activate ${ENV_NAME} && pip install -e . --upgrade"
-    exit 1
+# 3c. Editable install — try the configured mirror first; fall back to
+#     default PyPI if the mirror is unreachable (some machines can't
+#     reach e.g. pypi.tuna.tsinghua.edu.cn).
+if ! pip install -e . --upgrade -i "${PIP_INDEX}" 2>/dev/null; then
+    echo -e "        ${YELLOW}Mirror unreachable — falling back to default PyPI${NC}"
+    if ! pip install -e . --upgrade; then
+        echo -e "  ${RED}Error: pip install failed on both mirror and default PyPI.${NC}"
+        echo -e "  Try re-running:"
+        echo -e "    conda activate ${ENV_NAME} && pip install -e . --upgrade"
+        exit 1
+    fi
 fi
 echo -e "        ${GREEN}✓${NC} numpy, scipy, matplotlib, rich, pyyaml, ase installed"
 echo -e "        ${GREEN}✓${NC} abacuscopilot command registered"
