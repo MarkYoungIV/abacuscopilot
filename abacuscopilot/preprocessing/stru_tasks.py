@@ -841,7 +841,6 @@ def task_stru_to_lammps(args: list[str] | None = None, interactive: bool = True)
 
     # Box dimensions (LAMMPS upper-triangular decomposition)
     a_len, b_len, c_len, alpha, beta, gamma = atoms_ase.get_cell_lengths_and_angles()
-    import numpy as np
     alpha_r, beta_r, gamma_r = np.radians(alpha), np.radians(beta), np.radians(gamma)
     xhi = a_len
     xy = b_len * np.cos(gamma_r)
@@ -1045,11 +1044,52 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
         ys = [p[2] for p in positions]
         zs = [p[3] for p in positions]
         margin = 2.0  # Å — small padding so atoms aren't flush with box edges
-        xlo, xhi = min(xs) - margin, max(xs) + margin
-        ylo, yhi = min(ys) - margin, max(ys) + margin
-        zlo, zhi = min(zs) - margin, max(zs) + margin
-        xy = xz = yz = 0.0
-        console.print("  [yellow]No box info in file — computed from atom positions[/yellow]")
+        a_auto = round(max(xs) - min(xs) + 2 * margin, 4)
+        b_auto = round(max(ys) - min(ys) + 2 * margin, 4)
+        c_auto = round(max(zs) - min(zs) + 2 * margin, 4)
+        console.print(f"  [yellow]No box info in file.[/yellow]")
+        console.print(f"  Auto-computed from atom positions: "
+                      f"a={a_auto:.2f}  b={b_auto:.2f}  c={c_auto:.2f} Å  (α=β=γ=90°)")
+
+        if interactive:
+            choice = _prompt_choice(
+                console,
+                "Use auto-computed box or enter manually?",
+                ["Use auto-computed", "Enter manually"],
+                "Use auto-computed",
+            )
+            if "manually" in choice.lower():
+                console.print()
+                console.print("  [bold]Enter cell parameters:[/bold]")
+                a_man = console.input(f"  a (Å) [{a_auto:.4f}]: ").strip()
+                b_man = console.input(f"  b (Å) [{b_auto:.4f}]: ").strip()
+                c_man = console.input(f"  c (Å) [{c_auto:.4f}]: ").strip()
+                alpha_man = console.input("  α (deg) [90]: ").strip()
+                beta_man = console.input("  β (deg) [90]: ").strip()
+                gamma_man = console.input("  γ (deg) [90]: ").strip()
+                a_val = float(a_man) if a_man else a_auto
+                b_val = float(b_man) if b_man else b_auto
+                c_val = float(c_man) if c_man else c_auto
+                alpha_val = float(alpha_man) if alpha_man else 90.0
+                beta_val = float(beta_man) if beta_man else 90.0
+                gamma_val = float(gamma_man) if gamma_man else 90.0
+                ar, br, gr = np.radians(alpha_val), np.radians(beta_val), np.radians(gamma_val)
+                xhi = a_val
+                xy = b_val * np.cos(gr)
+                xz = c_val * np.cos(br)
+                yhi = np.sqrt(b_val**2 - xy**2)
+                yz = (b_val * c_val * np.cos(ar) - xy * xz) / yhi if yhi > 0 else 0.0
+                zhi = np.sqrt(c_val**2 - xz**2 - yz**2)
+                xlo = ylo = zlo = 0.0
+            else:
+                xlo, ylo, zlo = 0.0, 0.0, 0.0
+                xhi, yhi, zhi = a_auto, b_auto, c_auto
+                xy = xz = yz = 0.0
+        else:
+            xlo, ylo, zlo = 0.0, 0.0, 0.0
+            xhi, yhi, zhi = a_auto, b_auto, c_auto
+            xy = xz = yz = 0.0
+            console.print("  [dim]Using auto-computed box (non-interactive mode)[/dim]")
 
     # --- Match masses to elements ---
     from abacuscopilot.io.stru_file import _ATOMIC_MASSES
