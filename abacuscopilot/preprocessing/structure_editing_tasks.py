@@ -986,3 +986,97 @@ def task_sort_atoms(args: list[str] | None = None, interactive: bool = True) -> 
     console.print(f"[green]✓ Atoms sorted by {axis_name} ({order_name}) → Sorted.STRU[/green]")
     console.print("   Original STRU is unchanged.")
     console.print()
+
+
+# =============================================================================
+# Task 409: Reorder species
+# =============================================================================
+
+@task(409, category="Structure Editing", name="Reorder Species",
+      description="Change the order of atom species in STRU (never overwrites original)")
+def task_reorder_species(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Display the current species order and let the user reorder it."""
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== Reorder Species ===[/bold cyan]")
+    console.print()
+
+    # Load STRU
+    stru_path = "STRU"
+    if args:
+        for arg in args:
+            if Path(arg).exists():
+                stru_path = arg
+                break
+
+    try:
+        from abacuscopilot.io.stru_file import read_stru
+        structure = read_stru(stru_path)
+    except Exception as e:
+        console.print(f"[red]Failed to read STRU: {e}[/red]")
+        return
+
+    old_order = list(structure.species_order)
+    console.print(f"  Current order: [bold]{'  '.join(old_order)}[/bold]")
+    console.print(f"  Atoms: {structure.num_atoms} ({structure.num_species} species)")
+    console.print()
+
+    if interactive:
+        new_in = console.input(
+            f"  New order (space-separated, e.g. {' '.join(old_order[::-1])}): "
+        ).strip()
+    elif args:
+        # non-interactive: treat remaining args as the new order
+        new_in = " ".join(args)
+    else:
+        console.print("[dim]Non-interactive mode — no new order given, nothing to do.[/dim]")
+        return
+
+    new_order = new_in.split()
+    if not new_order:
+        console.print("[yellow]No input — keeping current order.[/yellow]")
+        return
+
+    # Validate: every species must appear exactly once
+    if set(new_order) != set(old_order) or len(new_order) != len(old_order):
+        console.print(f"[red]Invalid order: must contain each species exactly once.[/red]")
+        console.print(f"  Expected: {' '.join(old_order)}")
+        return
+
+    if new_order == old_order:
+        console.print("[green]New order is the same as current — nothing to change.[/green]")
+        return
+
+    # Reorder species_order, pseudo_files, orbital_files
+    structure.species_order = new_order
+
+    # Reorder pseudo_files/orbital_files dicts (preserve key-to-value bindings)
+    pp = dict(structure.pseudo_files)
+    structure.pseudo_files = {sp: pp[sp] for sp in new_order}
+
+    if structure.orbital_files:
+        orb = dict(structure.orbital_files)
+        structure.orbital_files = {sp: orb[sp] for sp in new_order}
+
+    # Reorder atoms: group by species, keep intra-group order
+    grouped = {sp: [] for sp in old_order}
+    for a in structure.atoms:
+        grouped[a.species].append(a)
+    new_atoms = []
+    for sp in new_order:
+        new_atoms.extend(grouped[sp])
+    structure.atoms = new_atoms
+
+    # Write (never overwrite original)
+    from abacuscopilot.core.standards import is_lcao_basis
+    from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
+    out_path = "Reordered.STRU"
+    _write_stru_bare(structure, is_lcao=is_lcao_basis(_resolve_bt(structure, interactive)),
+                     filepath=out_path)
+
+    console.print()
+    console.print(f"[green]✓ Reordered: {'  '.join(old_order)} → {'  '.join(new_order)}[/green]")
+    console.print(f"   Written to {out_path}")
+    console.print("   Original STRU is unchanged.")
+    console.print()
