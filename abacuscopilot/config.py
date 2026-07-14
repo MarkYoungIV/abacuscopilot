@@ -65,7 +65,7 @@ DEFAULT_CONFIG = {
         "mpirun": "mpirun",
         "abacus_source": "",     # ABACUS source tree (for abacuslite PYTHONPATH)
         "slurm_env_file": "",    # shell script to source in SLURM jobs (CUDA, compiler, etc.)
-        "sub_abacus": "",        # Slurm sbatch template — copied alongside INPUT (101-110)
+        "sub_script": "",        # Slurm sbatch template — copied alongside INPUT (101-110)
     },
     "libraries": {
         "pseudo_library": _auto_detect_lib("Pseudopotential"),

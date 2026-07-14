@@ -355,7 +355,7 @@ def _auto_prepare_files(console, params: InputParams, interactive: bool = True) 
 
     # Copy the Slurm sbatch template (sub.abacus) if the user configured one.
     # Each server has its own template (GPU type, partitions, env setup).
-    sub_path = config.get("paths", {}).get("sub_abacus", "")
+    sub_path = config.get("paths", {}).get("sub_script", "")
     if sub_path:
         sub_src = Path(sub_path)
         if sub_src.exists():
