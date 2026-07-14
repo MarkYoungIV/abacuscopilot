@@ -90,10 +90,17 @@ fi
 # 3c. Editable install — try the configured mirror first; fall back to
 #     default PyPI if the mirror is unreachable (some machines can't
 #     reach e.g. pypi.tuna.tsinghua.edu.cn).
-if ! pip install -e . --upgrade -i "${PIP_INDEX}" 2>/dev/null; then
-    echo -e "        ${YELLOW}Mirror unreachable — falling back to default PyPI${NC}"
-    if ! pip install -e . --upgrade; then
-        echo -e "  ${RED}Error: pip install failed on both mirror and default PyPI.${NC}"
+ALI_INDEX="https://mirrors.aliyun.com/pypi/simple/"
+PIP_INSTALL="pip install -e . --upgrade --timeout 15 --retries 2"
+
+if ${PIP_INSTALL} -i "${PIP_INDEX}" 2>/dev/null; then
+    :
+elif ${PIP_INSTALL} -i "${ALI_INDEX}" 2>/dev/null; then
+    echo -e "        ${YELLOW}Tsinghua unreachable — used Alibaba Cloud mirror${NC}"
+else
+    echo -e "        ${YELLOW}Both mirrors unreachable — falling back to default PyPI${NC}"
+    if ! ${PIP_INSTALL}; then
+        echo -e "  ${RED}Error: pip install failed on all mirrors.${NC}"
         echo -e "  Try re-running:"
         echo -e "    conda activate ${ENV_NAME} && pip install -e . --upgrade"
         exit 1
