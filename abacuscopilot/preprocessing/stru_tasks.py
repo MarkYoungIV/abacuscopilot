@@ -786,12 +786,103 @@ def task_view_structure(args: list[str] | None = None, interactive: bool = True)
             console.print(f"[red]Failed to read STRU: {e}[/red]")
             return
 
-    console.print("  [dim](close the 3D window to return)[/dim]")
-    import subprocess
-    import threading
-    proc = subprocess.Popen(["ase", "gui", open_path])
-    if tmpdir:
-        threading.Thread(
-            target=lambda: (proc.wait(), shutil.rmtree(tmpdir, ignore_errors=True)),
-            daemon=True).start()
+
+# =============================================================================
+# Task 208: STRU to LAMMPS data file
+# =============================================================================
+
+@task(208, category="STRU", name="STRU to LAMMPS",
+      description="Convert STRU to a LAMMPS data file (graph.lmp)")
+def task_stru_to_lammps(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Convert STRU to LAMMPS data format.
+
+    Outputs a LAMMPS `data` file (atom_style full) with masses, box
+    dimensions, and Cartesian coordinates in Angstrom.
+    """
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== STRU → LAMMPS Data File ===[/bold cyan]")
+    console.print()
+
+    # Load STRU
+    stru_path = "STRU"
+    if args:
+        for arg in args:
+            if Path(arg).exists():
+                stru_path = arg
+                break
+
+    try:
+        from abacuscopilot.io.stru_file import read_stru
+        structure = read_stru(stru_path)
+    except Exception as e:
+        console.print(f"[red]Failed to read STRU: {e}[/red]")
+        return
+
+    console.print(f"  [dim]Loaded {structure.num_atoms} atoms, "
+                  f"{structure.num_species} species from {stru_path}[/dim]")
+
+    # Convert to ASE for Cartesian Angstrom coordinates + cell
+    atoms_ase = structure.to_ase()
+    pos_cart = atoms_ase.get_positions()       # Cartesian Angstrom
+    cell_ang = atoms_ase.get_cell()[:]          # 3×3 Angstrom
+
+    # Output filename
+    if interactive:
+        out_name = _prompt(console, "Output filename", "graph.lmp")
+    else:
+        out_name = "graph.lmp"
+    out_path = Path(out_name)
+
+    # Species → type mapping (LAMMPS type IDs start at 1)
+    species = structure.species_order
+    type_map = {sp: i + 1 for i, sp in enumerate(species)}
+
+    # Box dimensions (LAMMPS upper-triangular decomposition)
+    a_len, b_len, c_len, alpha, beta, gamma = atoms_ase.get_cell_lengths_and_angles()
+    import numpy as np
+    alpha_r, beta_r, gamma_r = np.radians(alpha), np.radians(beta), np.radians(gamma)
+    xhi = a_len
+    xy = b_len * np.cos(gamma_r)
+    xz = c_len * np.cos(beta_r)
+    yhi = np.sqrt(b_len**2 - xy**2)
+    yz = (b_len * c_len * np.cos(alpha_r) - xy * xz) / yhi if yhi > 0 else 0.0
+    zhi = np.sqrt(c_len**2 - xz**2 - yz**2)
+    is_triclinic = abs(xy) > 1e-6 or abs(xz) > 1e-6 or abs(yz) > 1e-6
+
+    # Atomic masses (from ABACUS STRU standard values)
+    from abacuscopilot.io.stru_file import _ATOMIC_MASSES
+
+    with open(out_path, "w") as f:
+        f.write(f"# LAMMPS data file — converted from {stru_path} by AbacusCopilot\n\n")
+        f.write(f"{structure.num_atoms} atoms\n")
+        f.write(f"{structure.num_species} atom types\n\n")
+
+        if is_triclinic:
+            f.write(f"  0.000000  {xhi:.6f}  xlo xhi\n")
+            f.write(f"  0.000000  {yhi:.6f}  ylo yhi\n")
+            f.write(f"  0.000000  {zhi:.6f}  zlo zhi\n")
+            f.write(f"  {xy:.6f}  {xz:.6f}  {yz:.6f}  xy xz yz\n")
+        else:
+            f.write(f"  0.000000  {xhi:.6f}  xlo xhi\n")
+            f.write(f"  0.000000  {yhi:.6f}  ylo yhi\n")
+            f.write(f"  0.000000  {zhi:.6f}  zlo zhi\n")
+
+        f.write(f"\nMasses\n\n")
+        for sp in species:
+            mass = _ATOMIC_MASSES.get(sp, 0.0)
+            f.write(f"  {type_map[sp]}  {mass:.6f}  # {sp}\n")
+
+        f.write(f"\nAtoms\n\n")
+        for i, atom in enumerate(structure.atoms, 1):
+            t = type_map[atom.species]
+            x, y, z = pos_cart[i - 1]
+            f.write(f"  {i}  {t}  {x:.6f}  {y:.6f}  {z:.6f}\n")
+
+    console.print()
+    console.print(f"[green]✓ LAMMPS data file written: {out_path.name}[/green]")
+    console.print(f"  {structure.num_atoms} atoms, {structure.num_species} atom types")
+    console.print(f"  Box: {xhi:.4f} × {yhi:.4f} × {zhi:.4f} Å"
+                  + (" (triclinic)" if is_triclinic else ""))
     console.print()
