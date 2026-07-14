@@ -1609,6 +1609,9 @@ def _plot_gs_heatmap(r, gs_matrix, lags_ps, sa, prefix, vmax):
     cbar.set_label("4πr²·G_s(r,t)")
     ax.spines["top"].set_visible(True)
     ax.spines["right"].set_visible(True)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.5)
+    ax.tick_params(axis="both", direction="out")
     fig.tight_layout(pad=1.2)
     fig.savefig(f"{prefix}_Gs_heatmap.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -1634,6 +1637,9 @@ def _plot_gd_heatmap(r, gd_matrix, lags_ps, sa, sb, prefix, vmax):
     cbar.set_label("G_d(r,t)")
     ax.spines["top"].set_visible(True)
     ax.spines["right"].set_visible(True)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.5)
+    ax.tick_params(axis="both", direction="out")
     fig.tight_layout(pad=1.2)
     fig.savefig(f"{prefix}_Gd_heatmap.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
