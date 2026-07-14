@@ -748,31 +748,41 @@ def task_view_structure(args: list[str] | None = None, interactive: bool = True)
 
     if viewer_path is None:
         for f in ("STRU", "POSCAR", "CONTCAR"):
-            if Path(f).exists():
+            p = Path(f)
+            if p.exists() and p.is_file():
                 viewer_path = f
                 break
         if viewer_path is None:
-            cif = sorted(Path(".").glob("*.cif"))
-            if cif:
-                viewer_path = str(cif[0])
+            for md in ("MD_dump", "OUT.ABACUS/MD_dump"):
+                if Path(md).exists() and Path(md).is_file():
+                    viewer_path = md
+                    break
         if viewer_path is None:
             traj = sorted(Path(".").glob("*.traj"))
             if traj:
                 viewer_path = str(traj[0])
+        if viewer_path is None:
+            cif = sorted(Path(".").glob("*.cif"))
+            if cif:
+                viewer_path = str(cif[0])
 
     if viewer_path is None or not Path(viewer_path).exists():
-        console.print("[red]No structure file found (STRU/POSCAR/CONTCAR/*.cif/*.traj).[/red]")
+        console.print("[red]No structure file found (STRU/POSCAR/CONTCAR/*.cif/*.traj/MD_dump).[/red]")
         return
 
     console.print(f"  [dim]Opening: {viewer_path}[/dim]")
 
-    # STRU needs conversion (ASE can't read ABACUS format natively)
-    import shutil
+    # Shared imports for conversions below
     import tempfile
+    from ase.io import write as ase_write
     tmpdir = None
     open_path = viewer_path
-    if (Path(viewer_path).suffix == "" or "STRU" in str(viewer_path)) and \
-       Path(viewer_path).suffix != ".traj":
+
+    # STRU needs conversion (ASE can't read ABACUS format natively)
+    is_stru = (Path(viewer_path).suffix == "" or "STRU" in str(viewer_path)) and \
+              Path(viewer_path).suffix not in (".traj", ".cif") and \
+              "MD_dump" not in str(viewer_path)
+    if is_stru:
         try:
             from abacuscopilot.io.stru_file import read_stru
             structure = read_stru(viewer_path)
@@ -784,6 +794,33 @@ def task_view_structure(args: list[str] | None = None, interactive: bool = True)
             console.print("  [dim](converted STRU -> POSCAR for ASE)[/dim]")
         except Exception as e:
             console.print(f"[red]Failed to read STRU: {e}[/red]")
+            return
+
+    # MD_dump needs conversion (ASE can't read ABACUS MD format natively)
+    if "MD_dump" in str(viewer_path):
+        try:
+            from abacuscopilot.postprocessing.md_tasks import parse_md_dump
+            frames = parse_md_dump(viewer_path)
+            if not frames:
+                console.print("[red]MD_dump is empty or unreadable.[/red]")
+                return
+            atoms_list = []
+            for frm in frames:
+                lv = frm.get("lattice_vectors")
+                cell = lv if lv is not None else [[20, 0, 0], [0, 20, 0], [0, 0, 20]]
+                atoms = ase.Atoms(
+                    symbols=[a["label"] for a in frm["atoms"]],
+                    positions=[a["xyz"] for a in frm["atoms"]],
+                    cell=cell,
+                    pbc=True,
+                )
+                atoms_list.append(atoms)
+            tmpdir = tempfile.mkdtemp(prefix="abacuscopilot_")
+            open_path = f"{tmpdir}/trajectory.traj"
+            ase_write(open_path, atoms_list, format="traj")
+            console.print(f"  [dim](converted MD_dump → .traj: {len(frames)} frames)[/dim]")
+        except Exception as e:
+            console.print(f"[red]Failed to read MD_dump: {e}[/red]")
             return
 
 
