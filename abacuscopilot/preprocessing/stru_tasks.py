@@ -886,3 +886,245 @@ def task_stru_to_lammps(args: list[str] | None = None, interactive: bool = True)
     console.print(f"  Box: {xhi:.4f} × {yhi:.4f} × {zhi:.4f} Å"
                   + (" (triclinic)" if is_triclinic else ""))
     console.print()
+
+
+# =============================================================================
+# Task 209: LAMMPS data file → STRU
+# =============================================================================
+
+@task(209, category="STRU", name="LAMMPS to STRU",
+      description="Convert a LAMMPS data file to ABACUS STRU format")
+def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Convert a LAMMPS data file to STRU.
+
+    Detects atom types from masses (IUPAC standard).  If a mass is
+    ambiguous (multiple elements within tolerance), the user is prompted.
+    """
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== LAMMPS → STRU ===[/bold cyan]")
+    console.print()
+
+    # Find input file
+    lmp_path = "graph.lmp"
+    if args:
+        for arg in args:
+            if Path(arg).exists() and arg != "STRU":
+                lmp_path = arg
+                break
+    if interactive:
+        inp = console.input(f"  LAMMPS data file [{lmp_path}]: ").strip()
+        if inp and Path(inp).exists():
+            lmp_path = inp
+
+    if not Path(lmp_path).exists():
+        console.print(f"[red]File not found: {lmp_path}[/red]")
+        return
+
+    content = Path(lmp_path).read_text(errors="ignore")
+    lines = content.split("\n")
+
+    # --- Parse LAMMPS data file ---
+    import re
+    from abacuscopilot.core.models import Atom, Lattice, Structure
+
+    n_atoms = n_types = 0
+    xlo = xhi = ylo = yhi = zlo = zhi = 0.0
+    xy = xz = yz = 0.0
+    masses: dict[int, float] = {}
+    positions: list[tuple[int, float, float, float]] = []  # (type, x, y, z)
+    section = None
+
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            # LAMMPS comment lines may contain the atom/type counts
+            m = re.search(r"(\d+)\s+atoms", stripped)
+            if m and n_atoms == 0:
+                n_atoms = int(m.group(1))
+            m = re.search(r"(\d+)\s+atom types", stripped)
+            if m and n_types == 0:
+                n_types = int(m.group(1))
+            continue
+
+        # Section headers (case-insensitive)
+        low = stripped.lower()
+
+        if low in ("masses",):
+            section = "masses"
+            continue
+        elif low in ("atoms",):
+            section = "atoms"
+            continue
+        elif low in ("velocities", "bonds", "angles", "dihedrals", "impropers",
+                     "pair coeffs", "bond coeffs", "angle coeffs",
+                     "pair_coeffs", "bond_coeffs", "angle_coeffs",
+                     "atoms #", "atoms  #"):
+            section = None  # skip to end of file
+            continue
+
+        # Box: xlo xhi [xy xz yz]
+        if section is None and n_atoms == 0:
+            parts = stripped.split()
+            if len(parts) >= 2:
+                try:
+                    vals = [float(x) for x in parts[:2]]
+                    if xlo == xhi == 0:
+                        xlo, xhi = vals[0], vals[1]
+                        continue
+                except ValueError:
+                    pass
+
+        if section is None and xlo != 0 and xhi != 0:
+            # Try to read ylo yhi
+            parts = stripped.split()
+            if len(parts) >= 2:
+                try:
+                    vals = [float(x) for x in parts[:2]]
+                    if ylo == yhi == 0:
+                        ylo, yhi = vals[0], vals[1]
+                        continue
+                except ValueError:
+                    pass
+
+        if section is None and ylo != 0 and yhi != 0 and zlo == zhi == 0:
+            # Try to read zlo zhi
+            parts = stripped.split()
+            if len(parts) >= 2:
+                try:
+                    vals = [float(x) for x in parts[:2]]
+                    if zlo == zhi == 0:
+                        zlo, zhi = vals[0], vals[1]
+                        continue
+                except ValueError:
+                    pass
+
+        if section is None and zhi != 0:
+            # xy xz yz (triclinic)
+            parts = stripped.split()
+            if len(parts) >= 3:
+                try:
+                    xy, xz, yz = float(parts[0]), float(parts[1]), float(parts[2])
+                    continue
+                except ValueError:
+                    pass
+
+        # Masses section: type mass
+        if section == "masses":
+            parts = stripped.split()
+            if len(parts) >= 2:
+                try:
+                    masses[int(parts[0])] = float(parts[1])
+                except (ValueError, IndexError):
+                    pass
+            continue
+
+        # Atoms section: id type x y z [more...]
+        if section == "atoms":
+            parts = stripped.split()
+            if len(parts) >= 5:
+                try:
+                    a_type = int(parts[1])
+                    x, y, z = float(parts[2]), float(parts[3]), float(parts[4])
+                    positions.append((a_type, x, y, z))
+                except (ValueError, IndexError):
+                    pass
+            continue
+
+    # Deduce atom counts from data
+    if not positions:
+        console.print("[red]No atom positions found in the file.[/red]")
+        return
+    n_atoms = max(n_atoms, len(positions))
+    console.print(f"  [dim]Parsed {len(positions)} atoms, {len(masses)} types[/dim]")
+
+    # --- Match masses to elements ---
+    from abacuscopilot.io.stru_file import _ATOMIC_MASSES
+    # Build reverse lookup: element → mass (keep only most common isotope)
+    elem_mass: dict[str, float] = {}
+    for elem, mass in sorted(_ATOMIC_MASSES.items()):
+        elem_mass[elem] = mass
+
+    TOLERANCE = 0.1  # mass tolerance for element identification
+    type_to_elem: dict[int, str] = {}
+
+    for tid in sorted(masses):
+        m = masses[tid]
+        # Find closest element by mass
+        candidates = []
+        for elem, ref_mass in elem_mass.items():
+            if abs(m - ref_mass) <= TOLERANCE:
+                candidates.append((abs(m - ref_mass), elem))
+
+        if not candidates:
+            # Broader search
+            candidates = sorted(
+                [(abs(m - ref_mass), elem) for elem, ref_mass in elem_mass.items()]
+            )[:3]
+
+        candidates.sort()
+        if len(candidates) == 1 and candidates[0][0] <= 0.01:
+            # Unique exact match
+            type_to_elem[tid] = candidates[0][1]
+            console.print(f"  Type {tid} (mass {m:.4f}) → [green]{candidates[0][1]}[/green]")
+        elif interactive:
+            console.print(f"\n  Type {tid} (mass {m:.4f}):")
+            for i, (diff, elem) in enumerate(candidates[:5], 1):
+                marker = " ← best match" if i == 1 else ""
+                console.print(f"    {i}. {elem} (mass {elem_mass[elem]:.4f}, Δ={diff:.4f}){marker}")
+            choice = console.input(
+                f"  Enter element symbol (or 1-{min(len(candidates), 5)}): "
+            ).strip()
+            if choice.isdigit() and 1 <= int(choice) <= len(candidates):
+                type_to_elem[tid] = candidates[int(choice) - 1][1]
+            elif choice.upper() in elem_mass:
+                type_to_elem[tid] = choice.upper()
+            else:
+                type_to_elem[tid] = candidates[0][1]  # best guess
+        else:
+            type_to_elem[tid] = candidates[0][1]  # non-interactive: best guess
+            console.print(f"  Type {tid} (mass {m:.4f}) → [yellow]{candidates[0][1]}[/yellow] (best guess)")
+
+    # --- Build Structure ---
+    species = [type_to_elem[tid] for tid in sorted(type_to_elem)]
+    species_order = list(dict.fromkeys(species))  # dedupe, preserve order
+
+    # Lattice from box dimensions (Cartesian Angstrom)
+    a = [xhi - xlo, 0.0, 0.0]
+    b = [xy, yhi - ylo, 0.0]
+    c = [xz, yz, zhi - zlo]
+    lattice = Lattice()
+    cell_ang = np.array([a, b, c], dtype=float)
+    # STRU stores lattice vectors in Bohr; constant=1 keeps them as-is
+    from abacuscopilot.core.constants import ANGSTROM_TO_BOHR
+    lattice.constant = 1.0
+    lattice._vectors = cell_ang * ANGSTROM_TO_BOHR  # Angstrom → Bohr
+
+    # Atoms in Cartesian Angstrom
+    struct = Structure()
+    struct.coordinate_type = "Cartesian_angstrom"
+    struct.species_order = species_order
+    struct.lattice = lattice
+
+    # Assign species to each atom
+    type_to_sp = {tid: type_to_elem[tid] for tid in sorted(type_to_elem)}
+    for a_type, x, y, z in positions:
+        sp = type_to_sp.get(a_type, "X")
+        struct.atoms.append(Atom(species=sp, position=[x, y, z]))
+
+    # Placeholder pseudo files
+    for sp in species_order:
+        struct.pseudo_files[sp] = f"{sp}.upf"
+
+    # Write STRU
+    out_path = "STRU_LAMMPS" if Path("STRU").exists() else "STRU"
+    from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
+    _write_stru_bare(struct, is_lcao=False, filepath=out_path)
+
+    console.print()
+    console.print(f"[green]✓ STRU written: {out_path}[/green]")
+    console.print(f"  {struct.num_atoms} atoms, {struct.num_species} species: {' '.join(species_order)}")
+    if Path("STRU").exists() and out_path != "STRU":
+        console.print("  [dim]Original STRU is unchanged.[/dim]")
+    console.print()
