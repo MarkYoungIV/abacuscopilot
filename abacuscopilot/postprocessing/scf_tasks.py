@@ -567,18 +567,63 @@ def _parse_calculation_status(out_dir: Path) -> dict:
 
 
 @task(713, category="SCF Analysis", name="Calc Status",
-      description="Check ABACUS calculation completion, convergence, and final energy")
-@task(9908, category="System", name="Calc Status",
-      description="Quick check: is the calculation done? Converged? Final energy?")
-def task_calc_status(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Check the status of an ABACUS calculation in the current directory.
+      description="Check SCF convergence: energies, steps, forces, stress")
+def task_scf_status(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Check the SCF convergence status and final energy of an ABACUS run."""
+    console = _get_console()
+    from abacuscopilot.core.constants import RY_TO_EV
 
-    Reports:
-    - Whether the calculation completed normally
-    - SCF convergence status
-    - Final total energy (Ry, Ha, eV)
-    - Forces and stress (if available)
-    """
+    console.print()
+    console.print("[bold cyan]=== SCF Status ===[/bold cyan]")
+    console.print()
+
+    out_dir = _find_abacus_output_dir()
+    if out_dir is None:
+        console.print("[yellow]No OUT.* directory found.[/yellow]")
+        console.print("[dim]Run an ABACUS calculation first.[/dim]")
+        return
+
+    status = _parse_calculation_status(out_dir)
+    console.print(f"  [dim]Output: {status['output_dir']}[/dim]")
+    console.print()
+
+    # SCF convergence — the core question
+    icon = "[green]✓[/green]" if status["converged"] else "[red]✗[/red]"
+    console.print(f"  {icon} SCF Converged: {'[green]Yes[/green]' if status['converged'] else '[red]No[/red]'}")
+    console.print(f"  SCF Steps (last run): {status['n_scf_steps']}")
+
+    # Final energy — SCF's main output
+    if status["final_energy_ry"] is not None:
+        e_ry = status["final_energy_ry"]
+        e_ha = e_ry / 2.0
+        e_ev = e_ry * RY_TO_EV
+        console.print()
+        console.print("  [bold]Final Energy:[/bold]")
+        console.print(f"    {e_ry:.8f} Ry   (ABACUS native)")
+        console.print(f"    {e_ha:.8f} Ha   (Hartree)")
+        console.print(f"    {e_ev:.6f} eV")
+        if status.get("natom", 0) > 0:
+            console.print(f"    {e_ev / status['natom']:.6f} eV/atom  ({status['natom']} atoms)")
+
+    # Forces / stress — tell user how far from convergence
+    if status["max_force"] is not None:
+        console.print(f"\n  [bold]Max Force:[/bold] {status['max_force']:.6f} eV/Å")
+    if status["max_stress"] is not None:
+        from abacuscopilot.core.constants import KBAR_TO_GPA
+        console.print(f"  [bold]Max Stress:[/bold] {status['max_stress']:.4f} kbar = {status['max_stress'] * KBAR_TO_GPA:.4f} GPa")
+
+    if status["errors"]:
+        console.print()
+        for e in status["errors"]:
+            console.print(f"  [red]![/red] {e}")
+
+    console.print()
+
+
+@task(9908, category="System", name="Calc Status",
+      description="Overall calculation status: completion, ionic steps, wall time")
+def task_sys_status(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Check the overall calculation status — ideal for monitoring relax/MD runs."""
     console = _get_console()
     from abacuscopilot.core.constants import RY_TO_EV
 
@@ -586,73 +631,46 @@ def task_calc_status(args: list[str] | None = None, interactive: bool = True) ->
     console.print("[bold cyan]=== Calculation Status ===[/bold cyan]")
     console.print()
 
-    # Find output directory
-    out_dir = None
-    if args:
-        for arg in args:
-            p = Path(arg)
-            if p.is_dir():
-                out_dir = p
-                break
-            if p.exists():
-                # A specific log file
-                console.print(f"  [dim]Reading: {p}[/dim]")
-                out_dir = p.parent
-                # Quick parse
-                status = _parse_calculation_status(p.parent)
-                break
-
-    if out_dir is None:
-        out_dir = _find_abacus_output_dir()
-
+    out_dir = _find_abacus_output_dir()
     if out_dir is None:
         console.print("[yellow]No OUT.* directory found.[/yellow]")
-        console.print("[dim]Run an ABACUS calculation first. Expected directory: OUT.ABACUS/[/dim]")
         return
 
     status = _parse_calculation_status(out_dir)
     console.print(f"  [dim]Output: {status['output_dir']}[/dim]")
     console.print()
 
-    # --- Completion ---
-    icon = "[green]✓[/green]" if status["completed"] else "[yellow]…[/yellow]"
-    console.print(f"  {icon} Completed: {'[green]Yes[/green]' if status['completed'] else '[yellow]Not yet / still running[/yellow]'}")
+    # Top-line: is it done?
+    if status["completed"]:
+        console.print("  [green]✓ Calculation completed[/green]")
+    else:
+        console.print("  [yellow]… Calculation still running[/yellow]")
 
-    # --- Convergence ---
-    icon = "[green]✓[/green]" if status["converged"] else "[red]✗[/red]" if status["completed"] else "[dim]—[/dim]"
-    console.print(f"  {icon} SCF Converged: {'[green]Yes[/green]' if status['converged'] else '[red]No[/red]'}")
+    # Ionic steps — key for relax/MD monitoring
+    if status["n_ionic_steps"]:
+        console.print(f"  Ionic Steps:          {status['n_ionic_steps']}")
 
-    # --- Energy ---
+    # SCF convergence snapshot
+    console.print(f"  SCF Converged:        {'[green]Yes[/green]' if status['converged'] else '[red]No[/red]'}  ({status['n_scf_steps']} steps)")
+
+    # Energy
     if status["final_energy_ry"] is not None:
         e_ry = status["final_energy_ry"]
-        e_ha = e_ry / 2.0        # 1 Ha = 2 Ry
         e_ev = e_ry * RY_TO_EV
-        console.print()
-        console.print("  [bold]Final Energy:[/bold]")
-        console.print(f"    {e_ry:.8f} Ry   (ABACUS native)")
-        console.print(f"    {e_ha:.8f} Ha   (Hartree)")
-        console.print(f"    {e_ev:.6f} eV")
+        natom = status.get("natom", 0)
+        console.print(f"  Final Energy:         {e_ry:.6f} Ry  ({e_ev:.4f} eV"
+                      + (f", {e_ev/natom:.4f} eV/atom)" if natom > 0 else ")"))
     else:
-        console.print()
-        console.print("  [yellow]Final energy not found in log.[/yellow]")
+        console.print("  [yellow]Energy not yet available[/yellow]")
 
-    # --- Steps ---
-    if status["n_scf_steps"]:
-        console.print(f"\n  [bold]SCF Steps:[/bold] {status['n_scf_steps']}")
-    if status["n_ionic_steps"]:
-        console.print(f"  [bold]Ionic Steps:[/bold] {status['n_ionic_steps']}")
+    # Wall time
+    if status["wall_time"]:
+        console.print(f"  Wall Time:            {status['wall_time']}")
 
-    # --- Forces ---
+    # Forces — tells if relax is converging
     if status["max_force"] is not None:
-        console.print(f"\n  [bold]Max Force:[/bold] {status['max_force']:.6f} eV/Å")
+        console.print(f"  Max Force:            {status['max_force']:.6f} eV/Å")
 
-    # --- Stress ---
-    if status["max_stress"] is not None:
-        from abacuscopilot.core.constants import KBAR_TO_GPA
-        stress_gpa = status["max_stress"] * KBAR_TO_GPA
-        console.print(f"  [bold]Max Stress:[/bold] {status['max_stress']:.4f} kbar = {stress_gpa:.4f} GPa")
-
-    # --- Errors ---
     if status["errors"]:
         console.print()
         for e in status["errors"]:
