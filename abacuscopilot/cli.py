@@ -65,7 +65,7 @@ Examples:
     parser.add_argument(
         "--state",
         action="store_true",
-        help="Show system state (ABACUS env, installed tools, config paths)",
+        help="Quick calculation status: done? converged? energy? (same as task 9908)",
     )
     parser.add_argument(
         "--md",
