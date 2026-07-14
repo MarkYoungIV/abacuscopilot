@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "abacuscopilot"
-version = "0.1.5"
+version = "0.1.6"
 description = "Your AI copilot for the ABACUS DFT software — pre- and post-processing made simple"
 readme = "README.md"
 license = {text = "GPL-3.0"}
