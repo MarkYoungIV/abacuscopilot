@@ -209,6 +209,8 @@ def _check_required_files() -> dict[str, Any]:
         "issues": [],
         "warnings": [],
     }
+    params = None
+    structure = None
 
     # Check INPUT exists
     if not Path("INPUT").exists():
@@ -232,17 +234,6 @@ def _check_required_files() -> dict[str, Any]:
         try:
             from abacuscopilot.io.stru_file import read_stru
             structure = read_stru("STRU")
-            # Check species match
-            species_in_stru = set(structure.species_order)
-            # Check pseudo files exist
-            missing_pp = []
-            for sp, pp_file in structure.pseudo_files.items():
-                if not Path(pp_file).exists():
-                    missing_pp.append(f"{sp}: {pp_file}")
-            if missing_pp:
-                result["warnings"].append(
-                    f"Missing pseudopotential files: {', '.join(missing_pp)}"
-                )
         except Exception as e:
             result["warnings"].append(f"Could not validate STRU: {e}")
 
@@ -259,6 +250,34 @@ def _check_required_files() -> dict[str, Any]:
                     result["warnings"].append("KPT mesh is 1×1×1 (gamma-point only)")
         except Exception as e:
             result["warnings"].append(f"Could not validate KPT: {e}")
+
+    # --- Cross-check: INPUT basis_type vs STRU orbital content ---
+    if params is not None and structure is not None:
+        from abacuscopilot.core.standards import is_lcao_basis
+        is_lcao_input = is_lcao_basis(params.basis_type)
+        has_orb = bool(getattr(structure, "orbital_files", None))
+        species = list(getattr(structure, "species_order", []))
+
+        if is_lcao_input and not has_orb:
+            result["issues"].append(
+                "INPUT uses LCAO basis but STRU has no NUMERICAL_ORBITAL section — "
+                "orbital files will be needed at runtime"
+            )
+        elif not is_lcao_input and has_orb:
+            result["warnings"].append(
+                "INPUT uses PW basis but STRU has NUMERICAL_ORBITAL — "
+                "consider regenerating STRU via task 201/202 for PW"
+            )
+
+        # Check that every species has a .upf on disk
+        for sp in species:
+            pp = structure.pseudo_files.get(sp, f"{sp}.upf")
+            if not Path(pp).exists():
+                result["issues"].append(f"Pseudopotential not found on disk: {pp} (for {sp})")
+            if is_lcao_input:
+                orb = structure.orbital_files.get(sp, f"{sp}.orb") if has_orb else f"{sp}.orb"
+                if not Path(orb).exists():
+                    result["issues"].append(f"Orbital not found on disk: {orb} (for {sp})")
 
     return result
 
