@@ -175,7 +175,7 @@ def main(argv: list[str] | None = None):
         registry = TaskRegistry()
         registry.discover_modules()
         try:
-            registry.dispatch(1504, args=remaining, interactive=True,
+            registry.dispatch(9904, args=remaining, interactive=True,
                             output_dir=args.output_dir)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)

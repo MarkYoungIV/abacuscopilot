@@ -572,12 +572,6 @@ def task_clean_directory(args: list[str] | None = None, interactive: bool = True
         console.print(f"  To delete ({len(to_delete)} files):")
         for p in to_delete:
             console.print(f"    [red]✗[/red] {p.name}")
-    for p in sorted(keep, key=lambda x: x.name):
-        console.print(f"    [green]✓[/green] {p.name}")
-    console.print()
-    console.print(f"  To delete ({len(to_delete)} files):")
-    for p in to_delete:
-        console.print(f"    [red]✗[/red] {p.name}")
 
     if to_delete:
         if interactive:
