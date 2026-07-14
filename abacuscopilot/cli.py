@@ -62,6 +62,16 @@ Examples:
         action="store_true",
         help="Clean working directory (keep INPUT, KPT, STRU, *.{upf,orb}, sub*)",
     )
+    parser.add_argument(
+        "--state",
+        action="store_true",
+        help="Show system state (ABACUS env, installed tools, config paths)",
+    )
+    parser.add_argument(
+        "--md",
+        action="store_true",
+        help="Monitor a running MD calculation (auto-find OUT.ABACUS/MD_dump)",
+    )
 
     return parser
 
@@ -176,6 +186,28 @@ def main(argv: list[str] | None = None):
         registry.discover_modules()
         try:
             registry.dispatch(9904, args=remaining, interactive=True,
+                            output_dir=args.output_dir)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.state:
+        registry = TaskRegistry()
+        registry.discover_modules()
+        try:
+            registry.dispatch(9908, args=remaining, interactive=True,
+                            output_dir=args.output_dir)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.md:
+        registry = TaskRegistry()
+        registry.discover_modules()
+        try:
+            registry.dispatch(9905, args=remaining, interactive=True,
                             output_dir=args.output_dir)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)

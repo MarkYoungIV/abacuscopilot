@@ -808,3 +808,123 @@ def task_set_sub_script(args: list[str] | None = None, interactive: bool = True)
             save_config(config)
         # else: blank → keep current, do nothing
         console.print()
+
+
+# =============================================================================
+# Task 9908: Quick calculation status check
+# =============================================================================
+
+@task(9908, category="System", name="Calc Status",
+      description="Quick check: is the calculation done? Converged? Final energy?")
+def task_calc_status(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Check the status of an ABACUS calculation in the current directory.
+
+    Looks for OUT.ABACUS/running_scf.log, reports SCF convergence,
+    final energy, SCF steps, ionic steps (if present), and wall time.
+    Works for both CPU and GPU builds (different log wording).
+    """
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== Calculation Status ===[/bold cyan]")
+    console.print()
+
+    out_dir = Path("OUT.ABACUS")
+    if not out_dir.is_dir():
+        # also try OUT.autotest etc.
+        candidates = sorted(Path(".").glob("OUT.*"))
+        if not candidates:
+            console.print("[red]No OUT.ABACUS (or OUT.*) directory found.[/red]")
+            console.print("[dim]Run this in the directory where you submitted the calculation.[/dim]")
+            return
+        out_dir = candidates[0]
+
+    log_files = sorted(out_dir.glob("running_*.log"))
+    if not log_files:
+        console.print(f"[red]No running_scf.log found in {out_dir}/[/red]")
+        console.print("[dim]The calculation may not have started yet, or ABACUS writes a different log name.[/dim]")
+        return
+
+    log = log_files[0]
+    try:
+        content = log.read_text(errors="ignore")
+    except Exception:
+        console.print(f"[red]Cannot read {log}[/red]")
+        return
+
+    # Completion
+    import re
+    completed = bool(re.search(
+        r"REACH|JOB\s+DONE|calculation\s+finished|PROGRAM\s+ENDS|END\s+OF\s+ABACUS|FINISH\s+Time|Finish\s+Time",
+        content, re.IGNORECASE,
+    ))
+
+    # SCF convergence
+    converged = bool(re.search(
+        r"converged|convergence\s+is\s+achieved|SCF\s+is\s+converged|SCF\s+done|reach\s+convergence",
+        content, re.IGNORECASE,
+    ))
+
+    # Final energy
+    e_ev = None
+    for pat in [
+        r"final\s+etot\s+is\s+(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*eV",
+        r"!FINAL_ETOT_IS\s*[=:]*\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*eV",
+        r"FINAL\s+ENERGY\s*[=:]\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)",
+    ]:
+        m = re.search(pat, content, re.IGNORECASE)
+        if m:
+            e_ev = float(m.group(1))
+            break
+
+    # SCF steps
+    scf_steps = 0
+    scf_matches = re.findall(r"E_KohnSham\s*[=:]\s*(-?\d+\.\d+)", content)
+    if scf_matches:
+        scf_steps = len(scf_matches)
+    else:
+        scf_matches = re.findall(r"(?:SCF|ITER)\s*=\s*(\d+)", content, re.IGNORECASE)
+        scf_steps = int(scf_matches[-1]) if scf_matches else 0
+
+    # Ionic steps
+    ionic_steps = len(re.findall(r"STEP\s*[=:]\s*\d+", content, re.IGNORECASE))
+    if ionic_steps == 0:
+        ionic_steps = len(re.findall(r"MD\s*STEP\s*[=:]\s*\d+", content, re.IGNORECASE))
+
+    # Wall time
+    wall_time = None
+    time_m = re.search(r"Total\s+Time\s*:?\s*(.+)", content, re.IGNORECASE)
+    if time_m:
+        wall_time = time_m.group(1).strip()
+
+    # Atom count
+    natom = 0
+    nm = re.search(r"TOTAL\s+ATOM\s+NUMBER\s*[=:]\s*(\d+)", content, re.IGNORECASE)
+    if nm:
+        natom = int(nm.group(1))
+
+    from abacuscopilot.core.constants import RY_TO_EV
+
+    console.print(f"  Log: {log}")
+    console.print(f"  Status: ", end="")
+    if completed:
+        console.print("[green]completed[/green]", end="")
+    else:
+        console.print("[yellow]running[/yellow]", end="")
+    console.print(" | SCF: ", end="")
+    if converged:
+        console.print("[green]converged[/green]")
+    else:
+        console.print("[yellow]not converged[/yellow]")
+
+    console.print(f"  SCF steps (last run): {scf_steps}")
+    if ionic_steps > 0:
+        console.print(f"  Ionic steps:           {ionic_steps}")
+    if e_ev is not None:
+        console.print(f"  Final energy:          {e_ev:.8f} eV"
+                      + (f"  ({e_ev/natom:.6f} eV/atom)" if natom > 0 else ""))
+    if wall_time:
+        console.print(f"  Wall time:             {wall_time}")
+    if natom > 0:
+        console.print(f"  Atoms:                 {natom}")
+    console.print()
