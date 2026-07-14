@@ -35,7 +35,11 @@ def parse_md_dump(filepath: str | Path) -> list[dict]:
     frames: list[dict] = []
     current_frame: dict | None = None
     in_table = False
-    lat_vecs: list[list[float]] = []
+    lat_vecs: list[list[float]] | None = None  # None = not collecting, [] = collecting
+    # DP MD_dump writes lattice info only every ~20 frames.  Carry the last
+    # seen lattice forward so every frame has it (needed for POSCAR export etc.)
+    last_lc: float | None = None
+    last_lv: np.ndarray | None = None
 
     with open(filepath, errors="ignore") as f:
         for line in f:
@@ -45,12 +49,15 @@ def parse_md_dump(filepath: str | Path) -> list[dict]:
 
             if s.startswith("MDSTEP:"):
                 if current_frame is not None and current_frame.get("atoms"):
+                    if "lattice_vectors" not in current_frame and last_lv is not None:
+                        current_frame["lattice_constant"] = last_lc
+                        current_frame["lattice_vectors"] = last_lv
                     frames.append(current_frame)
                 # Fast int parse: "MDSTEP:  123" → skip 7 chars, strip, int
                 step_str = s[7:].strip()
                 current_frame = {"step": int(step_str), "atoms": []}
                 in_table = False
-                lat_vecs = []
+                lat_vecs = None
                 continue
 
             if current_frame is None:
@@ -59,7 +66,7 @@ def parse_md_dump(filepath: str | Path) -> list[dict]:
             if s.startswith("LATTICE_CONSTANT:"):
                 # "LATTICE_CONSTANT: 1.0 Angstrom" → extract float
                 lc_str = s.split(":")[1].strip().split()[0]
-                current_frame["lattice_constant"] = float(lc_str)
+                last_lc = current_frame["lattice_constant"] = float(lc_str)
                 continue
 
             if s == "LATTICE_VECTORS":
@@ -67,11 +74,11 @@ def parse_md_dump(filepath: str | Path) -> list[dict]:
                 continue
 
             # Still collecting lattice vectors (list, not yet converted to array)
-            if isinstance(current_frame.get("lattice_vectors"), list) or lat_vecs:
+            if isinstance(current_frame.get("lattice_vectors"), list) or lat_vecs is not None:
                 if s.startswith("INDEX") or s.startswith("MDSTEP"):
                     if len(lat_vecs) == 3:
                         current_frame["lattice_vectors"] = np.array(lat_vecs)
-                    lat_vecs = []
+                    lat_vecs = None
                     continue
                 parts = s.split()
                 if len(parts) >= 3:
@@ -80,10 +87,12 @@ def parse_md_dump(filepath: str | Path) -> list[dict]:
                     except ValueError:
                         if len(lat_vecs) == 3:
                             current_frame["lattice_vectors"] = np.array(lat_vecs)
-                        lat_vecs = []
+                        lat_vecs = None
                         continue
                     if len(lat_vecs) == 3:
                         current_frame["lattice_vectors"] = np.array(lat_vecs)
+                        last_lv = current_frame["lattice_vectors"]
+                        lat_vecs = None  # done collecting
                     continue
 
             if s.startswith("INDEX"):
@@ -107,6 +116,9 @@ def parse_md_dump(filepath: str | Path) -> list[dict]:
                     in_table = False
 
     if current_frame is not None and current_frame.get("atoms"):
+        if "lattice_vectors" not in current_frame and last_lv is not None:
+            current_frame["lattice_constant"] = last_lc
+            current_frame["lattice_vectors"] = last_lv
         frames.append(current_frame)
 
     return frames
