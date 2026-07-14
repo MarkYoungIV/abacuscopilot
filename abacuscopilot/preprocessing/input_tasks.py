@@ -353,6 +353,19 @@ def _auto_prepare_files(console, params: InputParams, interactive: bool = True) 
     # files. Only when a STRU exists here (species may have come from a CIF).
     _sync_stru_filenames(console, params, interactive)
 
+    # Copy the Slurm sbatch template (sub.abacus) if the user configured one.
+    # Each server has its own template (GPU type, partitions, env setup).
+    sub_path = config.get("paths", {}).get("sub_abacus", "")
+    if sub_path:
+        sub_src = Path(sub_path)
+        if sub_src.exists():
+            import shutil
+            shutil.copy2(sub_src, Path(".") / "sub.abacus")
+            console.print("  [green]✓ sub.abacus[/green] copied from template")
+        else:
+            console.print(f"  [yellow]! sub.abacus template not found: {sub_path}[/yellow]")
+    console.print()
+
 
 def _sync_stru_filenames(console, params: InputParams, interactive: bool) -> None:
     """Update STRU's ATOMIC_SPECIES/NUMERICAL_ORBITAL filenames to real library
