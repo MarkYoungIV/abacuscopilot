@@ -620,30 +620,58 @@ def task_clean_directory(args: list[str] | None = None, interactive: bool = True
 # =============================================================================
 
 
-def _parse_md_progress(log_path: Path) -> list[dict]:
-    """Extract MD step summaries from a running_md.log file."""
+def _parse_md_progress(log_path: Path, tail: int = 0) -> list[dict]:
+    """Extract MD step summaries from a running_md.log file.
+
+    For large logs (1+ GB / 10M+ lines) we only parse the tail of the
+    file to avoid reading the entire thing into memory.  ABACUS writes
+    ~2700 lines per MD step, so we read ``tail`` × 3000 lines from the
+    end, which is orders of magnitude faster for live monitoring.
+
+    Args:
+        log_path: path to running_md.log.
+        tail: if > 0, read at most this many lines from the end of the file.
+              Use tail=0 to parse the entire file (may be slow on large logs).
+    """
+    import os
     import re as _re
 
-    content = log_path.read_text(errors="ignore")
-    results = []
     step_pat = _re.compile(r"STEP OF MOLECULAR DYNAMICS\s*:\s*(\d+)", _re.IGNORECASE)
     num_pat = _re.compile(r"(-?\d+\.?\d*(?:[eE][+-]?\d+)?)")
+    temp_header = _re.compile(
+        r"Energy\s*\(Ry\)\s+Potential\s*\(Ry\)\s+Kinetic\s*\(Ry\)\s+Temperature",
+        _re.IGNORECASE,
+    )
+
+    if tail > 0:
+        # Read only the tail — fast for huge logs.
+        # DP logs are ~27k lines/step; LCAO/PW ~2.7k.  Use 30k to be safe.
+        chunk_lines = tail * 30000
+        with open(log_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            if size > chunk_lines * 120:  # ~120 bytes per line avg
+                f.seek(max(0, size - chunk_lines * 120))
+                raw = f.read().decode("utf-8", errors="ignore")
+                # Skip partial first line (broken by the seek)
+                nl = raw.find("\n")
+                content = raw[nl + 1:] if nl >= 0 else raw
+            else:
+                content = log_path.read_text(errors="ignore")
+    else:
+        content = log_path.read_text(errors="ignore")
 
     lines = content.split("\n")
-    # Pattern for the temperature table header
-    temp_header = _re.compile(r"Energy\s*\(Ry\)\s+Potential\s*\(Ry\)\s+Kinetic\s*\(Ry\)\s+Temperature", _re.IGNORECASE)
-
+    results = []
     i = 0
     while i < len(lines):
         m = step_pat.search(lines[i])
         if m:
             step = int(m.group(1))
-            # Search forward for the temperature header, then take the next numeric line
             for j in range(i + 1, len(lines)):
                 if step_pat.search(lines[j]):
-                    break  # next step reached
+                    break
                 if temp_header.search(lines[j]):
-                    # Next meaningful line should have the 4 values
                     for k in range(j + 1, min(j + 5, len(lines))):
                         nums = num_pat.findall(lines[k])
                         if len(nums) >= 4:
@@ -690,63 +718,47 @@ def task_md_monitor(args: list[str] | None = None, interactive: bool = True) -> 
         return
 
 
-    data = _parse_md_progress(log_path)
-    total_steps = len(data)
+    import os, time
 
-    # Print all existing steps
-    for d in data:
-        console.print(
-            f"  [bold]{d['step']:>6d}[/bold]  "
-            f"E={d['energy_ry']:12.6f}  "
-            f"V={d['potential_ry']:12.6f}  "
-            f"K={d['kinetic_ry']:10.6f}  "
-            f"T=[green]{d['temperature_k']:8.2f}[/green] K"
-        )
+    # Fast tail-scan — works even on 1+ GB logs (reads only the last ~10K lines).
+    data = _parse_md_progress(log_path, tail=3)
+    if not data:
+        console.print("[yellow]No MD steps found in log yet.[/yellow]")
+        return
 
+    last = data[-1]
+    size_gb = os.path.getsize(log_path) / 1e9
+    console.print(f"  [dim]Log: {log_path.name} ({size_gb:.1f} GB)[/dim]")
+    console.print(
+        f"  Latest: step [bold]{last['step']:>6d}[/bold]  "
+        f"E={last['energy_ry']:12.6f} Ry  "
+        f"T=[green]{last['temperature_k']:8.2f}[/green] K"
+    )
+
+    known_step = last["step"]
     try:
         while True:
-            data = _parse_md_progress(log_path)
-            new_count = len(data) - total_steps
-
-            # Print new steps
-            if new_count > 0:
-                for d in data[-new_count:]:
+            new_data = _parse_md_progress(log_path, tail=3)
+            for d in new_data:
+                if d["step"] > known_step:
                     console.print(
                         f"  [bold]{d['step']:>6d}[/bold]  "
                         f"E={d['energy_ry']:12.6f}  "
-                        f"V={d['potential_ry']:12.6f}  "
-                        f"K={d['kinetic_ry']:10.6f}  "
                         f"T=[green]{d['temperature_k']:8.2f}[/green] K"
                     )
-                total_steps = len(data)
-
-            # Status bar — only on step change or first run, avoid flooding
-            if data:
-                last = data[-1]
-                current_status = (
-                    f"[dim]Step {last['step']}  |  "
-                    f"T = {last['temperature_k']:.1f} K  |  "
-                    f"E = {last['energy_ry']:.4f} Ry  |  "
-                    f"q / Ctrl+C to exit  |  {log_path}[/dim]"
-                )
-                if new_count > 0:
-                    console.print(current_status)
-            else:
-                if total_steps == 0:
-                    console.print(f"[dim]Waiting for data...  |  q / Ctrl+C to exit  |  {log_path}[/dim]")
+                    known_step = d["step"]
 
             # Check for exit key
             try:
-                import select
-                import sys as _sys
-
-                r, _, _ = select.select([_sys.stdin], [], [], 1.5)
+                import select, sys as _sys
+                r, _, _ = select.select([_sys.stdin], [], [], 2.0)
                 if r:
                     c = _sys.stdin.read(1)
                     if c in ("q", "Q", "\x03"):
                         break
             except (OSError, ValueError):
                 pass
+            time.sleep(0.5)
 
     except KeyboardInterrupt:
         pass
