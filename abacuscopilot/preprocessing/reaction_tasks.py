@@ -881,6 +881,12 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
 
     solver = solver_for(basis_type, device)
 
+    # Pre-compute the profile command (baked as literal string in neb_run.py)
+    if use_mpirun:
+        profile_cmd = f"{mpirun} -np {n_mpi} {abacus_bin}"
+    else:
+        profile_cmd = abacus_bin
+
     # Use .traj if available
     traj_files = sorted(Path(".").glob("path_*frames.traj"))
     traj_path = str(traj_files[0]) if traj_files else None
@@ -979,7 +985,7 @@ TRAJ_FILE = "{traj_path}"
 PSEUDO_DIR = "{pseudo_lib or './'}"
 {orbital_dir_line}
 profile = AbacusProfile(
-    command="{mpirun} -np {n_mpi} {abacus_bin}" if use_mpirun else "{abacus_bin}",
+    command="{profile_cmd}",
     omp_num_threads={n_omp},
     pseudo_dir=PSEUDO_DIR,
 {profile_orb_line})
