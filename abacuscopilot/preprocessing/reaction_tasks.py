@@ -915,8 +915,8 @@ opt.run(fmax=0.05, steps=200)
 
 Dependencies: ase, abacuslite (from ABACUS source: interfaces/ASE_interface/)
 Usage:
-  python neb_run.py               # run NEB
-  python neb_run.py --check       # validate structure only (no ABACUS needed)
+  {python_bin} neb_run.py               # run NEB
+  {python_bin} neb_run.py --check       # validate structure only (no ABACUS needed)
 """
 import os, sys
 import numpy as np
@@ -1038,6 +1038,9 @@ print("Done! Trajectory saved to neb.traj")
         )
     # abacuslite is now bundled with AbacusCopilot — no extra PYTHONPATH needed.
     slurm_pp_block = ""
+    # Use the absolute Python path so the SLURM job doesn't need conda activate
+    import sys as _sys1604
+    python_bin = _sys1604.executable
 
     if is_gpu:
         # GPU single card: one MPI task, one GPU. NEB images run sequentially
@@ -1054,7 +1057,7 @@ print("Done! Trajectory saved to neb.traj")
 {slurm_env_block}export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export CUDA_VISIBLE_DEVICES=0
 {slurm_pp_block}
-python neb_run.py
+{python_bin} neb_run.py
 '''
     else:
         # CPU: one MPI task per active image, n_mpi cores each (parallel=True).
@@ -1068,7 +1071,7 @@ python neb_run.py
 
 {slurm_env_block}export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 {slurm_pp_block}
-python neb_run.py
+{python_bin} neb_run.py
 '''
     slurm_path = "neb_slurm.sh"
     with open(slurm_path, "w") as f:
