@@ -6,7 +6,7 @@ interface and a command-line task mode for generating ABACUS input files,
 analyzing calculation outputs, and producing publication-quality figures.
 """
 
-__version__ = "0.1.14"
+__version__ = "0.1.15"
 __author__ = "AbacusCopilot Developers"
 __license__ = "GPL-3.0"
 
