@@ -1124,11 +1124,10 @@ export CUDA_VISIBLE_DEVICES=0
     console.print(f"  CI-NEB: {'Yes' if climb else 'No'}")
     console.print(f"  Two-stage: {'Yes' if do_two_stage else 'No'}")
     console.print()
-    console.print("  [bold]Usage (local):[/bold]")
-    console.print(f"    python {out_path}")
-    console.print("  [bold]Usage (SLURM):[/bold]")
+    console.print("  [bold]Submit via SLURM:[/bold]")
     console.print(f"    sbatch {slurm_path}")
-    console.print("  [dim]Requires: ase + abacuslite + ABACUS toolchain[/dim]")
+    console.print("  [yellow]Do NOT run 'python neb_run.py' directly — abacus/mpirun[/yellow]")
+    console.print("  [yellow]are only available inside the SLURM job environment.[/yellow]")
     console.print()
 
 
