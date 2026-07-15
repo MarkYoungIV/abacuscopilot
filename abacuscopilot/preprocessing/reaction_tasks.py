@@ -766,6 +766,9 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
                 break
     if not mpirun:
         mpirun = _mpirun_cfg  # bare name — needs PATH
+    # For single-GPU (mpi=1), abacuslite doesn't need mpirun at all.
+    # Use abacus directly so the script works without any env setup.
+    use_mpirun = bool(mpirun and Path(mpirun).exists()) if "/" in mpirun else bool(shutil.which(mpirun))
     abacus_src = paths_cfg.get("abacus_source", "")
     slurm_env = paths_cfg.get("slurm_env_file", "")
     n_total = len(images_traj) if from_traj else len(image_dirs)
@@ -974,7 +977,7 @@ TRAJ_FILE = "{traj_path}"
 PSEUDO_DIR = "{pseudo_lib or './'}"
 {orbital_dir_line}
 profile = AbacusProfile(
-    command="{mpirun} -np {n_mpi} {abacus_bin}",
+    command="{mpirun} -np {n_mpi} {abacus_bin}" if use_mpirun else "{abacus_bin}",
     omp_num_threads={n_omp},
     pseudo_dir=PSEUDO_DIR,
 {profile_orb_line})
