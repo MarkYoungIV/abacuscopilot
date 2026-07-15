@@ -648,26 +648,29 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
         sub_src = Path(sub_template)
         if sub_src.exists():
             content = sub_src.read_text()
-            # Replace abacus-style commands with "atst run neb.yaml"
+            # Use the absolute path to atst so the SLURM job doesn't need
+            # conda activate (atst lives in the abacuscopilot env).
+            import shutil as _shutil
+            atst_bin = _shutil.which("atst") or "atst"
             import re
             # Common patterns: "abacus", "mpirun -np N abacus", "srun abacus"
             content = re.sub(
                 r"^(mpirun\s+.*\s+)?abacus\b.*$",
-                "atst run neb.yaml",
+                f"{atst_bin} run neb.yaml",
                 content,
                 flags=re.MULTILINE,
             )
             # Also handle "srun abacus"
             content = re.sub(
                 r"^srun\s+abacus\b.*$",
-                "atst run neb.yaml",
+                f"{atst_bin} run neb.yaml",
                 content,
                 flags=re.MULTILINE,
             )
             out_name = "sub.abacus_neb_atst.sh"
             with open(out_name, "w") as f:
                 f.write(content)
-            console.print(f"  [green]✓ {out_name} copied from template[/green] (abacus → atst run neb.yaml)")
+            console.print(f"  [green]✓ {out_name} copied from template[/green] (→ {atst_bin} run neb.yaml)")
         else:
             console.print(f"  [yellow]! sub_script not found: {sub_template}[/yellow]")
     console.print()
