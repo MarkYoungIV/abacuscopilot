@@ -649,9 +649,15 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
         if sub_src.exists():
             content = sub_src.read_text()
             # Use the absolute path to atst so the SLURM job doesn't need
-            # conda activate (atst lives in the abacuscopilot env).
+            # conda activate.  shutil.which("atst") finds it in the current
+            # conda env; fall back to the same bin dir as the running python.
             import shutil as _shutil
-            atst_bin = _shutil.which("atst") or "atst"
+            import sys as _sys
+            atst_bin = _shutil.which("atst")
+            if not atst_bin:
+                atst_bin = str(Path(_sys.executable).parent / "atst")
+            if not Path(atst_bin).exists():
+                atst_bin = "atst"  # last resort — needs PATH in SLURM
             import re
             # Common patterns: "abacus", "mpirun -np N abacus", "srun abacus"
             content = re.sub(
