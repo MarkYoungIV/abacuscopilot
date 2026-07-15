@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from abacuscopilot import __version__
 from abacuscopilot.tasks import TaskRegistry
 
 
@@ -23,7 +24,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     """Build the main argument parser."""
     parser = argparse.ArgumentParser(
         prog="abacuscopilot",
-        description="A pre- and post-processing toolkit for the ABACUS DFT software",
+        description=f"A pre- and post-processing toolkit for the ABACUS DFT software (v{__version__})",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
