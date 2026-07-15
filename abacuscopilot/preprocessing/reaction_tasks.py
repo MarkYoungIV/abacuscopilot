@@ -667,30 +667,45 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
 
     image_dirs = sorted([d for d in Path(".").iterdir()
                          if d.is_dir() and d.name.isdigit() and len(d.name) == 2])
+    from_traj = False
+
     if len(image_dirs) < 3:
-        console.print("[red]No NEB image directories found.[/red]")
-        return
-
-    console.print(f"  Found {len(image_dirs)} images: "
-                  f"{image_dirs[0].name}/ -> {image_dirs[-1].name}/")
-
-    first_dir = image_dirs[0]
-    stru_file = first_dir / "STRU"
-    poscar_file = first_dir / "POSCAR"
-
-    if stru_file.exists():
-        from abacuscopilot.io.stru_file import read_stru
-        structure = read_stru(str(stru_file))
-        species = structure.species_order
-    elif poscar_file.exists():
+        traj_files = sorted(Path(".").glob("path_*frames.traj"))
+        if not traj_files:
+            console.print("[red]No NEB image directories or path_*frames.traj found.[/red]")
+            return
         from ase.io import read as ase_read
-        atoms = ase_read(str(poscar_file))
-        symbols = atoms.get_chemical_symbols()
+        images_traj = ase_read(str(traj_files[0]), index=":")
+        atoms0 = images_traj[0]
+        symbols = atoms0.get_chemical_symbols()
         seen = set()
         species = [s for s in symbols if not (s in seen or seen.add(s))]
+        # Create a dummy structure from the first frame for cell info
+        from abacuscopilot.core.models import Structure
+        structure = Structure.from_ase(atoms0)
+        stru_file = Path()
+        poscar_file = Path()
+        from_traj = True
+        console.print(f"  Reading {len(images_traj)} images from {traj_files[0].name}")
     else:
-        console.print(f"[red]No STRU or POSCAR in {first_dir}/[/red]")
-        return
+        console.print(f"  Found {len(image_dirs)} images: "
+                      f"{image_dirs[0].name}/ -> {image_dirs[-1].name}/")
+        first_dir = image_dirs[0]
+        stru_file = first_dir / "STRU"
+        poscar_file = first_dir / "POSCAR"
+        if stru_file.exists():
+            from abacuscopilot.io.stru_file import read_stru
+            structure = read_stru(str(stru_file))
+            species = structure.species_order
+        elif poscar_file.exists():
+            from ase.io import read as ase_read
+            atoms = ase_read(str(poscar_file))
+            symbols = atoms.get_chemical_symbols()
+            seen = set()
+            species = [s for s in symbols if not (s in seen or seen.add(s))]
+        else:
+            console.print(f"[red]No STRU or POSCAR in {first_dir}/[/red]")
+            return
 
     from abacuscopilot.config import load_config
     config = load_config()
@@ -702,6 +717,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     mpirun = paths_cfg.get("mpirun", "mpirun")
     abacus_src = paths_cfg.get("abacus_source", "")
     slurm_env = paths_cfg.get("slurm_env_file", "")
+    n_total = len(images_traj) if from_traj else len(image_dirs)
 
     if interactive:
         console.print(f"  [dim]ABACUS source (for PYTHONPATH): {abacus_src or 'not set'}[/dim]")
@@ -780,7 +796,9 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
                                    "kspacing (auto mesh)")
         use_kpt = "KPT" in kpt_mode
         if use_kpt:
-            if stru_file.exists():
+            if from_traj:
+                cell_a = structure.lattice.cell_angstrom
+            elif stru_file.exists():
                 cell_a = structure.lattice.cell_angstrom
             elif poscar_file.exists():
                 cell_a = _ase_read(str(poscar_file)).cell.array
@@ -988,7 +1006,7 @@ print("Done! Trajectory saved to neb.traj")
 
     console.print()
     # Also generate SLURM script
-    n_active = len(image_dirs) - 2  # exclude endpoints
+    n_active = n_total - 2  # exclude endpoints
     # SLURM environment setup — driven by config so each server can use its
     # own CUDA/compiler/ABACUS env script.  When slurm_env_file is unset,
     # the script has a commented placeholder for the user to fill in.
@@ -1052,11 +1070,11 @@ python neb_run.py
     console.print(f"[green]ASE NEB script written: {out_path}[/green]")
     console.print(f"[green]SLURM script written: {slurm_path}[/green]")
     if is_gpu:
-        console.print(f"  Images: {len(image_dirs)} ({n_active} active) | Hardware: GPU "
+        console.print(f"  Images: {n_total} ({n_active} active) | Hardware: GPU "
                       f"(device=gpu, ks_solver={solver}, omp={n_omp}, parallel=False)")
     else:
         total_cores = n_mpi * n_active
-        console.print(f"  Images: {len(image_dirs)} ({n_active} active) | Hardware: CPU "
+        console.print(f"  Images: {n_total} ({n_active} active) | Hardware: CPU "
                       f"(ks_solver={solver}, parallel=True)")
         console.print(f"  Cores: {n_mpi}/image × {n_active} = {total_cores} total")
     if use_kpt and kpt_grid:
