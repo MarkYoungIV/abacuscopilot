@@ -49,7 +49,7 @@ from ase.atoms import Atoms
 from ase.dft.kpoints import BandPath
 from ase.io import read
 
-from abacuslite.io.generalio import (
+from .io.generalio import (
     file_safe_backup,
     read_input,
     read_stru,
@@ -364,9 +364,9 @@ class AbacusTemplate(CalculatorTemplate):
         read_abacus_out = lambda fn: None
         global __LEGACYIO__
         if __LEGACYIO__:
-            from abacuslite.io.legacyio import read_abacus_out
+            from .io.legacyio import read_abacus_out
         else:
-            from abacuslite.io.latestio import read_abacus_out
+            from .io.latestio import read_abacus_out
 
         outdir = directory / f'OUT.{self.suffix}'
         # only the last frame

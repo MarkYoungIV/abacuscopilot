@@ -16,7 +16,7 @@ from ase.stress import full_3x3_to_voigt_6_stress
 
 # some output formats are not updated,
 # for these cases, we import from the legacyio module
-from abacuslite.io.legacyio import (
+from .legacyio import (
     read_kpoints_from_running_log,
     read_energies_from_running_log,
     read_traj_from_md_dump,
