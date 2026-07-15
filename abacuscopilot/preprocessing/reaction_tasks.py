@@ -716,13 +716,6 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     n_total = len(images_traj) if from_traj else len(image_dirs)
 
     if interactive:
-        console.print(f"  [dim]ABACUS source (for PYTHONPATH): {abacus_src or 'not set'}[/dim]")
-        src_in = console.input("  ABACUS source path [Enter=skip]: ").strip()
-        if src_in:
-            abacus_src = src_in
-            paths_cfg["abacus_source"] = src_in
-            from abacuscopilot.config import save_config
-            save_config(config)
         console.print(f"  [dim]SLURM env file (CUDA/compiler setup): {slurm_env or 'not set'}[/dim]")
         env_in = console.input("  SLURM env script path [Enter=skip]: ").strip()
         if env_in:
@@ -912,17 +905,8 @@ if CHECK_ONLY:
 from ase.mep import NEB
 from ase.optimize import FIRE
 
-# === Path setup ===
-# Add ABACUS interface to Python path (auto-filled by AbacusCopilot)
-_ABACUS_SRC = "{abacus_src}"
-if _ABACUS_SRC and _ABACUS_SRC not in sys.path:
-    _ase_iface = os.path.join(_ABACUS_SRC, "interfaces", "ASE_interface")
-    if os.path.isdir(_ase_iface):
-        sys.path.insert(0, _ase_iface)
-    else:
-        print(f"Warning: {{_ase_iface}} not found — adjust ABACUS source path")
-
-from abacuslite import Abacus, AbacusProfile
+# abacuslite is bundled with AbacusCopilot (interfaces/ASE_interface/)
+from abacuscopilot.interfaces.ASE_interface.abacuslite import Abacus, AbacusProfile
 
 # === Configuration ===
 N_MPI = {n_mpi}
@@ -1013,18 +997,8 @@ print("Done! Trajectory saved to neb.traj")
             "# === Environment: source your CUDA + ABACUS setup (configure in\n"
             "#     abacuscopilot config → System Setup → 配置生成) ===\n"
         )
-    # abacuslite PYTHONPATH — required for neb_run.py to import from
-    # ABACUS source (interfaces/ASE_interface/).
-    if abacus_src:
-        slurm_pp_block = (
-            f'# ABACUS ASE interface (abacuslite)\n'
-            f'export PYTHONPATH="{abacus_src}/interfaces/ASE_interface:$PYTHONPATH"\n'
-        )
-    else:
-        slurm_pp_block = (
-            "# ABACUS ASE interface (abacuslite) — set abacus_source in config:\n"
-            "# export PYTHONPATH=\"<ABACUS_source>/interfaces/ASE_interface:$PYTHONPATH\"\n"
-        )
+    # abacuslite is now bundled with AbacusCopilot — no extra PYTHONPATH needed.
+    slurm_pp_block = ""
 
     if is_gpu:
         # GPU single card: one MPI task, one GPU. NEB images run sequentially
