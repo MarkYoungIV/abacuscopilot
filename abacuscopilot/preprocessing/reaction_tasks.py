@@ -746,8 +746,8 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     n_total = len(images_traj) if from_traj else len(image_dirs)
 
     if interactive:
-        console.print(f"  [dim]SLURM env file (CUDA/compiler setup): {slurm_env or 'not set'}[/dim]")
-        env_in = console.input("  SLURM env script path [Enter=skip]: ").strip()
+        console.print(f"  [dim]SLURM env script (CUDA/compiler/conda): {slurm_env or 'not set'}[/dim]")
+        env_in = console.input("  Change? [Enter=keep]: ").strip()
         if env_in:
             slurm_env = env_in
             paths_cfg["slurm_env_file"] = env_in
