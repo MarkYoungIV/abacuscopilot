@@ -749,11 +749,23 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     pseudo_lib = libs.get("pseudo_library", "")
     orbital_lib = libs.get("orbital_library", "")
     abacus_bin = paths_cfg.get("abacus_binary", "abacus")
-    # Resolve mpirun to absolute path so neb_run.py works even without
-    # a SLURM env script setting up PATH.
+    # Resolve mpirun to absolute path.  Also check common locations since
+    # it may not be on PATH outside of a SLURM env script.
     import shutil
     _mpirun_cfg = paths_cfg.get("mpirun", "mpirun")
-    mpirun = shutil.which(_mpirun_cfg) or _mpirun_cfg
+    mpirun = shutil.which(_mpirun_cfg)
+    if not mpirun:
+        # search common locations
+        import sys
+        for d in (Path(sys.executable).parent,
+                  Path.home() / "softwares" / "miniforge3" / "bin",
+                  Path("/usr/bin"), Path("/usr/local/bin")):
+            p = d / _mpirun_cfg
+            if p.exists():
+                mpirun = str(p)
+                break
+    if not mpirun:
+        mpirun = _mpirun_cfg  # bare name — needs PATH
     abacus_src = paths_cfg.get("abacus_source", "")
     slurm_env = paths_cfg.get("slurm_env_file", "")
     n_total = len(images_traj) if from_traj else len(image_dirs)
