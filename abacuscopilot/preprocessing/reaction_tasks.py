@@ -664,7 +664,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
                 content,
                 flags=re.MULTILINE,
             )
-            out_name = "sub.abacus-neb_atst"
+            out_name = "sub.abacus_neb_atst.sh"
             with open(out_name, "w") as f:
                 f.write(content)
             console.print(f"  [green]✓ {out_name} copied from template[/green] (abacus → atst run neb.yaml)")
