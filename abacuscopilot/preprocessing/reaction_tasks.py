@@ -749,9 +749,11 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     pseudo_lib = libs.get("pseudo_library", "")
     orbital_lib = libs.get("orbital_library", "")
     abacus_bin = paths_cfg.get("abacus_binary", "abacus")
+    # Resolve abacus binary to absolute path (same search as mpirun below).
+    import shutil
+    abacus_bin = shutil.which(abacus_bin) or abacus_bin
     # Resolve mpirun to absolute path.  Also check common locations since
     # it may not be on PATH outside of a SLURM env script.
-    import shutil
     _mpirun_cfg = paths_cfg.get("mpirun", "mpirun")
     mpirun = shutil.which(_mpirun_cfg)
     if not mpirun:
