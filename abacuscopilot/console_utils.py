@@ -22,7 +22,9 @@ def _get_console():
 def _prompt(console, question: str, default: Any = None) -> str:
     """Prompt the user for input with an optional default value."""
     if default is not None:
-        result = console.input(f"  {question} [{default}]: ")
+        console.print(f"  {question} [", end="")
+        console.print(str(default), style="dim", end="")
+        result = console.input("]: ")
         return result.strip() if result.strip() else str(default)
     return console.input(f"  {question}: ").strip()
 
