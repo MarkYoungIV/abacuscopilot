@@ -153,11 +153,11 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
     console.print()
 
     # Find initial and final structures
-    # Auto-detect: STRU_ini/STRU_fin or POSCAR_ini/POSCAR_fin
+    # Auto-detect: STRU_ini/STRU_fin, POSCAR_ini/fin, or relaxed STRU_ION_D
     init_path = "STRU_ini" if Path("STRU_ini").exists() else \
-                ("POSCAR_ini" if Path("POSCAR_ini").exists() else "POSCAR_init")
+                ("POSCAR_ini" if Path("POSCAR_ini").exists() else "init/OUT.ABACUS/STRU_ION_D")
     final_path = "STRU_fin" if Path("STRU_fin").exists() else \
-                 ("POSCAR_fin" if Path("POSCAR_fin").exists() else "POSCAR_final")
+                 ("POSCAR_fin" if Path("POSCAR_fin").exists() else "final/OUT.ABACUS/STRU_ION_D")
 
     if interactive:
         init_path = _prompt(console, "Initial structure (POSCAR/STRU/CIF)", init_path)
@@ -253,11 +253,11 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
     console.print("[bold cyan]=== NEB Path — IDPP ===[/bold cyan]")
     console.print()
 
-    # Auto-detect: STRU_ini/STRU_fin or POSCAR_ini/POSCAR_fin
+    # Auto-detect: STRU_ini/STRU_fin, POSCAR_ini/fin, or relaxed STRU_ION_D
     init_path = "STRU_ini" if Path("STRU_ini").exists() else \
-                ("POSCAR_ini" if Path("POSCAR_ini").exists() else "POSCAR_init")
+                ("POSCAR_ini" if Path("POSCAR_ini").exists() else "init/OUT.ABACUS/STRU_ION_D")
     final_path = "STRU_fin" if Path("STRU_fin").exists() else \
-                 ("POSCAR_fin" if Path("POSCAR_fin").exists() else "POSCAR_final")
+                 ("POSCAR_fin" if Path("POSCAR_fin").exists() else "final/OUT.ABACUS/STRU_ION_D")
 
     if interactive:
         init_path = _prompt(console, "Initial structure (POSCAR/STRU/CIF)", init_path)
