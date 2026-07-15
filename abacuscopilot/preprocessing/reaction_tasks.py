@@ -749,7 +749,11 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     pseudo_lib = libs.get("pseudo_library", "")
     orbital_lib = libs.get("orbital_library", "")
     abacus_bin = paths_cfg.get("abacus_binary", "abacus")
-    mpirun = paths_cfg.get("mpirun", "mpirun")
+    # Resolve mpirun to absolute path so neb_run.py works even without
+    # a SLURM env script setting up PATH.
+    import shutil
+    _mpirun_cfg = paths_cfg.get("mpirun", "mpirun")
+    mpirun = shutil.which(_mpirun_cfg) or _mpirun_cfg
     abacus_src = paths_cfg.get("abacus_source", "")
     slurm_env = paths_cfg.get("slurm_env_file", "")
     n_total = len(images_traj) if from_traj else len(image_dirs)
