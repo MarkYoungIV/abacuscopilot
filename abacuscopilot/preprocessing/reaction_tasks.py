@@ -196,17 +196,11 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
 
     images = _linear_interpolate(atoms_init, atoms_final, n_images)
 
-    fmt = "STRU"
-    if interactive:
-        fmt = _prompt_choice(console, "Output format",
-                             ["STRU (ABACUS)", "POSCAR (VASP)"],
-                             "STRU (ABACUS)")
-        fmt = "STRU" if "STRU" in fmt else "POSCAR"
-
     # 00/01/... directories are not used by downstream NEB tasks (1603/1604
     # read path_*frames.traj instead).  They exist as a visual aid for
     # developers who want to inspect individual images manually.
     write_dirs = False
+    fmt = "STRU"
     if interactive:
         want = _prompt_choice(
             console,
@@ -215,6 +209,12 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
             "No (skip)",
         )
         write_dirs = "Yes" in want
+        if write_dirs:
+            fmt = _prompt_choice(console, "Output format",
+                                 ["STRU (ABACUS)", "POSCAR (VASP)"],
+                                 "STRU (ABACUS)")
+            fmt = "STRU" if "STRU" in fmt else "POSCAR"
+
     if write_dirs:
         _write_images(images, fmt)
 
@@ -296,14 +296,27 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
 
     images = _idpp_interpolate(atoms_init, atoms_final, n_images)
 
+    # 00/01/... directories are not used by downstream NEB tasks (1603/1604
+    # read path_*frames.traj instead).  They exist as a visual aid for
+    # developers who want to inspect individual images manually.
+    write_dirs = False
     fmt = "STRU"
     if interactive:
-        fmt = _prompt_choice(console, "Output format",
-                             ["STRU (ABACUS)", "POSCAR (VASP)"],
-                             "STRU (ABACUS)")
-        fmt = "STRU" if "STRU" in fmt else "POSCAR"
+        want = _prompt_choice(
+            console,
+            "Generate per-image directories 00/ 01/ ...? (developer aid, not needed for NEB)",
+            ["Yes, generate them", "No (skip)"],
+            "No (skip)",
+        )
+        write_dirs = "Yes" in want
+        if write_dirs:
+            fmt = _prompt_choice(console, "Output format",
+                                 ["STRU (ABACUS)", "POSCAR (VASP)"],
+                                 "STRU (ABACUS)")
+            fmt = "STRU" if "STRU" in fmt else "POSCAR"
 
-    _write_images(images, fmt)
+    if write_dirs:
+        _write_images(images, fmt)
 
     _write_chain_structure(images, atoms_init.cell)
 
@@ -311,7 +324,8 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
     traj_path = f"path_{n_images + 2}frames.traj"
     ase_write(traj_path, images)
     console.print()
-    console.print(f"[green]✓ {n_images + 2} images ({fmt}) written to 00/ → {n_images + 1:02d}/[/green]")
+    if write_dirs:
+        console.print(f"[green]✓ {n_images + 2} images ({fmt}) written to 00/ → {n_images + 1:02d}/[/green]")
     console.print("[green]✓ Chain view: trj.STRU + trj.vasp (all frames in one structure)[/green]")
     console.print(f"[green]✓ Trajectory: {traj_path} (open with task 206)[/green]")
     console.print("  [dim]Copy INPUT and KPT to each subdirectory before running NEB[/dim]")
