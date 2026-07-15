@@ -22,9 +22,7 @@ def _get_console():
 def _prompt(console, question: str, default: Any = None) -> str:
     """Prompt the user for input with an optional default value."""
     if default is not None:
-        from rich.markup import escape
-        safe_default = escape(str(default))
-        result = console.input(f"  {question} [dim][{safe_default}][/dim]: ")
+        result = console.input(f"  {question} [{default}]: ")
         return result.strip() if result.strip() else str(default)
     return console.input(f"  {question}: ").strip()
 
