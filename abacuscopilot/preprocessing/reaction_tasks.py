@@ -1528,6 +1528,13 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
 
     console.print(f"[green]✓ Energy profile: {out_png}[/green]")
     console.print(f"[green]✓ Data file: {out_dat}[/green]")
+
+    # Export converged NEB chain as .traj and .vasp
+    from ase.io import write as ase_write
+    ase_write("converged.traj", images)
+    ase_write("converged.vasp", images, format="vasp")
+    console.print(f"[green]✓ Converged chain: converged.traj + converged.vasp[/green]")
+
     console.print(f"  Barrier: {spline_barrier:.4f} eV (spline)" if has_spline
                   else f"  Barrier: {barrier:.4f} eV")
     console.print(f"  Saddle:  image {saddle_idx}/{n_img - 1}" +
