@@ -349,30 +349,46 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
 
     image_dirs = sorted([d for d in Path(".").iterdir()
                          if d.is_dir() and d.name.isdigit() and len(d.name) == 2])
-    if len(image_dirs) < 3:
-        console.print("[red]No NEB image directories found (00/, 01/, ...).[/red]")
-        console.print("[dim]Run task 1601 or 1602 first to generate NEB paths.[/dim]")
-        return
+    n_images = len(image_dirs)
+    first_dir = image_dirs[0] if image_dirs else None
 
-    console.print(f"  Found {len(image_dirs)} image directories: "
-                  f"{image_dirs[0].name}/ -> {image_dirs[-1].name}/")
-
-    first_dir = image_dirs[0]
-    stru_file = first_dir / "STRU"
-    poscar_file = first_dir / "POSCAR"
-    if stru_file.exists():
-        from abacuscopilot.io.stru_file import read_stru
-        structure = read_stru(str(stru_file))
-        species = structure.species_order
-    elif poscar_file.exists():
+    # If no 00/01/... directories, fall back to the path_*frames.traj that
+    # 1601/1602 always produce (the image dirs are optional since v0.1.8).
+    from_traj = False
+    if n_images < 3:
+        traj_files = sorted(Path(".").glob("path_*frames.traj"))
+        if not traj_files:
+            console.print("[red]No NEB image directories or path_*frames.traj found.[/red]")
+            console.print("[dim]Run task 1601 or 1602 first to generate NEB paths.[/dim]")
+            return
         from ase.io import read as ase_read
-        atoms = ase_read(str(poscar_file))
-        symbols = atoms.get_chemical_symbols()
+        images = ase_read(str(traj_files[0]), index=":")
+        n_images = len(images)
+        atoms0 = images[0]
+        symbols = atoms0.get_chemical_symbols()
         seen = set()
         species = [s for s in symbols if not (s in seen or seen.add(s))]
+        cell_a = atoms0.get_cell().array
+        from_traj = True
+        console.print(f"  Reading {n_images} images from {traj_files[0].name}")
     else:
-        console.print(f"[red]No STRU or POSCAR found in {first_dir}/[/red]")
-        return
+        console.print(f"  Found {n_images} image directories: "
+                      f"{first_dir.name}/ -> {image_dirs[-1].name}/")
+        stru_file = first_dir / "STRU"
+        poscar_file = first_dir / "POSCAR"
+        if stru_file.exists():
+            from abacuscopilot.io.stru_file import read_stru
+            structure = read_stru(str(stru_file))
+            species = structure.species_order
+        elif poscar_file.exists():
+            from ase.io import read as ase_read
+            atoms = ase_read(str(poscar_file))
+            symbols = atoms.get_chemical_symbols()
+            seen = set()
+            species = [s for s in symbols if not (s in seen or seen.add(s))]
+        else:
+            console.print(f"[red]No STRU or POSCAR found in {first_dir}/[/red]")
+            return
 
     console.print(f"  Species: {', '.join(species)}")
 
@@ -384,12 +400,13 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     is_lcao = is_lcao_basis(basis_type)
 
     # Read cell for KPT auto-calculation
-    cell_a = np.eye(3)
-    if stru_file.exists():
-        cell_a = structure.lattice.cell_angstrom
-    elif poscar_file.exists():
-        from ase.io import read as _ase_read
-        cell_a = _ase_read(str(poscar_file)).cell.array
+    if not from_traj:
+        cell_a = np.eye(3)
+        if stru_file.exists():
+            cell_a = structure.lattice.cell_angstrom
+        elif poscar_file.exists():
+            from ase.io import read as _ase_read
+            cell_a = _ase_read(str(poscar_file)).cell.array
 
     # Resolve pseudo/orbital filenames
     from abacuscopilot.config import load_config
@@ -401,7 +418,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
 
     pp_map = {}
     orb_map = {}
-    if stru_file.exists():
+    if not from_traj and stru_file.exists():
         pp_map = dict(structure.pseudo_files)
         if is_lcao:
             orb_map = dict(structure.orbital_files)
@@ -522,7 +539,8 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
         console.print(f"  [dim]Using: {init_chain}[/dim]")
 
     # Build YAML config
-    n_images = len(image_dirs)
+    if not from_traj:
+        n_images = len(image_dirs)
     calc_section = {
         "type": "neb",
         "init_chain": init_chain,
