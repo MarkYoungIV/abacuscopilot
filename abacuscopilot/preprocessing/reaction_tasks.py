@@ -1532,8 +1532,15 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
     # Export converged NEB chain as .traj and .vasp
     from ase.io import write as ase_write
     ase_write("converged.traj", images)
-    ase_write("converged.vasp", images, format="vasp")
-    console.print(f"[green]✓ Converged chain: converged.traj + converged.vasp[/green]")
+    try:
+        ase_write("converged.vasp", images, format="vasp")
+    except Exception:
+        # VASP format can't write multi-frame — write individual POSCARs instead
+        for i, img in enumerate(images):
+            ase_write(f"converged_{i:02d}.vasp", img, format="vasp", direct=True)
+        console.print(f"[green]✓ Converged chain: converged.traj + converged_00__{n_img-1:02d}.vasp[/green]")
+    else:
+        console.print(f"[green]✓ Converged chain: converged.traj + converged.vasp[/green]")
 
     console.print(f"  Barrier: {spline_barrier:.4f} eV (spline)" if has_spline
                   else f"  Barrier: {barrier:.4f} eV")
