@@ -34,6 +34,7 @@ dependencies = [
     "pyyaml>=6.0",
     "ase>=3.22",
     "seekpath>=2.0",
+    "atst-tools[parallel]==2.1.2",
 ]
 
 [project.optional-dependencies]

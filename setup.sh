@@ -106,7 +106,8 @@ else
         exit 1
     fi
 fi
-echo -e "        ${GREEN}✓${NC} numpy, scipy, matplotlib, rich, pyyaml, ase installed"
+echo -e "        ${GREEN}✓${NC} numpy, scipy, matplotlib, rich, pyyaml, ase, seekpath installed"
+echo -e "        ${GREEN}✓${NC} atst-tools + NEB support installed"
 echo -e "        ${GREEN}✓${NC} abacuscopilot command registered"
 
 # --- 4. Generate default config ---
