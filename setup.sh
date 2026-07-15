@@ -87,16 +87,17 @@ if [[ "${IS_UPGRADE}" == "1" ]] && pip show abacuscopilot >/dev/null 2>&1; then
     pip uninstall -y abacuscopilot >/dev/null 2>&1 || true
 fi
 
-# 3c. Editable install — try the configured mirror first; fall back to
-#     default PyPI if the mirror is unreachable (some machines can't
-#     reach e.g. pypi.tuna.tsinghua.edu.cn).
+# 3c. Editable install — tiered mirror fallback:
+#      1. Alibaba Cloud (fast, rarely blocked)
+#      2. Tsinghua (may be blocked on some networks)
+#      3. Default PyPI (global backstop)
 ALI_INDEX="https://mirrors.aliyun.com/pypi/simple/"
 PIP_INSTALL="pip install -e . --upgrade --timeout 15 --retries 2"
 
-if ${PIP_INSTALL} -i "${PIP_INDEX}" 2>/dev/null; then
+if ${PIP_INSTALL} -i "${ALI_INDEX}" 2>/dev/null; then
     :
-elif ${PIP_INSTALL} -i "${ALI_INDEX}" 2>/dev/null; then
-    echo -e "        ${YELLOW}Tsinghua unreachable — used Alibaba Cloud mirror${NC}"
+elif ${PIP_INSTALL} -i "${PIP_INDEX}" 2>/dev/null; then
+    echo -e "        ${YELLOW}Alibaba unreachable — used Tsinghua mirror${NC}"
 else
     echo -e "        ${YELLOW}Both mirrors unreachable — falling back to default PyPI${NC}"
     if ! ${PIP_INSTALL}; then
