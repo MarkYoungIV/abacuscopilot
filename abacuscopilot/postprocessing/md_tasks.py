@@ -2401,7 +2401,9 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
 
     steps = np.array([d["step"] for d in data])
     times = steps * md_dt / 1000.0  # fs -> ps
-    energies = np.array([d["energy_ry"] for d in data])
+    from abacuscopilot.core.constants import RY_TO_EV
+    energies_ry = np.array([d["energy_ry"] for d in data])
+    energies = energies_ry * RY_TO_EV  # Ry → eV
     temperatures = np.array([d["temperature_k"] for d in data])
 
     console.print(f"  Steps: {steps[0]} -> {steps[-1]} ({len(steps)} points)")
@@ -2410,7 +2412,7 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
 
     out_dat = "energy_temperature.dat"
     with open(out_dat, "w") as f:
-        f.write("# time(ps)  energy(Ry)  temperature(K)\n")
+        f.write("# time(ps)  energy(eV)  temperature(K)\n")
         for t, e, temp in zip(times, energies, temperatures):
             f.write(f"{t:.6f}  {e:.8f}  {temp:.4f}\n")
     console.print(f"  [green]... Data: {out_dat}[/green]")
@@ -2435,10 +2437,10 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
     if "Dual" in mode:
         fig, ax1 = plt.subplots(figsize=(8, 6))
         ax2 = ax1.twinx()
-        ax1.plot(times, energies, "-", color="#1f77b4", linewidth=1.2, label="Energy (Ry)")
+        ax1.plot(times, energies, "-", color="#1f77b4", linewidth=1.2, label="Energy (eV)")
         ax2.plot(times, temperatures, "-", color="#d62728", linewidth=1.2, label="Temperature (K)")
         ax1.set_xlabel("Time (ps)")
-        ax1.set_ylabel("Energy (Ry)", color="#1f77b4")
+        ax1.set_ylabel("Energy (eV)", color="#1f77b4")
         ax2.set_ylabel("Temperature (K)", color="#d62728")
         ax1.tick_params(axis="y", labelcolor="#1f77b4", direction="out")
         ax2.tick_params(axis="y", labelcolor="#d62728", direction="out")
@@ -2455,7 +2457,7 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
     else:
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
         ax1.plot(times, energies, "-", color="#1f77b4", linewidth=1.2)
-        ax1.set_ylabel("Energy (Ry)")
+        ax1.set_ylabel("Energy (eV)")
         ax1.set_title("MD - Energy & Temperature vs Time")
         ax2.plot(times, temperatures, "-", color="#d62728", linewidth=1.2)
         ax2.set_xlabel("Time (ps)")
