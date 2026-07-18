@@ -171,7 +171,7 @@ TEMPLATE_LCAO_MD = {
     "md_type": ("nvt", "or npt, nve, langevin, fire, msst"),
     "md_nstep": ("10000", "number of steps"), "md_dt": ("1", "unit in fs"),
     "md_tfirst": ("300", "unit in K"), "md_tlast": ("300", "unit in K"),
-    "md_dumpfreq": 1, "md_restartfreq": 1, "out_level": "h",
+    "md_dumpfreq": 1, "md_restartfreq": 1, "out_level": "m",  # MD simplified output — keeps logs much smaller
     "_section_hints": {"System variables": ["kspacing            0.14 # unit in 1/bohr"]},
     "_comment_hints": {"cal_force": "1", "cal_stress": "1"},
 }
@@ -187,7 +187,7 @@ TEMPLATE_PW_MD = {
     "md_type": ("nvt", "or npt, nve, langevin, fire, msst"),
     "md_nstep": ("10000", "number of steps"), "md_dt": ("1", "unit in fs"),
     "md_tfirst": ("300", "unit in K"), "md_tlast": ("300", "unit in K"),
-    "md_dumpfreq": 1, "md_restartfreq": 1, "out_level": "h",
+    "md_dumpfreq": 1, "md_restartfreq": 1, "out_level": "m",  # MD simplified output — keeps logs much smaller
     "_section_hints": {"System variables": ["kspacing            0.14 # unit in 1/bohr"]},
     "_comment_hints": {"cal_force": "1", "cal_stress": "1"},
 }

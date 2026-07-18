@@ -511,7 +511,7 @@ class InputParams:
     md_damp: float = 0.5
     md_dumpfreq: int = 0        # MD_dump output frequency (steps, 0=unset)
     md_restartfreq: int = 0     # restart file output frequency (steps, 0=unset)
-    out_level: str = ""         # output verbosity: m (medium) or h (high)
+    out_level: str = ""         # output verbosity: ie (SCF) / i (relax) / m (MD simplified)
     dump_force: int = 0         # write forces to MD_dump
     dump_vel: int = 0           # write velocities to MD_dump
 
