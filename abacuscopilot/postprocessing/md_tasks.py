@@ -2361,3 +2361,115 @@ def _write_md_frame_nvt(fout, step, cell, lines, start, natoms, hdr, labels):
                    f"0.0  0.0  0.0  0.0  0.0  0.0\n")
 
     fout.write("\n")
+
+
+# =============================================================================
+# Task 1409: Energy & Temperature vs Time
+# =============================================================================
+
+@task(1409, category="MD Analysis", name="E-T vs Time",
+      description="Extract energy and temperature vs time from running_md.log, plot and save")
+def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Read MD step summaries from running_md.log, output energy & temperature
+    as a function of time, and produce publication-quality plots.
+    """
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== Energy & Temperature vs Time ===[/bold cyan]")
+    console.print()
+
+    from abacuscopilot.preprocessing.system_tasks import _find_md_log, _parse_md_progress
+    log_path = _find_md_log()
+    if log_path is None:
+        console.print("[red]No running_md.log found (OUT.ABACUS/running_md.log).[/red]")
+        return
+
+    console.print(f"  [dim]Log: {log_path}[/dim]")
+
+    data = _parse_md_progress(log_path, tail=0)
+    if not data:
+        console.print("[red]No MD steps found in log.[/red]")
+        return
+
+    md_dt = _read_md_dt(str(log_path.parent))
+    try:
+        md_dt = float(md_dt)
+    except (ValueError, TypeError):
+        console.print("[red]Cannot read md_dt from INPUT.[/red]")
+        return
+
+    steps = np.array([d["step"] for d in data])
+    times = steps * md_dt / 1000.0  # fs -> ps
+    energies = np.array([d["energy_ry"] for d in data])
+    temperatures = np.array([d["temperature_k"] for d in data])
+
+    console.print(f"  Steps: {steps[0]} -> {steps[-1]} ({len(steps)} points)")
+    console.print(f"  Time:  {times[0]:.2f} -> {times[-1]:.2f} ps  (md_dt={md_dt} fs)")
+    console.print(f"  T:     {temperatures.min():.1f} -> {temperatures.max():.1f} K")
+
+    out_dat = "energy_temperature.dat"
+    with open(out_dat, "w") as f:
+        f.write("# time(ps)  energy(Ry)  temperature(K)\n")
+        for t, e, temp in zip(times, energies, temperatures):
+            f.write(f"{t:.6f}  {e:.8f}  {temp:.4f}\n")
+    console.print(f"  [green]... Data: {out_dat}[/green]")
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from abacuscopilot.plotting.style import load_style_from_config
+    load_style_from_config()
+
+    if interactive:
+        mode = _prompt_choice(
+            console, "Plot style",
+            ["Separate panels (E and T)", "Dual-Y axes (E+T on one plot)"],
+            "Separate panels (E and T)",
+        )
+    else:
+        mode = "Separate"
+
+    out_png = "energy_temperature.png"
+
+    if "Dual" in mode:
+        fig, ax1 = plt.subplots(figsize=(8, 6))
+        ax2 = ax1.twinx()
+        ax1.plot(times, energies, "-", color="#1f77b4", linewidth=1.2, label="Energy (Ry)")
+        ax2.plot(times, temperatures, "-", color="#d62728", linewidth=1.2, label="Temperature (K)")
+        ax1.set_xlabel("Time (ps)")
+        ax1.set_ylabel("Energy (Ry)", color="#1f77b4")
+        ax2.set_ylabel("Temperature (K)", color="#d62728")
+        ax1.tick_params(axis="y", labelcolor="#1f77b4", direction="out")
+        ax2.tick_params(axis="y", labelcolor="#d62728", direction="out")
+        ax1.tick_params(axis="x", direction="out")
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+        for spine in ax1.spines.values():
+            spine.set_linewidth(0.5)
+        ax1.spines["top"].set_visible(True)
+        ax1.spines["right"].set_visible(True)
+        for spine in ax2.spines.values():
+            spine.set_linewidth(0.5)
+    else:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+        ax1.plot(times, energies, "-", color="#1f77b4", linewidth=1.2)
+        ax1.set_ylabel("Energy (Ry)")
+        ax1.set_title("MD - Energy & Temperature vs Time")
+        ax2.plot(times, temperatures, "-", color="#d62728", linewidth=1.2)
+        ax2.set_xlabel("Time (ps)")
+        ax2.set_ylabel("Temperature (K)")
+        for ax in (ax1, ax2):
+            ax.spines["top"].set_visible(True)
+            ax.spines["right"].set_visible(True)
+            for spine in ax.spines.values():
+                spine.set_linewidth(0.5)
+            ax.tick_params(axis="both", direction="out")
+
+    fig.tight_layout(pad=1.2)
+    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    console.print(f"  [green]... Plot: {out_png}[/green]")
+    console.print()
