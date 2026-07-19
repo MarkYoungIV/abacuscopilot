@@ -153,18 +153,29 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
     elif parsed_args and parsed_args.solver:
         _apply_solver_override(console, params, parsed_args.solver)
 
-    # --- D3 / functional ---
+    # --- Functional (must come before D3 for parameter injection) ---
+    if interactive:
+        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBEsol", "PBE"], "PBEsol")
+        if "PBEsol" in use_func:
+            params.dft_functional = "pbesol"
+
     if interactive:
         use_d3 = _prompt_choice(console, "D3 dispersion correction", ["No", "d3_0 (zero-damping)", "d3_bj (Becke-Johnson)"], "No")
         if "d3_0" in use_d3:
             params.vdw_method = "d3_0"
         elif "d3_bj" in use_d3:
             params.vdw_method = "d3_bj"
+        if params.vdw_method != "none" and params.dft_functional == "pbesol":
+            console.print("  [bold yellow]⚠  ABACUS D3 does not support dft_functional=pbesol.[/bold yellow]")
+            console.print("  [dim]    Setting dft_functional to 'pbe' for D3 compatibility.[/dim]")
+            console.print("  [dim]    PBEsol reuses PBE D3 parameters — this is standard practice.[/dim]")
+            params.dft_functional = "pbe"
 
-    if interactive:
-        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBEsol", "PBE"], "PBEsol")
-        if "PBEsol" in use_func:
-            params.dft_functional = "pbesol"
+    # Force dft_functional and vdw_method into INPUT (core group needs template_keys)
+    for _k in ("dft_functional", "vdw_method"):
+        if _k in params.extras.get("_template_keys", []) or getattr(params, _k, None) is None:
+            continue
+        params.extras.setdefault("_template_keys", []).append(_k)
 
     # --- Read STRU and prepare files ---
     from abacuscopilot.io.stru_file import read_stru, write_stru
@@ -272,6 +283,9 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
     console.print("  [bold yellow]⚠  For accurate phonon results, use a well-relaxed[/bold yellow]")
     console.print("  [bold yellow]    primitive cell as the starting STRU.[/bold yellow]")
     console.print("  [dim]    Run 'abacuscopilot -task 502' to convert to primitive cell first.[/dim]")
+    console.print("  [bold yellow]⚠  Layered materials (vdW): enable D3 correction[/bold yellow]")
+    console.print("  [bold yellow]    in both relaxation AND phonon steps to avoid[/bold yellow]")
+    console.print("  [bold yellow]    imaginary modes from under-binding.[/bold yellow]")
     console.print()
     console.print(f"[green]✓ Phonon setup complete: {len(stru_files)} displacement directories[/green]")
     console.print(f"  Basis: {basis}, ks_solver: {params.ks_solver}")

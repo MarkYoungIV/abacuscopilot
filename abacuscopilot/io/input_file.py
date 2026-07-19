@@ -206,6 +206,9 @@ def write_input(
         ("DP model", [
             "esolver_type", "pot_file",
         ]),
+        ("vdW correction", [
+            "vdw_method", "vdw_s6", "vdw_s8", "vdw_a1", "vdw_a2",
+        ]),
         ("Output set", [
             "md_restartfreq", "md_dumpfreq", "out_level",
             "dump_force", "dump_vel",

@@ -70,12 +70,16 @@ def _run_phonopy_init(args: list[str], cwd: str | Path = ".", timeout: int = 120
 
 
 @task(1501, category="Lattice Dynamics", name="Phonon Analysis",
-      description="Extract FORCE_SETS, compute phonon bands, and plot dispersion + DOS",
+      description="Extract FORCE_SETS, compute phonon bands, and plot dispersion",
       cli_args=[
           {"name": "--dim", "type": str, "default": "2 2 2",
            "help": "Supercell dimensions (must match setup)"},
           {"name": "--mesh", "type": str, "default": "8 8 8",
            "help": "q-point mesh for DOS (e.g. '8 8 8')"},
+          {"name": "--fmin", "type": float, "default": None,
+           "help": "Minimum frequency for plot y-axis (auto if unset)"},
+          {"name": "--fmax", "type": float, "default": None,
+           "help": "Maximum frequency for plot y-axis (auto if unset)"},
           {"name": "--no-plot", "action": "store_true", "default": False,
            "help": "Skip plotting"},
       ])
@@ -112,10 +116,17 @@ def task_phonon_analysis(args: list[str] | None = None, interactive: bool = True
     else:
         dim_s = "2 2 2"
 
+    # Y-axis range
+    fmin_plot = None
+    fmax_plot = None
     if interactive:
         mesh_s = _prompt(console, "q-point mesh for DOS/thermal", "8 8 8")
     elif parsed_args:
         mesh_s = parsed_args.mesh
+        if getattr(parsed_args, "fmin", None) is not None:
+            fmin_plot = float(parsed_args.fmin)
+        if getattr(parsed_args, "fmax", None) is not None:
+            fmax_plot = float(parsed_args.fmax)
     else:
         mesh_s = "8 8 8"
 
@@ -243,6 +254,16 @@ PRIMITIVE_AXES = {prim_axes}
         return
     console.print("  [green]✓ band.yaml[/green]")
 
+    # --- Read band.yaml for frequency range ---
+    f_auto_min = 0.0
+    f_auto_max = 20.0
+    try:
+        _, freqs_tmp, _, _ = _parse_band_yaml(Path("band.yaml"))
+        f_auto_min = float(np.min(freqs_tmp)) * 1.05
+        f_auto_max = float(np.max(freqs_tmp)) * 1.05
+    except Exception:
+        pass
+
     # --- Step 4: Plot ---
     do_plot = True
     if parsed_args and parsed_args.no_plot:
@@ -250,17 +271,24 @@ PRIMITIVE_AXES = {prim_axes}
     elif interactive:
         answer = _prompt_choice(console, "Generate phonon band plot?", ["Yes", "No"], "Yes")
         do_plot = "Yes" in answer
+        if do_plot:
+            fmin_s = _prompt(console,
+                f"Frequency min (auto: {f_auto_min:.1f} THz, enter for auto)", "")
+            fmax_s = _prompt(console,
+                f"Frequency max (auto: {f_auto_max:.1f} THz, enter for auto)", "")
+            fmin_plot = float(fmin_s) if fmin_s.strip() else None
+            fmax_plot = float(fmax_s) if fmax_s.strip() else None
 
     if do_plot:
         console.print()
         console.print("[bold]Step 4: Plot phonon dispersion[/bold]")
         try:
-            _plot_phonon_bands(console)
+            _plot_phonon_bands(console, fmin_plot, fmax_plot)
             # Combined three-panel figure if DOS data exists
             tdos_path = Path("total_dos.dat")
             pdos_path = Path("partial_dos.dat")
             if tdos_path.exists():
-                _plot_phonon_combined(console, tdos_path, pdos_path)
+                _plot_phonon_combined(console, tdos_path, pdos_path, fmin_plot, fmax_plot)
         except Exception as e:
             console.print(f"[red]Plot failed: {e}[/red]")
 
@@ -308,29 +336,52 @@ def _parse_band_yaml(band_yaml: Path):
     xs_all = np.concatenate(xs_list)
     freq_all = np.concatenate(freq_list, axis=0)
 
-    # Tick positions and labels from per-segment start/end
+    # Tick positions and labels from band.yaml 'labels' section
+    # Format: labels: [['GAMMA','X'], ['X','X'], ['X','U'], ...]
+    # Each pair corresponds to one segment; use segment_nqpoint for positions.
+    seg_nq = data.get("segment_nqpoint", [])
+    raw_labels = data.get("labels", [])
     tick_pos = []
     tick_labels_raw: list[list[str]] = []
-    for k in range(len(breaks) - 1):
-        s, e = breaks[k], breaks[k + 1]
-        sl = phonon[s].get("label", "").strip()
-        el = phonon[e - 1].get("label", "").strip()
-        tick_labels_raw.append([sl, el])
+
+    if raw_labels and seg_nq:
+        q_idx = 0
+        for i, seg in enumerate(raw_labels):
+            sl, el = seg[0], seg[1]
+            n_pts = seg_nq[i] if i < len(seg_nq) else 101
+            tick_labels_raw.append([sl, el])
+            if i == 0:
+                tick_pos.append(distances[q_idx] if q_idx < len(distances) else 0.0)
+            q_idx += n_pts
+            if q_idx - 1 < len(distances):
+                tick_pos.append(distances[q_idx - 1])
+    else:
+        # Fallback: no explicit labels, use segment boundaries
+        for k in range(len(breaks) - 1):
+            s, e = breaks[k], breaks[k + 1]
+            sl = phonon[s].get("label", "").strip()
+            el = phonon[e - 1].get("label", "").strip()
+            tick_labels_raw.append([sl, el])
+            if k == 0:
+                tick_pos.append(distances[s])
+            tick_pos.append(distances[e - 1])
 
     tick_labels: list[str] = []
     for k, (seg_xs, (s_lbl, e_lbl)) in enumerate(zip(xs_list, tick_labels_raw)):
         if k == 0:
-            tick_pos.append(seg_xs[0])
             tick_labels.append(_fmt_label(s_lbl))
         else:
             prev = tick_labels[-1]
             cur = _fmt_label(s_lbl)
-            if prev != cur and cur:
+            if prev != cur and cur and prev:
                 tick_labels[-1] = f"{prev}|{cur}"
             elif cur and not prev:
                 tick_labels[-1] = cur
-        tick_pos.append(seg_xs[-1])
         tick_labels.append(_fmt_label(e_lbl))
+
+    # Handle case where tick_labels might be shorter than tick_pos
+    while len(tick_labels) < len(tick_pos):
+        tick_labels.append("")
 
     return xs_all, freq_all, tick_pos, tick_labels
 
@@ -353,14 +404,30 @@ def _parse_total_dos(path: Path):
 
 
 def _parse_partial_dos(path: Path):
-    """Return (freq, pdos_per_atom) from partial_dos.dat."""
+    """Return (freq, pdos_per_element, labels) from partial_dos.dat."""
+    # Read header to get column labels
+    labels: list[str] = []
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#"):
+                parts = line.lstrip("#").strip().split()
+                labels = parts[1:]  # skip "frequency(THz)"
+                break
     data = np.loadtxt(path)
-    return data[:, 0], data[:, 1:]
+    freq = data[:, 0]
+    pdos = data[:, 1:]
+    # Filter out "total" column for plotting
+    plot_cols = [i for i, lbl in enumerate(labels) if lbl.lower() != "total"]
+    plot_labels = [labels[i] for i in plot_cols]
+    return freq, pdos[:, plot_cols], plot_labels
 
 
-def _plot_phonon_bands(console) -> None:
+def _plot_phonon_bands(console, fmin: float | None = None, fmax: float | None = None) -> None:
     """Parse band.yaml and plot phonon dispersion."""
     xs, freqs, tick_pos, tick_labels = _parse_band_yaml(Path("band.yaml"))
+
+    f_lo = fmin if fmin is not None else float(np.min(freqs)) * 1.05
+    f_hi = fmax if fmax is not None else float(np.max(freqs)) * 1.05
 
     import matplotlib
     matplotlib.use("Agg")
@@ -380,7 +447,7 @@ def _plot_phonon_bands(console) -> None:
         ax.axvline(xp, color="black", lw=0.8)
 
     ax.set_xlim(xs[0], xs[-1])
-    ax.set_ylim(bottom=0)
+    ax.set_ylim(f_lo, f_hi)
     ax.set_xticks(tick_pos)
     ax.set_xticklabels(tick_labels, fontsize=11)
     ax.set_ylabel("Frequency (THz)", fontsize=12)
@@ -406,8 +473,9 @@ def _plot_phonon_bands(console) -> None:
     console.print("  [green]✓ pho.dat[/green]")
 
 
-def _plot_phonon_combined(console, tdos_path: Path, pdos_path: Path) -> None:
-    """Combined three-panel figure: band + TDOS + PDOS."""
+def _plot_phonon_combined(console, tdos_path: Path, pdos_path: Path,
+                          fmin: float | None = None, fmax: float | None = None) -> None:
+    """Combined figure: band + PDOS (if available), or band + TDOS."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -416,28 +484,28 @@ def _plot_phonon_combined(console, tdos_path: Path, pdos_path: Path) -> None:
     load_style_from_config()
 
     xs, freqs, tick_pos, tick_labels = _parse_band_yaml(Path("band.yaml"))
-    freq_t, dos_t = _parse_total_dos(tdos_path)
-
     has_pdos = pdos_path.exists()
+    has_tdos = tdos_path.exists()
+
+    if not has_pdos and not has_tdos:
+        raise FileNotFoundError("Neither partial_dos.dat nor total_dos.dat found")
+
+    freq_t, dos_t = (None, None)
+    if has_tdos:
+        freq_t, dos_t = _parse_total_dos(tdos_path)
+
+    freq_p, pdos_data, pdos_labels = (None, None, None)
     if has_pdos:
-        freq_p, pdos_data = _parse_partial_dos(pdos_path)
-        # Determine species from STRU
-        species_list: list[str] = []
-        try:
-            from abacuscopilot.io.stru_file import read_stru
-            s = read_stru("STRU")
-            species_list = list(s.species_order)
-        except Exception:
-            species_list = [f"atom {i + 1}" for i in range(pdos_data.shape[1])]
+        freq_p, pdos_data, pdos_labels = _parse_partial_dos(pdos_path)
 
-    f_lo = 0.0
-    f_hi = float(np.max(freqs)) * 1.05
+    f_lo = fmin if fmin is not None else float(np.min(freqs)) * 1.05
+    f_hi = fmax if fmax is not None else float(np.max(freqs)) * 1.05
 
-    fig = plt.figure(figsize=(14, 6))
-    gs = gridspec.GridSpec(1, 3, width_ratios=[3, 1.2, 1.2], wspace=0.08)
+    # Layout: 2 panels (band + DOS/PDOS)
+    fig = plt.figure(figsize=(10, 6))
+    gs = gridspec.GridSpec(1, 2, width_ratios=[3, 1.5], wspace=0.06)
     ax_band = fig.add_subplot(gs[0])
-    ax_tdos = fig.add_subplot(gs[1])
-    ax_pdos = fig.add_subplot(gs[2])
+    ax_dos = fig.add_subplot(gs[1])
 
     # ── Band dispersion ──
     n_bands = freqs.shape[1]
@@ -452,40 +520,40 @@ def _plot_phonon_combined(console, tdos_path: Path, pdos_path: Path) -> None:
     ax_band.set_xticklabels(tick_labels, fontsize=11)
     ax_band.set_ylabel("Frequency (THz)", fontsize=12)
     ax_band.set_title("Phonon Dispersion", fontsize=13, pad=8)
+    for spine in ax_band.spines.values():
+        spine.set_linewidth(0.5)
+        spine.set_visible(True)
+    ax_band.tick_params(axis="both", direction="out")
     ax_band.yaxis.grid(True, ls=":", alpha=0.4)
 
-    # ── Total DOS ──
-    ax_tdos.fill_betweenx(freq_t, 0, dos_t, color="#2c7bb6", alpha=0.35, lw=0)
-    ax_tdos.plot(dos_t, freq_t, color="#2c7bb6", lw=1.2)
-    ax_tdos.axhline(0, color="gray", lw=0.6, ls="--", alpha=0.5)
-    ax_tdos.set_ylim(f_lo, f_hi)
-    ax_tdos.set_xlabel("DOS", fontsize=11)
-    ax_tdos.set_title("Total DOS", fontsize=13, pad=8)
-    ax_tdos.set_yticklabels([])
-    ax_tdos.yaxis.grid(True, ls=":", alpha=0.4)
-
-    # ── PDOS ──
+    # ── PDOS (preferred) or TDOS ──
     pdos_colors = ["#E63946", "#457B9D", "#2A9D8F", "#E9C46A",
                    "#F4A261", "#264653", "#A8DADC", "#6A0572"]
     if has_pdos:
         max_val = max(np.max(pdos_data[:, i]) for i in range(pdos_data.shape[1]))
         max_val = max_val if max_val > 0 else 1.0
         for i in range(pdos_data.shape[1]):
-            label = species_list[i] if i < len(species_list) else f"atom {i + 1}"
+            label = pdos_labels[i] if i < len(pdos_labels) else f"atom {i + 1}"
             c = pdos_colors[i % len(pdos_colors)]
             dos_norm = pdos_data[:, i] / max_val
-            ax_pdos.fill_betweenx(freq_p, 0, dos_norm, color=c, alpha=0.30, lw=0)
-            ax_pdos.plot(dos_norm, freq_p, color=c, lw=1.3, label=label)
-        ax_pdos.legend(loc="upper right", fontsize=9, framealpha=0.7)
+            ax_dos.fill_betweenx(freq_p, 0, dos_norm, color=c, alpha=0.30, lw=0)
+            ax_dos.plot(dos_norm, freq_p, color=c, lw=1.3, label=label)
+        ax_dos.legend(loc="upper right", fontsize=9, framealpha=0.7)
+        ax_dos.set_xlabel("pDOS (norm.)", fontsize=11)
+        ax_dos.set_title("Projected DOS", fontsize=13, pad=8)
     else:
-        ax_pdos.text(0.5, 0.5, "PDOS not available", ha="center", va="center",
-                     transform=ax_pdos.transAxes, fontsize=11, color="gray")
-    ax_pdos.axhline(0, color="gray", lw=0.6, ls="--", alpha=0.5)
-    ax_pdos.set_ylim(f_lo, f_hi)
-    ax_pdos.set_xlabel("pDOS (norm.)", fontsize=11)
-    ax_pdos.set_title("Projected DOS", fontsize=13, pad=8)
-    ax_pdos.set_yticklabels([])
-    ax_pdos.yaxis.grid(True, ls=":", alpha=0.4)
+        ax_dos.fill_betweenx(freq_t, 0, dos_t, color="#2c7bb6", alpha=0.35, lw=0)
+        ax_dos.plot(dos_t, freq_t, color="#2c7bb6", lw=1.2)
+        ax_dos.set_xlabel("DOS", fontsize=11)
+        ax_dos.set_title("Total DOS", fontsize=13, pad=8)
+    ax_dos.axhline(0, color="gray", lw=0.6, ls="--", alpha=0.5)
+    ax_dos.set_ylim(f_lo, f_hi)
+    ax_dos.set_yticklabels([])
+    ax_dos.yaxis.grid(True, ls=":", alpha=0.4)
+    for spine in ax_dos.spines.values():
+        spine.set_linewidth(0.5)
+        spine.set_visible(True)
+    ax_dos.tick_params(axis="both", direction="out")
 
     fig.suptitle("Phonon Properties", fontsize=15, y=1.01)
     fig.tight_layout()
@@ -500,6 +568,10 @@ def _plot_phonon_combined(console, tdos_path: Path, pdos_path: Path) -> None:
       cli_args=[
           {"name": "--mesh", "type": str, "default": "8 8 8",
            "help": "q-point mesh for DOS (e.g. '8 8 8')"},
+          {"name": "--fmin", "type": float, "default": None,
+           "help": "Minimum frequency for plot x-axis (auto if unset)"},
+          {"name": "--fmax", "type": float, "default": None,
+           "help": "Maximum frequency for plot x-axis (auto if unset)"},
           {"name": "--no-plot", "action": "store_true", "default": False,
            "help": "Skip plotting"},
       ])
@@ -516,6 +588,9 @@ def task_phonon_dos(args: list[str] | None = None, interactive: bool = True,
         console.print("[red]FORCE_SETS not found.[/red]")
         console.print("[dim]Run 'abacuscopilot -task 1501' first to extract forces.[/dim]")
         return
+
+    fmin_plot = getattr(parsed_args, "fmin", None) if parsed_args else None
+    fmax_plot = getattr(parsed_args, "fmax", None) if parsed_args else None
 
     # MESH
     setup_info: dict = {}
@@ -573,6 +648,13 @@ def task_phonon_dos(args: list[str] | None = None, interactive: bool = True,
     if interactive and do_plot:
         answer = _prompt_choice(console, "Generate DOS plot?", ["Yes", "No"], "Yes")
         do_plot = "Yes" in answer
+        if do_plot:
+            fmin_s = _prompt(console,
+                f"Frequency min (range: {freq[0]:.1f} ~ {freq[-1]:.1f} THz, enter for auto)", "")
+            fmax_s = _prompt(console,
+                f"Frequency max (range: {freq[0]:.1f} ~ {freq[-1]:.1f} THz, enter for auto)", "")
+            fmin_plot = float(fmin_s) if fmin_s.strip() else None
+            fmax_plot = float(fmax_s) if fmax_s.strip() else None
 
     if do_plot:
         try:
@@ -586,7 +668,9 @@ def task_phonon_dos(args: list[str] | None = None, interactive: bool = True,
             ax.plot(freq, dos, color="#2c7bb6", lw=1.5, label="Total")
             ax.fill_between(freq, 0, dos, color="#2c7bb6", alpha=0.15)
             ax.axvline(0, color="gray", lw=0.7, ls="--", alpha=0.6)
-            ax.set_xlim(left=0)
+            f_lo_dos = fmin_plot if fmin_plot is not None else float(np.min(freq))
+            f_hi_dos = fmax_plot if fmax_plot is not None else float(np.max(freq)) * 1.05
+            ax.set_xlim(f_lo_dos, f_hi_dos)
             ax.set_ylim(bottom=0)
             ax.set_xlabel("Frequency (THz)", fontsize=12)
             ax.set_ylabel("DOS (states/THz)", fontsize=12)
@@ -612,6 +696,10 @@ def task_phonon_dos(args: list[str] | None = None, interactive: bool = True,
       cli_args=[
           {"name": "--mesh", "type": str, "default": "8 8 8",
            "help": "q-point mesh for PDOS (e.g. '8 8 8')"},
+          {"name": "--fmin", "type": float, "default": None,
+           "help": "Minimum frequency for plot x-axis (auto if unset)"},
+          {"name": "--fmax", "type": float, "default": None,
+           "help": "Maximum frequency for plot x-axis (auto if unset)"},
           {"name": "--no-plot", "action": "store_true", "default": False,
            "help": "Skip plotting"},
       ])
@@ -628,6 +716,9 @@ def task_phonon_pdos(args: list[str] | None = None, interactive: bool = True,
         console.print("[red]FORCE_SETS not found.[/red]")
         console.print("[dim]Run 'abacuscopilot -task 1501' first to extract forces.[/dim]")
         return
+
+    fmin_plot = getattr(parsed_args, "fmin", None) if parsed_args else None
+    fmax_plot = getattr(parsed_args, "fmax", None) if parsed_args else None
 
     # Read STRU for species info
     species_list: list[str] = []
@@ -699,15 +790,27 @@ def task_phonon_pdos(args: list[str] | None = None, interactive: bool = True,
         pd = phonon._pdos
         freq = pd.frequency_points
         pdos_data = pd.projected_dos  # shape (n_atoms_prim, n_freq)
-        # Sum PDOS over all atoms
-        total_pdos = pdos_data.sum(axis=0)
 
-        # Save: freq + per-atom PDOS + total
-        cols = [freq] + [pdos_data[i, :] for i in range(pdos_data.shape[0])] + [total_pdos]
-        header = "frequency(THz)  " + "  ".join(
-            [f"atom_{i + 1}" for i in range(pdos_data.shape[0])] + ["total"]
-        )
-        np.savetxt("partial_dos.dat", np.column_stack(cols), header=header)
+        # Get primitive cell element mapping from phonopy
+        prim_cell = phonon.primitive
+        prim_symbols = prim_cell.symbols  # list of element symbols per atom
+        # Build per-element grouping: {symbol: [atom_indices]}
+        elem_groups: dict[str, list[int]] = {}
+        for i, sym in enumerate(prim_symbols):
+            elem_groups.setdefault(sym, []).append(i)
+
+        # Save: freq + per-element PDOS (grouped) + total
+        total_pdos = pdos_data.sum(axis=0)
+        col_labels: list[str] = []
+        col_arrays: list[np.ndarray] = [freq]
+        for sym, indices in elem_groups.items():
+            grouped = pdos_data[indices, :].sum(axis=0)
+            col_arrays.append(grouped)
+            col_labels.append(sym)
+        col_arrays.append(total_pdos)
+        col_labels.append("total")
+        header = "frequency(THz)  " + "  ".join(col_labels)
+        np.savetxt("partial_dos.dat", np.column_stack(col_arrays), header=header)
         console.print("  [green]✓ partial_dos.dat[/green]")
     except Exception as e:
         console.print(f"[red]PDOS computation failed: {e}[/red]")
@@ -718,6 +821,13 @@ def task_phonon_pdos(args: list[str] | None = None, interactive: bool = True,
     if interactive and do_plot:
         answer = _prompt_choice(console, "Generate PDOS plot?", ["Yes", "No"], "Yes")
         do_plot = "Yes" in answer
+        if do_plot:
+            fmin_s = _prompt(console,
+                f"Frequency min (range: {freq[0]:.1f} ~ {freq[-1]:.1f} THz, enter for auto)", "")
+            fmax_s = _prompt(console,
+                f"Frequency max (range: {freq[0]:.1f} ~ {freq[-1]:.1f} THz, enter for auto)", "")
+            fmin_plot = float(fmin_s) if fmin_s.strip() else None
+            fmax_plot = float(fmax_s) if fmax_s.strip() else None
 
     if do_plot:
         try:
@@ -730,19 +840,25 @@ def task_phonon_pdos(args: list[str] | None = None, interactive: bool = True,
             fig, ax = plt.subplots(figsize=(7, 5))
             pdos_colors = ["#E63946", "#457B9D", "#2A9D8F", "#E9C46A",
                            "#F4A261", "#264653", "#A8DADC", "#6A0572"]
-            for i in range(pdos_data.shape[0]):
-                if i < len(species_list):
-                    label = species_list[i]
-                else:
-                    label = f"atom {i + 1}"
-                if selected_labels and i < len(species_list) and species_list[i] not in selected_labels:
+
+            # Plot by element group (sum over atoms of same element)
+            color_idx = 0
+            for sym, indices in elem_groups.items():
+                if selected_labels and sym not in selected_labels:
                     continue
-                c = pdos_colors[i % len(pdos_colors)]
-                ax.plot(freq, pdos_data[i, :], color=c, lw=1.3, label=label)
-                ax.fill_between(freq, 0, pdos_data[i, :], color=c, alpha=0.12)
+                grouped = pdos_data[indices, :].sum(axis=0)
+                c = pdos_colors[color_idx % len(pdos_colors)]
+                color_idx += 1
+                ax.plot(freq, grouped, color=c, lw=1.3, label=sym)
+                ax.fill_between(freq, 0, grouped, color=c, alpha=0.12)
+
+            # Total PDOS (black)
+            ax.plot(freq, total_pdos, color="black", lw=1.8, label="Total", zorder=5)
 
             ax.axvline(0, color="gray", lw=0.7, ls="--", alpha=0.6)
-            ax.set_xlim(left=0)
+            f_lo_pdos = fmin_plot if fmin_plot is not None else float(np.min(freq))
+            f_hi_pdos = fmax_plot if fmax_plot is not None else float(np.max(freq)) * 1.05
+            ax.set_xlim(f_lo_pdos, f_hi_pdos)
             ax.set_ylim(bottom=0)
             ax.set_xlabel("Frequency (THz)", fontsize=12)
             ax.set_ylabel("PDOS (states/THz)", fontsize=12)
@@ -760,5 +876,58 @@ def task_phonon_pdos(args: list[str] | None = None, interactive: bool = True,
             console.print(f"  [green]✓ {out_png}[/green]")
         except Exception as e:
             console.print(f"  [yellow]! Plot failed: {e}[/yellow]")
+
+    console.print()
+
+
+@task(1504, category="Lattice Dynamics", name="Phonon Combined",
+      description="Combined phonon band + DOS + PDOS figure (side-by-side)",
+      cli_args=[
+          {"name": "--fmin", "type": float, "default": None,
+           "help": "Minimum frequency for plot y-axis (auto if unset)"},
+          {"name": "--fmax", "type": float, "default": None,
+           "help": "Maximum frequency for plot y-axis (auto if unset)"},
+      ])
+def task_phonon_combined(args: list[str] | None = None, interactive: bool = True,
+                         parsed_args=None) -> None:
+    """Generate combined phonon band + DOS + PDOS figure from existing data."""
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== Phonon Combined Plot ===[/bold cyan]")
+    console.print()
+
+    band_yaml = Path("band.yaml")
+    tdos_dat = Path("total_dos.dat")
+    pdos_dat = Path("partial_dos.dat")
+
+    if not band_yaml.exists():
+        console.print("[red]band.yaml not found.[/red]")
+        console.print("[dim]Run 'abacuscopilot -task 1501' first.[/dim]")
+        return
+    if not tdos_dat.exists() and not pdos_dat.exists():
+        console.print("[red]Neither total_dos.dat nor partial_dos.dat found.[/red]")
+        console.print("[dim]Run 'abacuscopilot -task 1502' or '-task 1503' first.[/dim]")
+        return
+
+    fmin_plot = getattr(parsed_args, "fmin", None) if parsed_args else None
+    fmax_plot = getattr(parsed_args, "fmax", None) if parsed_args else None
+
+    if interactive and fmin_plot is None:
+        try:
+            _, freqs_tmp, _, _ = _parse_band_yaml(band_yaml)
+            fmin_s = _prompt(console,
+                f"Frequency min (auto: {float(np.min(freqs_tmp))*1.05:.1f} THz, enter for auto)", "")
+            fmax_s = _prompt(console,
+                f"Frequency max (auto: {float(np.max(freqs_tmp))*1.05:.1f} THz, enter for auto)", "")
+            fmin_plot = float(fmin_s) if fmin_s.strip() else None
+            fmax_plot = float(fmax_s) if fmax_s.strip() else None
+        except Exception:
+            pass
+
+    try:
+        _plot_phonon_combined(console, tdos_dat, pdos_dat, fmin_plot, fmax_plot)
+    except Exception as e:
+        console.print(f"[red]Combined plot failed: {e}[/red]")
 
     console.print()
