@@ -1357,85 +1357,228 @@ def task_conv_analysis(args: list[str] | None = None, interactive: bool = True) 
 
 
 # =============================================================================
-# Task 110: NEB INPUT
+# Task 110: EOS Setup
 # =============================================================================
 
-TEMPLATE_LCAO_NEB = {
-    "calculation": "nscf", "symmetry": 1,
-    "kspacing": 0.14, "precision": "double",
-    "ecutwfc": 100.0, "basis_type": "lcao",
-    "ks_solver": "genelpa", "smearing_method": "gauss",
-    "smearing_sigma": 0.01, "mixing_type": "broyden",
-    "mixing_beta": 0.8, "scf_nmax": 100, "scf_thr": 1e-7,
-    "nbands": 256,
-}
-
-TEMPLATE_PW_NEB = {
-    "calculation": "nscf", "symmetry": 1,
-    "kspacing": 0.14, "precision": "double",
-    "ecutwfc": 80.0, "pw_diag_nmax": 20, "pw_diag_ndim": 2,
-    "basis_type": "pw", "ks_solver": "dav_subspace",
-    "smearing_method": "gauss", "smearing_sigma": 0.01,
-    "mixing_type": "broyden", "mixing_beta": 0.8,
-    "scf_nmax": 100, "scf_thr": 1e-8, "nbands": 256,
-}
-
-# Register NEB templates
-_TEMPLATES[("lcao", "neb")] = TEMPLATE_LCAO_NEB
-_TEMPLATES[("pw", "neb")] = TEMPLATE_PW_NEB
-
-
-@task(110, category="INPUT", name="NEB INPUT",
-      description="Generate INPUT file for Nudged Elastic Band calculation",
+@task(110, category="INPUT", name="EOS Setup",
+      description="Generate scaled structures and INPUT files for equation-of-state calculations",
       cli_args=[
           {"name": "--basis", "type": str, "default": "lcao",
            "help": "Basis type: lcao, pw"},
-          {"name": "--images", "type": int, "default": 5,
-           "help": "Number of NEB images"},
+          {"name": "--start", "type": float, "default": 0.95,
+           "help": "Start scale factor (default 0.95)"},
+          {"name": "--end", "type": float, "default": 1.05,
+           "help": "End scale factor (default 1.05)"},
+          {"name": "--step", "type": float, "default": 0.01,
+           "help": "Scale step size (default 0.01)"},
           {"name": "--solver", "type": str, "default": "",
            "help": "LCAO solver: genelpa (CPU) or cusolver (GPU)"},
+          {"name": "--sub", "type": str, "default": "",
+           "help": "Path to sub.abacus template (use 'skip' to skip)"},
       ])
-def task_neb_input(args: list[str] | None = None, interactive: bool = True,
+def task_eos_setup(args: list[str] | None = None, interactive: bool = True,
                    parsed_args=None) -> None:
-    """Generate an INPUT file for NEB calculation."""
+    """Generate scaled structures + INPUT files across a range of scale factors.
+
+    Reads STRU in the current directory, converts to Direct (fractional)
+    coordinates, saves as STRU.tmp, then creates ``scale_X.XXX/`` directories
+    each containing a STRU with scaled lattice vectors, an SCF INPUT file,
+    and (optionally) a Slurm submission script.
+    """
+    import shutil
+
     console = _get_console()
 
     console.print()
-    console.print("[bold cyan]=== Generate NEB INPUT ===[/bold cyan]")
+    console.print("[bold cyan]=== EOS Setup ===[/bold cyan]")
     console.print()
 
-    params = InputParams()
-    params.suffix = "ABACUS"
+    # --- Scale parameters ---
+    if interactive:
+        start_s = _prompt(console, "Start scale factor", "0.95")
+        end_s = _prompt(console, "End scale factor", "1.05")
+        step_s = _prompt(console, "Step size", "0.01")
+        try:
+            start, end, step = float(start_s), float(end_s), float(step_s)
+        except ValueError:
+            console.print("[red]Invalid scale parameters.[/red]")
+            return
+    elif parsed_args:
+        start, end, step = parsed_args.start, parsed_args.end, parsed_args.step
+    else:
+        start, end, step = 0.95, 1.05, 0.01
 
+    if step <= 0:
+        console.print("[red]Step must be positive.[/red]")
+        return
+    if start > end:
+        start, end = end, start
+
+    n_steps = round((end - start) / step)
+    scale_factors = [round(start + i * step, 8) for i in range(n_steps + 1)]
+
+    console.print(f"  Scale range: {start:.3f} → {end:.3f}, step {step:.3f}  "
+                  f"([dim]{len(scale_factors)} points[/dim])")
+
+    # --- Basis type ---
     if interactive:
         basis = _prompt_choice(console, "Basis type", ["lcao", "pw"], "lcao")
     elif parsed_args:
         basis = parsed_args.basis if parsed_args.basis in ("lcao", "pw") else "lcao"
     else:
         basis = "lcao"
-    template = _get_template(basis, "neb")
+
+    # --- INPUT params from SCF template ---
+    params = InputParams()
+    params.suffix = "ABACUS"
+    template = _get_template(basis, "scf")
     if template:
         _apply_template(params, template)
 
-    if interactive:
-        n_images = int(_prompt(console, "Number of NEB images", "5"))
-    elif parsed_args:
-        n_images = parsed_args.images
-    else:
-        n_images = 5
-
-    if interactive:
+    # --- LCAO solver (CPU / GPU) ---
+    if interactive and basis == "lcao":
         _ask_lcao_solver(console, params)
     elif parsed_args and parsed_args.solver:
         _apply_solver_override(console, params, parsed_args.solver)
 
+    # --- Read and prepare STRU ---
+    from abacuscopilot.io.stru_file import read_stru, write_stru
+
+    stru_path = Path("STRU")
+    if not stru_path.exists():
+        console.print("[red]No STRU file found in current directory.[/red]")
+        return
+
+    structure = read_stru(stru_path)
+
+    # Convert to Direct (fractional) coordinates if needed
+    if structure.coordinate_type != "Direct":
+        console.print(f"  Converting {structure.coordinate_type} → Direct ...")
+        if "Cartesian" in structure.coordinate_type:
+            cell_bohr = structure.lattice.cell  # actual cell in Bohr
+            cell_inv = np.linalg.inv(cell_bohr)
+            for atom in structure.atoms:
+                pos = atom.position.copy()
+                if "angstrom" in structure.coordinate_type.lower():
+                    from abacuscopilot.core.constants import ANGSTROM_TO_BOHR
+                    pos = pos * ANGSTROM_TO_BOHR
+                atom.position = pos @ cell_inv
+        structure.coordinate_type = "Direct"
+
+    # --- Copy pseudopotentials/orbitals to current directory ---
+    # _auto_prepare_files reads STRU, copies UPF/ORB, and rewrites STRU with
+    # resolved filenames.  Do this *before* writing STRU.tmp so the .tmp gets
+    # the resolved names.
+    _auto_prepare_files(console, params, interactive)
+
+    # Re-read STRU (filenames may have been updated by _auto_prepare_files)
+    structure = read_stru(stru_path)
+    if structure.coordinate_type != "Direct":
+        # _auto_prepare_files shouldn't change coordinates, but be safe
+        console.print(f"  Converting {structure.coordinate_type} → Direct ...")
+        if "Cartesian" in structure.coordinate_type:
+            cell_bohr = structure.lattice.cell
+            cell_inv = np.linalg.inv(cell_bohr)
+            for atom in structure.atoms:
+                pos = atom.position.copy()
+                if "angstrom" in structure.coordinate_type.lower():
+                    from abacuscopilot.core.constants import ANGSTROM_TO_BOHR
+                    pos = pos * ANGSTROM_TO_BOHR
+                atom.position = pos @ cell_inv
+        structure.coordinate_type = "Direct"
+
+    # Write STRU.tmp (Direct coordinates, resolved filenames)
+    write_stru(structure, "STRU.tmp", is_lcao=(basis == "lcao"))
+    console.print("  [green]✓ STRU.tmp[/green] (Direct coordinates)")
+    console.print("  [dim]Original STRU is kept (filenames resolved).[/dim]")
+
+    # --- Gather UPF / ORB files for copying into each scale directory ---
+    pseudo_files: list[Path] = []
+    orbital_files: list[Path] = []
+    for species in structure.species_order:
+        for pat in Path(".").glob(f"{species}_*.upf"):
+            if pat not in pseudo_files:
+                pseudo_files.append(pat)
+        if basis == "lcao":
+            for pat in Path(".").glob(f"{species}_*.orb"):
+                if pat not in orbital_files:
+                    orbital_files.append(pat)
+
+    # --- Handle sub.abacus ---
+    skip_sub = (parsed_args and getattr(parsed_args, "sub", "") == "skip")
+    sub_src: Path | None = None
+
+    if not skip_sub:
+        config = load_config()
+        sub_path = config.get("paths", {}).get("sub_script", "")
+        if sub_path:
+            p = Path(sub_path)
+            if p.exists():
+                sub_src = p
+            else:
+                console.print(f"  [yellow]! sub.abacus template not found: {sub_path}[/yellow]")
+
+        if sub_src is None and interactive:
+            answer = _prompt(console, "sub.abacus path (enter to skip)", "")
+            if answer.strip().lower() == "skip":
+                pass
+            elif answer.strip():
+                p = Path(answer.strip())
+                if p.exists():
+                    sub_src = p
+                else:
+                    console.print(f"  [yellow]! File not found: {answer}[/yellow]")
+
+    if sub_src:
+        console.print(f"  sub.abacus: [dim]{sub_src}[/dim]")
+    else:
+        console.print("  sub.abacus: [dim]skipped[/dim]")
+
+    # --- Create scale directories ---
+    console.print()
+    console.print("[bold]Creating scale directories:[/bold]")
+
     from abacuscopilot.io.input_file import write_input
-    write_input(params)
+
+    for sf in scale_factors:
+        dir_name = f"scale_{sf:.3f}"
+        dir_path = Path(dir_name)
+        dir_path.mkdir(exist_ok=True)
+
+        # Scale lattice vectors (keep LATTICE_CONSTANT unchanged)
+        scaled = read_stru("STRU.tmp")
+        scaled.lattice.vectors = structure.lattice.vectors * sf
+
+        write_stru(scaled, dir_path / "STRU", is_lcao=(basis == "lcao"))
+        write_input(params, dir_path / "INPUT")
+
+        # Copy pseudopotential + orbital files into each scale directory
+        for pf in pseudo_files:
+            shutil.copy2(pf, dir_path / pf.name)
+        for of in orbital_files:
+            shutil.copy2(of, dir_path / of.name)
+
+        # Copy sub.abacus
+        if sub_src and sub_src.exists():
+            shutil.copy2(sub_src, dir_path / "sub.abacus")
+
+        console.print(f"  [green]✓[/green] {dir_name}/")
+
+    # --- Clean up temporary files from current directory ---
+    # STRU.tmp was only a template; UPF/ORB/sub.abacus were copied into
+    # every scale directory — the top-level copies are no longer needed.
+    Path("STRU.tmp").unlink(missing_ok=True)
+    for pf in pseudo_files:
+        pf.unlink(missing_ok=True)
+    for of in orbital_files:
+        of.unlink(missing_ok=True)
+    local_sub = Path("sub.abacus")
+    if local_sub.exists():
+        local_sub.unlink()
 
     console.print()
-    console.print("[green]✓ NEB INPUT file written successfully.[/green]")
-    console.print(f"  Calculation: nscf, Basis: {params.basis_type}")
-    console.print(f"  NEB images: {n_images}")
-    console.print("  [dim]Place 00/ → NN/ subdirectories with POSCAR files[/dim]")
+    console.print(f"[green]✓ EOS setup complete: {len(scale_factors)} directories[/green]")
+    console.print(f"  Basis: {basis}, ks_solver: {params.ks_solver}")
+    console.print(f"  ecutwfc: {params.ecutwfc} Ry, scf_thr: {params.scf_thr}")
+    console.print("  [dim]Temporary files (STRU.tmp, UPF/ORB) removed from current directory.[/dim]")
     console.print()
-    _auto_prepare_files(console, params, interactive)

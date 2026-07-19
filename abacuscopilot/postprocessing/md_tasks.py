@@ -2410,7 +2410,8 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
     console.print(f"  Time:  {times[0]:.2f} -> {times[-1]:.2f} ps  (md_dt={md_dt} fs)")
     console.print(f"  T:     {temperatures.min():.1f} -> {temperatures.max():.1f} K")
 
-    out_dat = "energy_temperature.dat"
+    out_dir = log_path.parent  # OUT.ABACUS
+    out_dat = str(out_dir / "energy_temperature.dat")
     with open(out_dat, "w") as f:
         f.write("# time(ps)  energy(eV)  temperature(K)\n")
         for t, e, temp in zip(times, energies, temperatures):
@@ -2420,6 +2421,7 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
     from abacuscopilot.plotting.style import load_style_from_config
     load_style_from_config()
 
@@ -2432,7 +2434,14 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
     else:
         mode = "Separate"
 
-    out_png = "energy_temperature.png"
+    out_png = str(out_dir / "energy_temperature.png")
+
+    # --- Y-axis limits ---
+    t_max_lim = max(temperatures[0], temperatures[-1]) * 1.8
+    e_min, e_max = energies.min(), energies.max()
+    e_range = e_max - e_min if e_max > e_min else abs(e_max) * 0.01
+    e_pad = e_range * 0.15
+    e_lo, e_hi = e_min - e_pad, e_max + e_pad
 
     if "Dual" in mode:
         fig, ax1 = plt.subplots(figsize=(8, 6))
@@ -2442,6 +2451,8 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
         ax1.set_xlabel("Time (ps)")
         ax1.set_ylabel("Energy (eV)", color="#1f77b4")
         ax2.set_ylabel("Temperature (K)", color="#d62728")
+        ax1.set_ylim(e_lo, e_hi)
+        ax2.set_ylim(0, t_max_lim)
         ax1.tick_params(axis="y", labelcolor="#1f77b4", direction="out")
         ax2.tick_params(axis="y", labelcolor="#d62728", direction="out")
         ax1.tick_params(axis="x", direction="out")
@@ -2459,9 +2470,11 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
         ax1.plot(times, energies, "-", color="#1f77b4", linewidth=1.2)
         ax1.set_ylabel("Energy (eV)")
         ax1.set_title("MD - Energy & Temperature vs Time")
+        ax1.set_ylim(e_lo, e_hi)
         ax2.plot(times, temperatures, "-", color="#d62728", linewidth=1.2)
         ax2.set_xlabel("Time (ps)")
         ax2.set_ylabel("Temperature (K)")
+        ax2.set_ylim(0, t_max_lim)
         for ax in (ax1, ax2):
             ax.spines["top"].set_visible(True)
             ax.spines["right"].set_visible(True)
