@@ -1461,9 +1461,10 @@ def task_eos_setup(args: list[str] | None = None, interactive: bool = True,
 
     # --- Exchange-correlation functional ---
     if interactive:
-        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBE", "PBEsol"], "PBE")
+        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBEsol", "PBE"], "PBEsol")
         if "PBEsol" in use_func:
             params.dft_functional = "pbesol"
+    _use_pbesol_eos = (params.dft_functional == "pbesol")
 
     # --- Read and prepare STRU ---
     from abacuscopilot.io.stru_file import read_stru, write_stru
@@ -1600,6 +1601,13 @@ def task_eos_setup(args: list[str] | None = None, interactive: bool = True,
     if local_sub.exists():
         local_sub.unlink()
 
+    if _use_pbesol_eos:
+        console.print()
+        console.print("  [bold yellow]⚠  PBEsol selected![/bold yellow]")
+        console.print("  [yellow]Make sure the equilibrium structure was also relaxed with PBEsol.[/yellow]")
+        console.print("  [yellow]Mixing PBE-relaxed geometry with PBEsol EOS can introduce[/yellow]")
+        console.print("  [yellow]significant errors in V₀ and B₀.[/yellow]")
+
     console.print()
     console.print(f"[green]✓ EOS setup complete: {len(scale_factors)} directories[/green]")
     console.print(f"  Basis: {basis}, ks_solver: {params.ks_solver}")
@@ -1711,9 +1719,10 @@ def task_elastic_setup(args: list[str] | None = None, interactive: bool = True,
 
     # --- Exchange-correlation functional ---
     if interactive:
-        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBE", "PBEsol"], "PBE")
+        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBEsol", "PBE"], "PBEsol")
         if "PBEsol" in use_func:
             params.dft_functional = "pbesol"
+    _use_pbesol = (params.dft_functional == "pbesol")
 
     # --- Read STRU ---
     from abacuscopilot.io.stru_file import read_stru, write_stru
@@ -1856,6 +1865,13 @@ def task_elastic_setup(args: list[str] | None = None, interactive: bool = True,
     local_sub = Path("sub.abacus")
     if local_sub.exists():
         local_sub.unlink()
+
+    if _use_pbesol:
+        console.print()
+        console.print("  [bold yellow]⚠  PBEsol selected![/bold yellow]")
+        console.print("  [yellow]Make sure the equilibrium structure was also relaxed with PBEsol.[/yellow]")
+        console.print("  [yellow]Mixing PBE-relaxed geometry with PBEsol elastic constants[/yellow]")
+        console.print("  [yellow]can introduce significant errors.[/yellow]")
 
     console.print()
     console.print(f"[green]✓ Elastic setup complete: {task_idx} task directories[/green]")

@@ -91,6 +91,7 @@ def print_task_list():
         _CATEGORY_LABELS,
         _DYNAMICS_CATEGORIES,
         _ELECTRONIC_CATEGORIES,
+        _FIXED_MENU_NUMBERS,
         _MISC_CATEGORIES,
         _STRUCTURAL_CATEGORIES,
     )
@@ -113,15 +114,22 @@ def print_task_list():
         print()
         for ck in cat_keys:
             tasks = by_category.get(ck, [])
-            if not tasks:
-                continue
             label = _CATEGORY_LABELS.get(ck, ck)
-            print(f"  {n:>2})  {label}")
-            n += 1
-            for t in tasks:
-                desc = f"  -- {t.description}" if t.description else ""
-                print(f"        {t.task_id:>4d})  {t.name}{desc}")
-            print()
+            menu_num = _FIXED_MENU_NUMBERS.get(ck, n)
+            if tasks:
+                print(f"  {menu_num:>2})  {label}")
+                if menu_num == n:
+                    n += 1
+                for t in tasks:
+                    desc = f"  -- {t.description}" if t.description else ""
+                    print(f"        {t.task_id:>4d})  {t.name}{desc}")
+                print()
+            elif ck in _CATEGORY_LABELS:
+                # Show empty categories as coming-soon placeholders
+                print(f"  {menu_num:>2})  {label} (coming soon)")
+                if menu_num == n:
+                    n += 1
+                print()
     print()
 
 

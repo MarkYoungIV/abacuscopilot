@@ -82,6 +82,18 @@ def compute_mechanical_properties(C: np.ndarray) -> dict[str, float]:
 
     # Anisotropy factors
     A_Zener = 2 * C[3, 3] / (C[0, 0] - C[0, 1]) if abs(C[0, 0] - C[0, 1]) > 1e-10 else 0.0
+    # Universal anisotropy index (Ranganathan & Ostoja-Starzewski)
+    A_universal = 5 * G_V / G_R + B_V / B_R - 6 if G_R > 1e-10 else 0.0
+
+    # Born stability criteria (cubic)
+    born_1 = C[0, 0] - C[0, 1]  # C11 - C12 > 0
+    born_2 = C[0, 0] + 2 * C[0, 1]  # C11 + 2C12 > 0
+    born_3 = C[3, 3]  # C44 > 0
+    born_stable = born_1 > 0 and born_2 > 0 and born_3 > 0
+
+    # Vickers hardness (Tian 2012 model)
+    k = G_H / B_H if B_H > 1e-10 else 0.0
+    Hv_tian = 0.92 * (k ** 1.137) * (G_H ** 0.708) if k > 1e-10 else 0.0
 
     return {
         "B_V": B_V, "B_R": B_R, "B_H": B_H,
@@ -90,6 +102,10 @@ def compute_mechanical_properties(C: np.ndarray) -> dict[str, float]:
         "nu_H": nu_H,
         "pugh_ratio": pugh,
         "A_Zener": A_Zener,
+        "A_universal": A_universal,
+        "born_stable": born_stable,
+        "born_1": born_1, "born_2": born_2, "born_3": born_3,
+        "Hv_tian": Hv_tian,
     }
 
 
@@ -185,10 +201,12 @@ def task_elastic_constants(args: list[str] | None = None, interactive: bool = Tr
     stresses_list: list[np.ndarray] = []  # each: (6,) Voigt stress (kbar)
 
     for td in task_dirs:
-        log_file = td / "OUT.ABACUS" / "running_scf.log"
+        log_file = td / "OUT.ABACUS" / "running_relax.log"
+        if not log_file.exists():
+            log_file = td / "OUT.ABACUS" / "running_scf.log"
         strain_file = td / "strain.json"
         if not log_file.exists():
-            console.print(f"  [yellow]![/yellow] {td.name}: no OUT.ABACUS/running_scf.log")
+            console.print(f"  [yellow]![/yellow] {td.name}: no OUT.ABACUS/running_*.log")
             continue
         if not strain_file.exists():
             console.print(f"  [yellow]![/yellow] {td.name}: no strain.json")
@@ -229,7 +247,9 @@ def task_elastic_constants(args: list[str] | None = None, interactive: bool = Tr
 
     # Build matrices: Σ (N×6), Ε (N×6)
     E_mat = np.array(strains_list)   # N×6
-    S_mat = np.array(stresses_list)  # N×6, in kbar
+    # ABACUS stress convention: compressive = positive.  Standard elasticity
+    # uses the opposite sign (tensile = positive).  Negate here.
+    S_mat = -np.array(stresses_list)  # N×6, kbar, standard sign
 
     # Fit elastic tensor row-by-row:  σ_i = Σ_j C_ij · ε_j
     # For each row i of C:  C_i = (E^T·E)^(-1)·E^T·s_i
@@ -253,6 +273,36 @@ def task_elastic_constants(args: list[str] | None = None, interactive: bool = Tr
     # Compute mechanical properties
     props = compute_mechanical_properties(C_gpa)
 
+    # ---- density from STRU (for sound velocity / Debye temperature) ----
+    rho_gcm3: float | None = None
+    n_atoms: int | None = None
+    M_gmol: float | None = None
+    try:
+        from abacuscopilot.io.stru_file import _ATOMIC_MASSES, read_stru
+        stru_path = Path("STRU")
+        if not stru_path.exists():
+            # Try task.000/STRU
+            for sd in sorted(Path().glob("task.*")):
+                s = sd / "STRU"
+                if s.exists():
+                    stru_path = s
+                    break
+        if stru_path.exists():
+            s = read_stru(str(stru_path))
+            n_atoms = len(s.atoms)
+            vol_a3 = s.lattice.volume_angstrom
+            # Atomic masses from IUPAC
+            total_mass_amu = 0.0
+            for sp in s.species_order:
+                count = sum(1 for a in s.atoms if a.species == sp)
+                total_mass_amu += count * _ATOMIC_MASSES.get(sp, 0.0)
+            # ρ = mass / vol:  amu→g (×1.66054e-24), Å³→cm³ (×1e-24)
+            AMU_TO_GRAM = 1.66053906660e-24
+            rho_gcm3 = total_mass_amu * AMU_TO_GRAM / (vol_a3 * 1e-24)
+            M_gmol = total_mass_amu  # g/mol (amu ≈ g/mol)
+    except Exception:
+        pass
+
     console.print()
     console.print("  [bold]Mechanical Properties (VRH):[/bold]")
     console.print(f"    Bulk Modulus    B = {props['B_H']:.2f} GPa (Voigt: {props['B_V']:.2f}, Reuss: {props['B_R']:.2f})")
@@ -261,9 +311,56 @@ def task_elastic_constants(args: list[str] | None = None, interactive: bool = Tr
     console.print(f"    Poisson Ratio   ν = {props['nu_H']:.4f}")
     console.print(f"    Pugh Ratio   B/G = {props['pugh_ratio']:.3f} "
                   f"({'[green]ductile[/green]' if props['pugh_ratio'] > 1.75 else '[yellow]brittle[/yellow]'})")
+
+    # Anisotropy
+    console.print()
+    console.print("  [bold]Anisotropy:[/bold]")
     if abs(props["A_Zener"]) > 1e-10:
-        console.print(f"    Zener Anisotropy = {props['A_Zener']:.4f} "
+        console.print(f"    Zener Anisotropy     = {props['A_Zener']:.4f} "
                       f"({'isotropic' if abs(props['A_Zener']-1.0)<0.05 else 'anisotropic'})")
+    console.print(f"    Universal Anisotropy = {props['A_universal']:.4f} "
+                  f"({'isotropic' if abs(props['A_universal'])<0.1 else 'anisotropic'})")
+
+    # Hardness
+    console.print()
+    console.print("  [bold]Hardness (Tian 2012):[/bold]")
+    console.print(f"    Hv = {props['Hv_tian']:.2f} GPa")
+
+    # Born stability
+    console.print()
+    console.print("  [bold]Born Stability Criteria (cubic):[/bold]")
+    console.print(f"    C₁₁ − C₁₂ = {props['born_1']:.2f} > 0  "
+                  f"({'[green]✓[/green]' if props['born_1'] > 0 else '[red]✗[/red]'})")
+    console.print(f"    C₁₁ + 2C₁₂ = {props['born_2']:.2f} > 0  "
+                  f"({'[green]✓[/green]' if props['born_2'] > 0 else '[red]✗[/red]'})")
+    console.print(f"    C₄₄ = {props['born_3']:.2f} > 0  "
+                  f"({'[green]✓[/green]' if props['born_3'] > 0 else '[red]✗[/red]'})")
+    console.print(f"    → {'[green]Mechanically stable[/green]' if props['born_stable'] else '[red]UNSTABLE[/red]'}")
+
+    # Sound velocities & Debye temperature
+    H_PLANCK = 6.62607015e-34
+    KB = 1.380649e-23
+    NA = 6.02214076e23
+    _v_l = _v_t = _v_m = _theta_D = None
+
+    if rho_gcm3 is not None and n_atoms and M_gmol:
+        B_pa = props["B_H"] * 1e9
+        G_pa = props["G_H"] * 1e9
+        rho_kgm3 = rho_gcm3 * 1000.0
+
+        _v_l = np.sqrt((B_pa + 4.0 * G_pa / 3.0) / rho_kgm3)
+        _v_t = np.sqrt(G_pa / rho_kgm3)
+        _v_m = (1.0 / 3.0 * (2.0 / _v_t**3 + 1.0 / _v_l**3)) ** (-1.0 / 3.0)
+        debye_prefactor = H_PLANCK / KB * (3.0 * n_atoms * NA * rho_kgm3 / (4.0 * np.pi * M_gmol * 0.001)) ** (1.0 / 3.0)
+        _theta_D = debye_prefactor * _v_m
+
+        console.print()
+        console.print("  [bold]Sound Velocities & Debye Temperature:[/bold]")
+        console.print(f"    Density       ρ = {rho_gcm3:.3f} g/cm³")
+        console.print(f"    Longitudinal  v_l = {_v_l:.1f} m/s")
+        console.print(f"    Transverse    v_t = {_v_t:.1f} m/s")
+        console.print(f"    Average       v_m = {_v_m:.1f} m/s")
+        console.print(f"    Debye Temp    Θ_D = {_theta_D:.1f} K")
 
     # Save elastic tensor
     out_dat = "elastic_tensor.dat"
@@ -271,7 +368,32 @@ def task_elastic_constants(args: list[str] | None = None, interactive: bool = Tr
         f.write("# Elastic tensor (Voigt, GPa) — 6×6\n")
         for i in range(6):
             f.write("  ".join(f"{C_gpa[i, j]:12.6f}" for j in range(6)) + "\n")
+    console.print()
     console.print(f"  [green]✓ {out_dat}[/green]")
+
+    # Save mechanical properties
+    prop_dat = "elastic_properties.dat"
+    with open(prop_dat, "w") as f:
+        f.write("# Mechanical Properties (VRH)\n")
+        f.write(f"# Bulk Modulus    B = {props['B_H']:.2f} GPa "
+                f"(Voigt: {props['B_V']:.2f}, Reuss: {props['B_R']:.2f})\n")
+        f.write(f"# Shear Modulus   G = {props['G_H']:.2f} GPa "
+                f"(Voigt: {props['G_V']:.2f}, Reuss: {props['G_R']:.2f})\n")
+        f.write(f"# Young's Modulus E = {props['E_H']:.2f} GPa\n")
+        f.write(f"# Poisson Ratio   ν = {props['nu_H']:.4f}\n")
+        f.write(f"# Pugh Ratio   B/G = {props['pugh_ratio']:.3f} "
+                f"({'ductile' if props['pugh_ratio'] > 1.75 else 'brittle'})\n")
+        f.write(f"# Zener Anisotropy  = {props['A_Zener']:.4f}\n")
+        f.write(f"# Universal Anisotropy = {props['A_universal']:.4f}\n")
+        f.write(f"# Hardness (Tian)    = {props['Hv_tian']:.2f} GPa\n")
+        f.write(f"# Born stable        = {'Yes' if props['born_stable'] else 'No'}\n")
+        if _v_l is not None:
+            f.write(f"# Density          ρ = {rho_gcm3:.3f} g/cm³\n")
+            f.write(f"# v_longitudinal     = {_v_l:.1f} m/s\n")
+            f.write(f"# v_transverse       = {_v_t:.1f} m/s\n")
+            f.write(f"# v_average          = {_v_m:.1f} m/s\n")
+            f.write(f"# Debye Temp      Θ_D = {_theta_D:.1f} K\n")
+    console.print(f"  [green]✓ {prop_dat}[/green]")
 
     console.print()
 

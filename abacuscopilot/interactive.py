@@ -45,7 +45,6 @@ _CATEGORY_LABELS: dict[str, str] = {
     "MD Analysis":         "MD Trajectory Analysis",
     "Lattice Dynamics":    "Lattice Dynamics",
     "Reaction Dynamics":   "Reaction Dynamics",
-    "User Extensions":     "User Extensions",
 }
 
 # Categories grouped into VASPKIT-style sections (display order).
@@ -63,7 +62,7 @@ _DYNAMICS_CATEGORIES = [
 ]
 
 _MISC_CATEGORIES = [
-    "System", "User Extensions",
+    "System",
 ]
 
 # Categories whose menu numbers are fixed (not sequential)

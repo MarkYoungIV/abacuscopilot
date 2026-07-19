@@ -220,6 +220,8 @@ class TaskRegistry:
                 "abacuscopilot.postprocessing.mechanics_tasks",
                 "abacuscopilot.postprocessing.population_tasks",
                 "abacuscopilot.postprocessing.md_tasks",
+                "abacuscopilot.preprocessing.phonon_tasks",
+                "abacuscopilot.postprocessing.phonon_tasks",
             ]
             for mod_name in _frozen_modules:
                 try:
