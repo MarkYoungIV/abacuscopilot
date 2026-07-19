@@ -1677,19 +1677,19 @@ def task_elastic_setup(args: list[str] | None = None, interactive: bool = True,
     else:
         basis = "lcao"
 
-    # --- INPUT params ---
+    # --- INPUT params from RELAX template (atoms only, fixed cell) ---
     params = InputParams()
     params.suffix = "ABACUS"
-    template = _get_template(basis, "scf")
+    template = _get_template(basis, "relax")
     if template:
         _apply_template(params, template)
-    # Elastic setup: need forces/stresses, fixed cell (relax atoms only)
+    # Elastic setup: relax atoms in deformed cell, output forces + stresses
+    # fixed_axes is irrelevant for calculation=relax (cell-already fixed);
+    # ABACUS simply ignores it.
     params.calculation = "relax"
     params.cal_force = 1
     params.cal_stress = 1
     # Force into INPUT even though this equals the default (1).
-    # "Geometry relaxation" is a conditional group — keys only appear when
-    # value ≠ default OR key ∈ template_keys.
     if "_template_keys" not in params.extras:
         params.extras["_template_keys"] = []
     for _k in ("cal_force", "cal_stress"):
