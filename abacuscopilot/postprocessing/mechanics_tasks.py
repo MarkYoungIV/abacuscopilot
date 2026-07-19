@@ -23,92 +23,7 @@ from abacuscopilot.tasks import task
 # =============================================================================
 
 
-def parse_elastic_tensor(filepath: str | Path) -> dict[str, Any] | None:
-    """Parse elastic tensor from ABACUS output.
-
-    ABACUS outputs the 6×6 elastic tensor (Voigt notation) in the
-    running log or a dedicated elastic output file.
-
-    Args:
-        filepath: Path to the output file.
-
-    Returns:
-        Dict with 'C' (6x6 tensor in GPa), 'unit', and raw data,
-        or None if not found.
-    """
-    filepath = Path(filepath)
-    if not filepath.exists():
-        return None
-
-    content = filepath.read_text()
-
-    # Look for "ELASTIC CONSTANTS" section in ABACUS output
-    # Format varies by version - try multiple patterns
-    patterns = [
-        # ABACUS v3.x: "ELASTIC CONSTANTS" header followed by 6 rows
-        r"ELASTIC\s+CONSTANTS.*?\n(.*?)(?:\n\s*\n|$)",
-        # "ELASTIC TENSOR (GPa)" format
-        r"(?:ELASTIC|ELASTICITY).*?(?:TENSOR|CONSTANTS).*?\n(.*?)(?:\n\s*\n|$)",
-    ]
-
-    C = np.zeros((6, 6))
-    found = False
-
-    # Try parsing the elastic constants section
-    for pattern in patterns:
-        m = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
-        if m:
-            section = m.group(1)
-            rows = []
-            for line in section.strip().split("\n"):
-                parts = line.split()
-                nums = []
-                for p in parts:
-                    try:
-                        nums.append(float(p))
-                    except ValueError:
-                        break
-                if len(nums) >= 6:
-                    rows.append(nums[:6])
-            if len(rows) >= 6:
-                C = np.array(rows[:6])
-                found = True
-                break
-
-    # Try simpler: look for "C11 C12 C13 ..." format
-    if not found:
-        # Look for 6 lines each containing 6 numbers near "Stiffness" or "Elastic"
-        lines = content.split("\n")
-        for i, line in enumerate(lines):
-            if any(kw in line.upper() for kw in ("STIFFNESS", "ELASTIC", "C11")):
-                try:
-                    row_data = []
-                    for j in range(i, min(i + 6, len(lines))):
-                        parts = [float(x) for x in lines[j].split() if _is_number(x)]
-                        if len(parts) >= 6:
-                            row_data.append(parts[:6])
-                    if len(row_data) == 6:
-                        C = np.array(row_data)
-                        found = True
-                        break
-                except Exception:
-                    continue
-
-    if not found:
-        return None
-
-    return {
-        "C": C,
-        "unit": "GPa",
-    }
-
-
-def _is_number(s: str) -> bool:
-    try:
-        float(s)
-        return True
-    except ValueError:
-        return False
+# (parse_elastic_tensor removed — replaced by stress–strain fitting in 1201)
 
 
 # =============================================================================
@@ -140,13 +55,19 @@ def compute_mechanical_properties(C: np.ndarray) -> dict[str, float]:
     G_V = (c11_22_33 - c12_13_23 + 3 * c44_55_66) / 5
 
     # Reuss average (lower bound)
-    S = np.linalg.inv(C)  # Compliance tensor
+    # Use the Voigt compliance matrix S = inv(C) directly in the sum
+    # formula to avoid losing the shear-coefficient factor (9 vs 3).
+    S = np.linalg.inv(C)  # Voigt compliance
     s11_22_33 = (S[0, 0] + S[1, 1] + S[2, 2]) / 3
     s12_13_23 = (S[0, 1] + S[0, 2] + S[1, 2]) / 3
-    s44_55_66 = (S[3, 3] + S[4, 4] + S[5, 5]) / 3
+    shear_sum = S[3, 3] + S[4, 4] + S[5, 5]      # sum, not average
 
     B_R = 1 / (3 * s11_22_33 + 6 * s12_13_23)
-    G_R = 15 / (12 * s11_22_33 - 12 * s12_13_23 + 3 * s44_55_66)
+
+    # G_R = 15 / [4(S₁₁+S₂₂+S₃₃) − 4(S₁₂+S₂₃+S₁₃) + 3(S₄₄+S₅₅+S₆₆)]
+    G_R = 15 / (4 * (S[0, 0] + S[1, 1] + S[2, 2])
+                - 4 * (S[0, 1] + S[0, 2] + S[1, 2])
+                + 3 * shear_sum)
 
     # Hill average
     B_H = (B_V + B_R) / 2
@@ -177,13 +98,24 @@ def compute_mechanical_properties(C: np.ndarray) -> dict[str, float]:
 # =============================================================================
 
 
+def _bm3(V, E0, V0, B0, B0p):
+    """3rd-order Birch-Murnaghan EOS.
+
+    E(V) = E0 + 9V₀B₀/16 · {[(V₀/V)^(2/3)−1]³·B₀' + [(V₀/V)^(2/3)−1]²·[6−4(V₀/V)^(2/3)]}
+    """
+    eta = (V0 / V) ** (2.0 / 3.0)
+    return E0 + 9.0 * V0 * B0 / 16.0 * (
+        (eta - 1.0) ** 3 * B0p + (eta - 1.0) ** 2 * (6.0 - 4.0 * eta)
+    )
+
+
 def fit_eos_birch_murnaghan(
     volumes: np.ndarray,
     energies: np.ndarray,
 ) -> dict[str, float]:
     """Fit a 3rd-order Birch-Murnaghan equation of state.
 
-    E(V) = E0 + 9V0*B0/16 * {[(V0/V)^(2/3)-1]^3 * B0' + [(V0/V)^(2/3)-1]^2 * [6-4*(V0/V)^(2/3)]}
+    E(V) = E0 + 9V₀B₀/16 · {[(V₀/V)^(2/3)−1]³·B₀' + [(V₀/V)^(2/3)−1]²·[6−4(V₀/V)^(2/3)]}
 
     Args:
         volumes: Volume array (any unit).
@@ -194,24 +126,15 @@ def fit_eos_birch_murnaghan(
     """
     from scipy.optimize import curve_fit
 
-    def bm3(V, E0, V0, B0, B0p):
-        """3rd-order Birch-Murnaghan EOS."""
-        eta = (V0 / V) ** (2.0 / 3.0)
-        return E0 + 9.0 * V0 * B0 / 16.0 * (
-            (eta - 1.0) ** 3 * B0p +
-            (eta - 1.0) ** 2 * (6.0 - 4.0 * eta)
-        )
-
-    # Initial guesses
     imin = np.argmin(energies)
     E0_guess = energies[imin]
     V0_guess = volumes[imin]
-    B0_guess = 100.0  # GPa equivalent
+    B0_guess = 100.0
     B0p_guess = 4.0
 
     try:
         popt, _ = curve_fit(
-            bm3, volumes, energies,
+            _bm3, volumes, energies,
             p0=[E0_guess, V0_guess, B0_guess, B0p_guess],
             maxfev=10000,
         )
@@ -226,63 +149,109 @@ def fit_eos_birch_murnaghan(
 
 
 @task(1201, category="Mechanics", name="Elastic Constants",
-      description="Parse elastic tensor from ABACUS output and compute mechanical properties",
-      cli_args=[
-          {"name": "--file", "type": str, "default": None, "help": "Path to elastic tensor output"},
-      ])
+      description="Fit elastic tensor from stress–strain data (task.000–023 dirs)",
+      cli_args=[])
 def task_elastic_constants(args: list[str] | None = None, interactive: bool = True,
                            parsed_args=None) -> None:
-    """Parse elastic constants from ABACUS output and compute moduli."""
+    """Fit the 6×6 elastic tensor from ABACUS stress–strain data.
+
+    Reads ``task.000/`` through ``task.023/`` directories (generated by
+    task 111), extracts the final stress tensor from each
+    ``OUT.ABACUS/running_scf.log``, and performs linear regression:
+
+        σ_i = C_ij · ε_j     (Voigt notation)
+
+    to obtain the elastic tensor C (GPa).  Then computes Voigt–Reuss–Hill
+    bulk/shear moduli, Young's modulus, Poisson ratio, Pugh ratio, and
+    Zener anisotropy.
+    """
+    import json
+
     console = _get_console()
 
     console.print()
-    console.print("[bold cyan]=== Elastic Constants & Mechanical Properties ===[/bold cyan]")
+    console.print("[bold cyan]=== Elastic Constants (Stress–Strain Fitting) ===[/bold cyan]")
+    console.print("[dim]Linear regression: σ = C·ε (Voigt notation)[/dim]")
     console.print()
 
-    # Find elastic output
-    elastic_path = None
-    if parsed_args and parsed_args.file:
-        elastic_path = Path(parsed_args.file)
-    if elastic_path is None and args:
-        for arg in args:
-            p = Path(arg)
-            if p.exists():
-                elastic_path = p
-                break
-
-    if elastic_path is None:
-        # Auto-find
-        candidates = (
-            list(Path().glob("running*.log")) +
-            list(Path().glob("elastic*.txt")) +
-            list(Path().glob("OUT.*/running*.log")) +
-            list(Path().glob("OUT.*/elastic*"))
-        )
-        if candidates:
-            elastic_path = max(candidates, key=lambda p: p.stat().st_mtime)
-
-    if elastic_path is None:
-        console.print("[red]No elastic tensor data found.[/red]")
-        console.print("[dim]Run ABACUS cell-relax calculation (cal_stress=1) to obtain elastic constants.[/dim]")
+    # Scan task directories
+    task_dirs = sorted(Path().glob("task.[0-9][0-9][0-9]"))
+    if not task_dirs:
+        console.print("[red]No task.* directories found.[/red]")
+        console.print("[dim]Run 'abacuscopilot -task 111' first to generate deformed structures.[/dim]")
         return
 
-    console.print(f"  [dim]Reading: {elastic_path}[/dim]")
+    strains_list: list[np.ndarray] = []   # each: (6,) Voigt strain
+    stresses_list: list[np.ndarray] = []  # each: (6,) Voigt stress (kbar)
 
-    result = parse_elastic_tensor(elastic_path)
-    if result is None:
-        console.print("[red]Could not parse elastic tensor from the file.[/red]")
-        console.print("[dim]Look for 'ELASTIC CONSTANTS' section in OUT.ABACUS/running_*.log[/dim]")
+    for td in task_dirs:
+        log_file = td / "OUT.ABACUS" / "running_scf.log"
+        strain_file = td / "strain.json"
+        if not log_file.exists():
+            console.print(f"  [yellow]![/yellow] {td.name}: no OUT.ABACUS/running_scf.log")
+            continue
+        if not strain_file.exists():
+            console.print(f"  [yellow]![/yellow] {td.name}: no strain.json")
+            continue
+
+        # Read strain vector
+        try:
+            strain_info = json.loads(strain_file.read_text())
+            eps_voigt = np.array(strain_info["strain_voigt"], dtype=float)  # (6,)
+        except Exception:
+            console.print(f"  [yellow]![/yellow] {td.name}: bad strain.json")
+            continue
+
+        # Parse stress tensor from log
+        stress_3x3 = _parse_stress_tensor(log_file)
+        if stress_3x3 is None:
+            console.print(f"  [yellow]![/yellow] {td.name}: stress not found in log")
+            continue
+
+        # Convert 3×3 stress to Voigt: (σ_xx, σ_yy, σ_zz, σ_yz, σ_xz, σ_xy)
+        sigma_voigt = np.array([
+            stress_3x3[0, 0], stress_3x3[1, 1], stress_3x3[2, 2],
+            stress_3x3[1, 2], stress_3x3[0, 2], stress_3x3[0, 1],
+        ])
+
+        strains_list.append(eps_voigt)
+        stresses_list.append(sigma_voigt)
+        console.print(f"  [dim]{td.name}: ε=({eps_voigt[0]:+.4f},{eps_voigt[1]:+.4f},{eps_voigt[2]:+.4f},"
+                      f"{eps_voigt[3]:+.4f},{eps_voigt[4]:+.4f},{eps_voigt[5]:+.4f}) "
+                      f"σ=({sigma_voigt[0]:.2f},{sigma_voigt[1]:.2f},{sigma_voigt[2]:.2f},"
+                      f"{sigma_voigt[3]:.2f},{sigma_voigt[4]:.2f},{sigma_voigt[5]:.2f}) kbar[/dim]")
+
+    if len(strains_list) < 6:
+        console.print(f"[red]Need at least 6 valid data points, got {len(strains_list)}.[/red]")
         return
 
-    C = result["C"]
+    console.print(f"  Data points: {len(strains_list)}")
+
+    # Build matrices: Σ (N×6), Ε (N×6)
+    E_mat = np.array(strains_list)   # N×6
+    S_mat = np.array(stresses_list)  # N×6, in kbar
+
+    # Fit elastic tensor row-by-row:  σ_i = Σ_j C_ij · ε_j
+    # For each row i of C:  C_i = (E^T·E)^(-1)·E^T·s_i
+    C = np.zeros((6, 6))
+    for i in range(6):
+        C[i, :], _res, _rank, _sv = np.linalg.lstsq(E_mat, S_mat[:, i], rcond=None)
+
+    # Convert kbar → GPa  (1 kbar = 0.1 GPa)
+    KBAR_TO_GPA = 0.1
+    C_gpa = C * KBAR_TO_GPA
+
+    # Symmetrize (elastic tensor should be symmetric)
+    C_gpa = (C_gpa + C_gpa.T) / 2.0
+
     console.print()
     console.print("  [bold]Elastic Tensor (Voigt, GPa):[/bold]")
     for i in range(6):
-        row_str = "  ".join(f"{C[i, j]:10.3f}" for j in range(6))
+        row_str = "  ".join(f"{C_gpa[i, j]:10.3f}" for j in range(6))
         console.print(f"    {row_str}")
 
-    # Compute properties
-    props = compute_mechanical_properties(C)
+    # Compute mechanical properties
+    props = compute_mechanical_properties(C_gpa)
 
     console.print()
     console.print("  [bold]Mechanical Properties (VRH):[/bold]")
@@ -296,7 +265,65 @@ def task_elastic_constants(args: list[str] | None = None, interactive: bool = Tr
         console.print(f"    Zener Anisotropy = {props['A_Zener']:.4f} "
                       f"({'isotropic' if abs(props['A_Zener']-1.0)<0.05 else 'anisotropic'})")
 
+    # Save elastic tensor
+    out_dat = "elastic_tensor.dat"
+    with open(out_dat, "w") as f:
+        f.write("# Elastic tensor (Voigt, GPa) — 6×6\n")
+        for i in range(6):
+            f.write("  ".join(f"{C_gpa[i, j]:12.6f}" for j in range(6)) + "\n")
+    console.print(f"  [green]✓ {out_dat}[/green]")
+
     console.print()
+
+
+def _parse_stress_tensor(filepath: Path) -> np.ndarray | None:
+    """Parse the final TOTAL-STRESS tensor from an ABACUS log file.
+
+    Returns 3×3 stress tensor in kbar, or None if not found.
+    """
+    if not filepath.exists():
+        return None
+    text = filepath.read_text()
+    lines = text.split("\n")
+
+    # Find the last occurrence of TOTAL-STRESS
+    stress_blocks: list[list[str]] = []
+    in_block = False
+    block: list[str] = []
+    for line in lines:
+        if re.search(r"TOTAL-STRESS\s*\(KBAR\)", line, re.IGNORECASE):
+            if block:
+                stress_blocks.append(block)
+            block = []
+            in_block = True
+            continue
+        if in_block:
+            if block and (not line.strip() or re.match(r"^\s*$", line)):
+                stress_blocks.append(block)
+                in_block = False
+                continue
+            # Match lines with 3 numbers
+            parts = line.split()
+            nums = []
+            for p in parts:
+                try:
+                    nums.append(float(p))
+                except ValueError:
+                    break
+            if len(nums) >= 3:
+                block.append(nums[:3])
+
+    if block:
+        stress_blocks.append(block)
+
+    if not stress_blocks:
+        return None
+
+    # Use the last block
+    last = stress_blocks[-1]
+    if len(last) >= 3:
+        return np.array(last[:3])
+    return None
 
 
 # =============================================================================
@@ -305,18 +332,30 @@ def task_elastic_constants(args: list[str] | None = None, interactive: bool = Tr
 
 
 @task(1202, category="Mechanics", name="EOS Fitting",
-      description="Fit Birch-Murnaghan equation of state from energy-volume data",
+      description="Extract E-V data from scale_* dirs, fit Birch-Murnaghan EOS, plot",
       cli_args=[
-          {"name": "--file", "type": str, "default": None, "help": "Path to energy-volume data"},
+          {"name": "--file", "type": str, "default": None, "help": "Path to energy-volume data file (ev.dat)"},
+          {"name": "--no-plot", "action": "store_true", "default": False,
+           "help": "Skip plotting"},
       ])
 def task_eos_fitting(args: list[str] | None = None, interactive: bool = True,
                      parsed_args=None) -> None:
     """Fit equation of state from energy-volume data.
 
-    Can read from:
-    - A user-provided data file (volume energy per line)
-    - OUT.ABACUS energy output at different volumes
+    Two-stage workflow:
+
+    1. **Extract** — scan ``scale_*/`` directories, read STRU (volume)
+       and ``OUT.ABACUS/running_scf.log`` (!FINAL_ETOT_IS), write ``ev.dat``.
+
+    2. **Fit** — read ``ev.dat``, fit 3rd-order Birch-Murnaghan EOS,
+       write ``eos_fit.dat`` (fitted curve), print V₀/B₀/B₀'/E₀.
+
+    If ``--file`` is given, skip stage 1 and use that file directly.
     """
+    import matplotlib.pyplot as plt
+    from abacuscopilot.plotting.style import load_style_from_config
+    from abacuscopilot.io.stru_file import read_stru
+
     console = _get_console()
 
     console.print()
@@ -324,18 +363,76 @@ def task_eos_fitting(args: list[str] | None = None, interactive: bool = True,
     console.print("[dim]Birch-Murnaghan (3rd order): E(V) → V₀, B₀, B₀'[/dim]")
     console.print()
 
-    # Look for ev.dat style file
+    # ---- stage 1: auto-extract from scale_* directories ----
     ev_path = None
     if parsed_args and parsed_args.file:
         ev_path = Path(parsed_args.file)
     if ev_path is None and args:
         for arg in args:
             p = Path(arg)
-            if p.exists():
+            if p.exists() and p.suffix in (".dat", ".txt"):
                 ev_path = p
                 break
 
+    _ev_dirs: list[str] = []  # scale dir names (parallel to volumes after extraction)
+
     if ev_path is None:
+        # Auto-extract from scale_* directories
+        scale_dirs = sorted(Path().glob("scale_*"))
+        if scale_dirs:
+            console.print("[bold]Step 1: Extract E-V from scale directories[/bold]")
+            console.print()
+
+            points: list[tuple[float, float, str]] = []  # (vol, energy, dir_name)
+            for sd in scale_dirs:
+                stru_file = sd / "STRU"
+                log_file = sd / "OUT.ABACUS" / "running_scf.log"
+                if not stru_file.exists() or not log_file.exists():
+                    console.print(f"  [yellow]![/yellow] {sd.name}: missing STRU or OUT.ABACUS/running_scf.log")
+                    continue
+
+                # Volume from STRU
+                try:
+                    s = read_stru(str(stru_file))
+                    vol = s.lattice.volume_angstrom
+                except Exception:
+                    console.print(f"  [yellow]![/yellow] {sd.name}: failed to read STRU")
+                    continue
+
+                # Energy from SCF log
+                try:
+                    text = log_file.read_text()
+                    m = re.search(r"!FINAL_ETOT_IS\s+([\-\d\.Ee+]+)", text)
+                    if not m:
+                        console.print(f"  [yellow]![/yellow] {sd.name}: !FINAL_ETOT_IS not found in log")
+                        continue
+                    energy_ev = float(m.group(1))
+                except Exception:
+                    console.print(f"  [yellow]![/yellow] {sd.name}: failed to read energy")
+                    continue
+
+                points.append((vol, energy_ev, sd.name))
+                console.print(f"  [dim]{sd.name}: V={vol:.4f} Å³, E={energy_ev:.4f} eV[/dim]")
+
+            if not points:
+                console.print("[red]No valid E-V data extracted from scale_* directories.[/red]")
+                return
+
+            # Sort by volume
+            points.sort(key=lambda x: x[0])
+
+            _ev_dirs = [p[2] for p in points]  # dir names in sorted order
+            ev_path = Path("ev.dat")
+            with open(ev_path, "w") as f:
+                f.write("# volume(A^3)  energy(eV)\n")
+                for v, e, _d in points:
+                    f.write(f"{v:.6f}  {e:.8f}\n")
+            console.print(f"  [green]✓ ev.dat[/green] ({len(points)} points)")
+            console.print()
+
+    # ---- stage 2: fit EOS ----
+    if ev_path is None:
+        # Fallback: scan for ev.dat etc.
         for name in ("ev.dat", "e_vs_v.dat", "energy_volume.dat"):
             p = Path(name)
             if p.exists():
@@ -344,13 +441,12 @@ def task_eos_fitting(args: list[str] | None = None, interactive: bool = True,
 
     if ev_path is None:
         console.print("[red]No energy-volume data file found.[/red]")
-        console.print("[dim]Provide a file with lines: volume energy (per line).[/dim]")
-        console.print("[dim]Example: abacuscopilot -task 1202 ev.dat[/dim]")
+        console.print("[dim]Run this task in a directory with scale_*/ subdirs,[/dim]")
+        console.print("[dim]or provide: abacuscopilot -task 1202 --file ev.dat[/dim]")
         return
 
     console.print(f"  [dim]Data file: {ev_path}[/dim]")
 
-    # Read data
     data = np.loadtxt(ev_path)
     if data.ndim != 2 or data.shape[1] < 2:
         console.print("[red]File must have at least 2 columns: volume energy.[/red]")
@@ -358,48 +454,127 @@ def task_eos_fitting(args: list[str] | None = None, interactive: bool = True,
 
     volumes = data[:, 0]
     energies = data[:, 1]
-
     console.print(f"  Data points: {len(volumes)}")
 
-    # Fit EOS
+    # Fit
     eos = fit_eos_birch_murnaghan(volumes, energies)
+    if eos["B0"] == 0.0:
+        console.print("[red]EOS fitting failed.[/red]")
+        return
+
+    # Convert B0 from eV/Å³ → GPa
+    b0_ev_a3 = eos["B0"]
+    b0_gpa = b0_ev_a3 * 160.2177
+
+    # Equilibrium energy per atom (estimate)
+    n_atoms: int | None = None
+    try:
+        s0 = read_stru("STRU")
+        n_atoms = len(s0.atoms)
+    except Exception:
+        for sd in sorted(Path().glob("scale_*")):
+            try:
+                s0 = read_stru(str(sd / "STRU"))
+                n_atoms = len(s0.atoms)
+                break
+            except Exception:
+                continue
 
     console.print()
     console.print("  [bold]Birch-Murnaghan (3rd order) fit:[/bold]")
-    console.print(f"    V₀  = {eos['V0']:.4f}  (equilibrium volume)")
-    console.print(f"    B₀  = {eos['B0']:.2f}  (bulk modulus, same units as energy/volume)")
+    console.print(f"    V₀  = {eos['V0']:.4f} Å³  (equilibrium volume)")
+    console.print(f"    B₀  = {b0_gpa:.2f} GPa  (bulk modulus)")
     console.print(f"    B₀' = {eos['B0_prime']:.3f}  (pressure derivative)")
-    console.print(f"    E₀  = {eos['E0']:.6f}  (equilibrium energy)")
+    console.print(f"    E₀  = {eos['E0']:.6f} eV  (equilibrium energy)")
+    if n_atoms:
+        console.print(f"    E₀/atom = {eos['E0']/n_atoms:.6f} eV")
+    console.print()
 
-    # Plot
-    import matplotlib.pyplot as plt
+    # Locate the data point closest to V0
+    idx_min = np.argmin(np.abs(volumes - eos["V0"]))
+    console.print(f"  Minimum-energy data point: V = {volumes[idx_min]:.4f} Å³, "
+                  f"E = {energies[idx_min]:.6f} eV")
 
-    from abacuscopilot.plotting.style import load_style_from_config
-    load_style_from_config()
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.scatter(volumes, energies, color="#1f77b4", s=30, zorder=5, label="Data")
-
-    # Fitted curve
+    # ---- fitted curve dat ----
     V_fine = np.linspace(volumes.min() * 0.95, volumes.max() * 1.05, 200)
+    E_fit = np.array([_bm3(v, eos["E0"], eos["V0"], eos["B0"], eos["B0_prime"])
+                      for v in V_fine])
 
-    def bm3(V, E0, V0, B0, B0p):
-        eta = (V0 / V) ** (2.0 / 3.0)
-        return E0 + 9.0 * V0 * B0 / 16.0 * (
-            (eta - 1.0) ** 3 * B0p + (eta - 1.0) ** 2 * (6.0 - 4.0 * eta)
+    dat_fit = Path("eos_fit.dat")
+    with open(dat_fit, "w") as f:
+        f.write("# volume(A^3)  energy_fit(eV)\n")
+        for v, e in zip(V_fine, E_fit):
+            f.write(f"{v:.6f}  {e:.8f}\n")
+    console.print(f"  [green]✓ eos_fit.dat[/green] (fitted curve, {len(V_fine)} points)")
+
+    # ---- min.STRU: structure closest to equilibrium volume ----
+    import shutil
+    idx_min = np.argmin(np.abs(volumes - eos["V0"]))
+    min_stru_src = None
+    if _ev_dirs and idx_min < len(_ev_dirs):
+        min_stru_src = Path(_ev_dirs[idx_min]) / "STRU"
+    if min_stru_src is None or not min_stru_src.exists():
+        # Fallback: scan scale_* directories for matching volume
+        for sd in sorted(Path().glob("scale_*")):
+            try:
+                s_test = read_stru(str(sd / "STRU"))
+                if abs(s_test.lattice.volume_angstrom - volumes[idx_min]) < 0.01:
+                    min_stru_src = sd / "STRU"
+                    break
+            except Exception:
+                continue
+    if min_stru_src and min_stru_src.exists():
+        shutil.copy2(min_stru_src, "min.STRU")
+        console.print(f"  [green]✓ min.STRU[/green] (from {min_stru_src.parent.name}/)")
+    else:
+        console.print("  [yellow]![/yellow] min.STRU: source not found")
+
+    # ---- plot ----
+    do_plot = True
+    if parsed_args and parsed_args.no_plot:
+        do_plot = False
+    elif interactive:
+        from abacuscopilot.console_utils import _prompt_choice
+        answer = _prompt_choice(console, "Generate EOS plot?", ["Yes", "No"], "Yes")
+        do_plot = "Yes" in answer
+
+    if do_plot:
+        load_style_from_config()
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        # Data: scatter
+        ax.scatter(volumes, energies, color="#1f77b4", s=40, zorder=5,
+                   edgecolors="white", linewidths=0.5, label="Data")
+
+        # Fitted curve: line
+        ax.plot(V_fine, E_fit, color="#d62728", linewidth=1.5, zorder=4,
+                label="BM3 fit")
+
+        # Equilibrium marker (open circle)
+        ax.scatter([eos["V0"]], [eos["E0"]], marker="o", facecolors="none",
+                   edgecolors="#d62728", s=120, zorder=6, linewidths=1.5)
+        ax.annotate(
+            f"V0 = {eos['V0']:.2f} A^3\nE0 = {eos['E0']:.2f} eV",
+            xy=(eos["V0"], eos["E0"]),
+            xytext=(15, -25), textcoords="offset points",
+            fontsize=8, color="#d62728",
+            arrowprops=dict(arrowstyle="->", color="#d62728", lw=0.8),
         )
 
-    E_fit = bm3(V_fine, eos["E0"], eos["V0"], eos["B0"], eos["B0_prime"])
+        ax.set_xlabel("Volume (A^3)")
+        ax.set_ylabel("Energy (eV)")
+        ax.set_title("Equation of State — Birch-Murnaghan Fit")
+        ax.legend(loc="upper left")
 
-    ax.plot(V_fine, E_fit, color="#d62728", linewidth=1.5, label="BM3 fit")
-    ax.axvline(x=eos["V0"], color="gray", linestyle="--", linewidth=0.8, label=f"V₀ = {eos['V0']:.2f}")
-    ax.set_xlabel("Volume")
-    ax.set_ylabel("Energy")
-    ax.set_title("Equation of State")
-    ax.legend()
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.5)
+            spine.set_visible(True)
+        ax.tick_params(axis="both", direction="out")
 
-    save_name = "eos_fit.png"
-    fig.savefig(save_name)
-    console.print(f"  [green]✓ Plot saved to {save_name}[/green]")
-    plt.close(fig)
+        fig.tight_layout(pad=1.2)
+        out_png = "eos_fit.png"
+        fig.savefig(out_png, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        console.print(f"  [green]✓ Plot: {out_png}[/green]")
+
     console.print()

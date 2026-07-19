@@ -143,21 +143,31 @@ _NSCF_READ = {"read_file_dir": "./", "init_chg": "file"}
 
 # --- LCAO templates ----------------------------------------------------------
 
-TEMPLATE_LCAO_CELL_RELAX = {**_LCAO_BASE, "calculation": "cell-relax", **_RELAX_FIELDS, "cal_stress": 1}
-TEMPLATE_LCAO_RELAX      = {**_LCAO_BASE, "calculation": "relax",      **_RELAX_FIELDS, "cal_stress": 0}
+_COMMENT_VDW_FUNC = {"vdw_method": "d3_0", "dft_functional": "pbesol"}
+
+TEMPLATE_LCAO_CELL_RELAX = {**_LCAO_BASE, "calculation": "cell-relax", **_RELAX_FIELDS, "cal_stress": 1,
+    "_comment_hints": _COMMENT_VDW_FUNC}
+TEMPLATE_LCAO_RELAX      = {**_LCAO_BASE, "calculation": "relax",      **_RELAX_FIELDS, "cal_stress": 0,
+    "_comment_hints": _COMMENT_VDW_FUNC}
 TEMPLATE_LCAO_SCF         = {**_LCAO_BASE, "calculation": "scf",
-    "_comment_hints": {"cal_force": "1", "cal_stress": "1"}}
-TEMPLATE_LCAO_BAND        = {**_LCAO_BASE, "calculation": "nscf", "symmetry": 0, "kspacing": None, **_NSCF_READ, "out_band": True}
-TEMPLATE_LCAO_DOS         = {**_LCAO_BASE, "calculation": "nscf", **_NSCF_READ, "out_dos": 1, "dos_emin_ev": -15.0, "dos_emax_ev": 15.0, "dos_edelta_ev": 0.01, "dos_sigma": 0.03}
+    "_comment_hints": {"cal_force": "1", "cal_stress": "1", **_COMMENT_VDW_FUNC}}
+TEMPLATE_LCAO_BAND        = {**_LCAO_BASE, "calculation": "nscf", "symmetry": 0, "kspacing": None, **_NSCF_READ, "out_band": True,
+    "_comment_hints": _COMMENT_VDW_FUNC}
+TEMPLATE_LCAO_DOS         = {**_LCAO_BASE, "calculation": "nscf", **_NSCF_READ, "out_dos": 1, "dos_emin_ev": -15.0, "dos_emax_ev": 15.0, "dos_edelta_ev": 0.01, "dos_sigma": 0.03,
+    "_comment_hints": _COMMENT_VDW_FUNC}
 
 # --- PW templates ------------------------------------------------------------
 
-TEMPLATE_PW_CELL_RELAX = {**_PW_BASE, "calculation": "cell-relax", **_RELAX_FIELDS, "cal_stress": 1}
-TEMPLATE_PW_RELAX      = {**_PW_BASE, "calculation": "relax",      **_RELAX_FIELDS, "cal_stress": 0}
+TEMPLATE_PW_CELL_RELAX = {**_PW_BASE, "calculation": "cell-relax", **_RELAX_FIELDS, "cal_stress": 1,
+    "_comment_hints": _COMMENT_VDW_FUNC}
+TEMPLATE_PW_RELAX      = {**_PW_BASE, "calculation": "relax",      **_RELAX_FIELDS, "cal_stress": 0,
+    "_comment_hints": _COMMENT_VDW_FUNC}
 TEMPLATE_PW_SCF         = {**_PW_BASE, "calculation": "scf",
-    "_comment_hints": {"cal_force": "1", "cal_stress": "1"}}
-TEMPLATE_PW_BAND        = {**_PW_BASE, "calculation": "nscf", "symmetry": 0, "kspacing": None, **_NSCF_READ, "out_band": True}
-TEMPLATE_PW_DOS         = {**_PW_BASE, "calculation": "nscf", **_NSCF_READ, "out_dos": 1, "dos_emin_ev": -15.0, "dos_emax_ev": 15.0, "dos_edelta_ev": 0.01, "dos_sigma": 0.03}
+    "_comment_hints": {"cal_force": "1", "cal_stress": "1", **_COMMENT_VDW_FUNC}}
+TEMPLATE_PW_BAND        = {**_PW_BASE, "calculation": "nscf", "symmetry": 0, "kspacing": None, **_NSCF_READ, "out_band": True,
+    "_comment_hints": _COMMENT_VDW_FUNC}
+TEMPLATE_PW_DOS         = {**_PW_BASE, "calculation": "nscf", **_NSCF_READ, "out_dos": 1, "dos_emin_ev": -15.0, "dos_emax_ev": 15.0, "dos_edelta_ev": 0.01, "dos_sigma": 0.03,
+    "_comment_hints": _COMMENT_VDW_FUNC}
 
 # --- MD templates (distinct enough to keep inline) ---------------------------
 
@@ -173,7 +183,7 @@ TEMPLATE_LCAO_MD = {
     "md_tfirst": ("300", "unit in K"), "md_tlast": ("300", "unit in K"),
     "md_dumpfreq": 1, "md_restartfreq": 1, "out_level": "m",  # MD simplified output — keeps logs much smaller
     "_section_hints": {"System variables": ["kspacing            0.14 # unit in 1/bohr"]},
-    "_comment_hints": {"cal_force": "1", "cal_stress": "1"},
+    "_comment_hints": {"cal_force": "1", "cal_stress": "1", "vdw_method": "d3_0", "dft_functional": "pbesol"},
 }
 
 TEMPLATE_PW_MD = {
@@ -189,7 +199,7 @@ TEMPLATE_PW_MD = {
     "md_tfirst": ("300", "unit in K"), "md_tlast": ("300", "unit in K"),
     "md_dumpfreq": 1, "md_restartfreq": 1, "out_level": "m",  # MD simplified output — keeps logs much smaller
     "_section_hints": {"System variables": ["kspacing            0.14 # unit in 1/bohr"]},
-    "_comment_hints": {"cal_force": "1", "cal_stress": "1"},
+    "_comment_hints": {"cal_force": "1", "cal_stress": "1", "vdw_method": "d3_0", "dft_functional": "pbesol"},
 }
 
 TEMPLATE_DP_MD = {
@@ -1441,6 +1451,20 @@ def task_eos_setup(args: list[str] | None = None, interactive: bool = True,
     elif parsed_args and parsed_args.solver:
         _apply_solver_override(console, params, parsed_args.solver)
 
+    # --- D3 dispersion correction ---
+    if interactive:
+        use_d3 = _prompt_choice(console, "D3 dispersion correction", ["No", "d3_0 (zero-damping)", "d3_bj (Becke-Johnson)"], "No")
+        if "d3_0" in use_d3:
+            params.vdw_method = "d3_0"
+        elif "d3_bj" in use_d3:
+            params.vdw_method = "d3_bj"
+
+    # --- Exchange-correlation functional ---
+    if interactive:
+        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBE", "PBEsol"], "PBE")
+        if "PBEsol" in use_func:
+            params.dft_functional = "pbesol"
+
     # --- Read and prepare STRU ---
     from abacuscopilot.io.stru_file import read_stru, write_stru
 
@@ -1581,4 +1605,260 @@ def task_eos_setup(args: list[str] | None = None, interactive: bool = True,
     console.print(f"  Basis: {basis}, ks_solver: {params.ks_solver}")
     console.print(f"  ecutwfc: {params.ecutwfc} Ry, scf_thr: {params.scf_thr}")
     console.print("  [dim]Temporary files (STRU.tmp, UPF/ORB) removed from current directory.[/dim]")
+    console.print()
+
+
+# =============================================================================
+# Task 111: Elastic Deformation Setup
+# =============================================================================
+
+@task(111, category="INPUT", name="Elastic Setup",
+      description="Generate deformed structures for elastic constants (stress–strain method)",
+      cli_args=[
+          {"name": "--basis", "type": str, "default": "lcao",
+           "help": "Basis type: lcao, pw"},
+          {"name": "--solver", "type": str, "default": "",
+           "help": "LCAO solver: genelpa (CPU) or cusolver (GPU)"},
+          {"name": "--strains", "type": str, "default": "-0.01,-0.005,0.005,0.01",
+           "help": "Comma-separated strain magnitudes (default: -0.01,-0.005,0.005,0.01)"},
+      ])
+def task_elastic_setup(args: list[str] | None = None, interactive: bool = True,
+                       parsed_args=None) -> None:
+    """Generate 6×4=24 deformed STRU files for elastic constants via stress–strain.
+
+    Reads the equilibrium STRU, applies 6 independent Voigt strain states at
+    4 magnitudes each (default ±0.01, ±0.005), and writes ``task.000/`` through
+    ``task.023/`` directories.  Each directory gets a STRU with deformed lattice
+    vectors (same fractional coordinates), an SCF INPUT with ``cal_stress=1``,
+    and copies of pseudopotential / orbital files.
+
+    The ordering matches the ABACUS user-guide convention:
+
+    ========  ======  ============
+    Dir        Type    Magnitude
+    ========  ======  ============
+    task.000   e₁      −0.010
+    task.001   e₁      −0.005
+    task.002   e₁      +0.005
+    task.003   e₁      +0.010
+    task.004   e₂      −0.010
+    ...        ...     ...
+    task.020   e₆      −0.010
+    task.023   e₆      +0.010
+    ========  ======  ============
+    """
+    import shutil
+
+    console = _get_console()
+    console.print()
+    console.print("[bold cyan]=== Elastic Deformation Setup ===[/bold cyan]")
+    console.print("[dim]Generate 24 deformed structures for stress–strain elastic constants[/dim]")
+    console.print()
+
+    # --- Strain magnitudes ---
+    if interactive:
+        strain_s = _prompt(console, "Strain magnitudes (comma-separated)", "-0.01,-0.005,0.005,0.01")
+    elif parsed_args:
+        strain_s = parsed_args.strains
+    else:
+        strain_s = "-0.01,-0.005,0.005,0.01"
+    try:
+        strain_mags = [float(x.strip()) for x in strain_s.split(",")]
+    except ValueError:
+        console.print("[red]Invalid strain list. Use comma-separated floats.[/red]")
+        return
+    console.print(f"  Strains: {strain_mags}")
+
+    # --- Basis type ---
+    if interactive:
+        basis = _prompt_choice(console, "Basis type", ["lcao", "pw"], "lcao")
+    elif parsed_args:
+        basis = parsed_args.basis if parsed_args.basis in ("lcao", "pw") else "lcao"
+    else:
+        basis = "lcao"
+
+    # --- INPUT params ---
+    params = InputParams()
+    params.suffix = "ABACUS"
+    template = _get_template(basis, "scf")
+    if template:
+        _apply_template(params, template)
+    # Elastic setup: need forces/stresses, fixed cell (relax atoms only)
+    params.calculation = "relax"
+    params.cal_force = 1
+    params.cal_stress = 1
+    # Force into INPUT even though this equals the default (1).
+    # "Geometry relaxation" is a conditional group — keys only appear when
+    # value ≠ default OR key ∈ template_keys.
+    if "_template_keys" not in params.extras:
+        params.extras["_template_keys"] = []
+    for _k in ("cal_force", "cal_stress"):
+        if _k not in params.extras["_template_keys"]:
+            params.extras["_template_keys"].append(_k)
+
+    if interactive and basis == "lcao":
+        _ask_lcao_solver(console, params)
+    elif parsed_args and parsed_args.solver:
+        _apply_solver_override(console, params, parsed_args.solver)
+
+    # --- D3 dispersion correction ---
+    if interactive:
+        use_d3 = _prompt_choice(console, "D3 dispersion correction", ["No", "d3_0 (zero-damping)", "d3_bj (Becke-Johnson)"], "No")
+        if "d3_0" in use_d3:
+            params.vdw_method = "d3_0"
+        elif "d3_bj" in use_d3:
+            params.vdw_method = "d3_bj"
+
+    # --- Exchange-correlation functional ---
+    if interactive:
+        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBE", "PBEsol"], "PBE")
+        if "PBEsol" in use_func:
+            params.dft_functional = "pbesol"
+
+    # --- Read STRU ---
+    from abacuscopilot.io.stru_file import read_stru, write_stru
+
+    stru_path = Path("STRU")
+    if not stru_path.exists():
+        console.print("[red]No STRU file found.[/red]")
+        return
+    structure = read_stru(stru_path)
+
+    # Convert to fractional coords (keep them fixed under deformation)
+    if structure.coordinate_type != "Direct":
+        if "Cartesian" in structure.coordinate_type:
+            cell_bohr = structure.lattice.cell
+            cell_inv = np.linalg.inv(cell_bohr)
+            for atom in structure.atoms:
+                pos = atom.position.copy()
+                if "angstrom" in structure.coordinate_type.lower():
+                    from abacuscopilot.core.constants import ANGSTROM_TO_BOHR
+                    pos = pos * ANGSTROM_TO_BOHR
+                atom.position = pos @ cell_inv
+        structure.coordinate_type = "Direct"
+
+    # --- Copy pseudopotentials/orbitals ---
+    _auto_prepare_files(console, params, interactive)
+    structure = read_stru(stru_path)
+    if structure.coordinate_type != "Direct":
+        structure.coordinate_type = "Direct"
+
+    # Gather UPF/ORB files
+    pseudo_files: list[Path] = []
+    orbital_files: list[Path] = []
+    for species in structure.species_order:
+        for pat in Path(".").glob(f"{species}_*.upf"):
+            if pat not in pseudo_files:
+                pseudo_files.append(pat)
+        if basis == "lcao":
+            for pat in Path(".").glob(f"{species}_*.orb"):
+                if pat not in orbital_files:
+                    orbital_files.append(pat)
+
+    # --- Handle sub.abacus ---
+    skip_sub = (parsed_args and getattr(parsed_args, "sub", "") == "skip")
+    sub_src: Path | None = None
+
+    if not skip_sub:
+        config = load_config()
+        sub_path = config.get("paths", {}).get("sub_script", "")
+        if sub_path:
+            p = Path(sub_path)
+            if p.exists():
+                sub_src = p
+            else:
+                console.print(f"  [yellow]! sub.abacus template not found: {sub_path}[/yellow]")
+
+        if sub_src is None and interactive:
+            answer = _prompt(console, "sub.abacus path (enter to skip)", "")
+            if answer.strip().lower() == "skip":
+                pass
+            elif answer.strip():
+                p = Path(answer.strip())
+                if p.exists():
+                    sub_src = p
+                else:
+                    console.print(f"  [yellow]! File not found: {answer}[/yellow]")
+
+    if sub_src:
+        console.print(f"  sub.abacus: [dim]{sub_src}[/dim]")
+    else:
+        console.print("  sub.abacus: [dim]skipped[/dim]")
+
+    # --- Generate deformed structures ---
+    # 6 Voigt strain states, each with len(strain_mags) magnitudes
+    A0 = structure.lattice.cell.copy()  # 3×3 cell in Bohr
+
+    console.print()
+    console.print("[bold]Creating task directories:[/bold]")
+
+    from abacuscopilot.io.input_file import write_input
+
+    task_idx = 0
+    for i_strain in range(6):  # e1..e6
+        for mag in strain_mags:
+            # Build 3×3 strain tensor from Voigt vector
+            eps = np.zeros((3, 3))
+            if i_strain == 0:    # e1: normal xx
+                eps[0, 0] = mag
+            elif i_strain == 1:  # e2: normal yy
+                eps[1, 1] = mag
+            elif i_strain == 2:  # e3: normal zz
+                eps[2, 2] = mag
+            elif i_strain == 3:  # e4: shear yz
+                eps[1, 2] = mag / 2.0
+                eps[2, 1] = mag / 2.0
+            elif i_strain == 4:  # e5: shear xz
+                eps[0, 2] = mag / 2.0
+                eps[2, 0] = mag / 2.0
+            elif i_strain == 5:  # e6: shear xy
+                eps[0, 1] = mag / 2.0
+                eps[1, 0] = mag / 2.0
+
+            D = np.eye(3) + eps  # deformation matrix
+            A_def = A0 @ D       # deformed cell in Bohr
+
+            # Create Structure with deformed lattice
+            deformed = read_stru(stru_path)
+            deformed.lattice.vectors = A_def / deformed.lattice.constant
+
+            dir_name = f"task.{task_idx:03d}"
+            dir_path = Path(dir_name)
+            dir_path.mkdir(exist_ok=True)
+
+            write_stru(deformed, dir_path / "STRU", is_lcao=(basis == "lcao"))
+            write_input(params, dir_path / "INPUT")
+
+            # Write strain info for fitting
+            with open(dir_path / "strain.json", "w") as f:
+                import json
+                json.dump({"strain_voigt": [eps[0, 0], eps[1, 1], eps[2, 2],
+                                             2*eps[1, 2], 2*eps[0, 2], 2*eps[0, 1]],
+                           "magnitude": mag, "type": i_strain + 1}, f, indent=2)
+
+            for pf in pseudo_files:
+                shutil.copy2(pf, dir_path / pf.name)
+            for of in orbital_files:
+                shutil.copy2(of, dir_path / of.name)
+
+            if sub_src and sub_src.exists():
+                shutil.copy2(sub_src, dir_path / "sub.abacus")
+
+            console.print(f"  [green]✓[/green] {dir_name}/  "
+                          f"e{i_strain+1}={mag:+.3f}")
+            task_idx += 1
+
+    # --- Cleanup ---
+    for pf in pseudo_files:
+        pf.unlink(missing_ok=True)
+    for of in orbital_files:
+        of.unlink(missing_ok=True)
+    local_sub = Path("sub.abacus")
+    if local_sub.exists():
+        local_sub.unlink()
+
+    console.print()
+    console.print(f"[green]✓ Elastic setup complete: {task_idx} task directories[/green]")
+    console.print(f"  Basis: {basis}, ks_solver: {params.ks_solver}")
+    console.print(f"  Run all tasks, then: [bold]abacuscopilot -task 1201[/bold]")
     console.print()
