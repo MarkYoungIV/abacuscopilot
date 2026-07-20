@@ -35,7 +35,7 @@ def _find_phonopy() -> str | None:
 
 def _run_phonopy(args: list[str], cwd: str | Path = ".", timeout: int = 120) -> subprocess.CompletedProcess:
     """Run phonopy as a subprocess (for -p, band plotting, etc.)."""
-    import shutil as _shutil
+    import shutil as _shutil, os
     for candidate in [
         _shutil.which("phonopy"),
         Path(sys.executable).parent / "phonopy",
@@ -46,8 +46,10 @@ def _run_phonopy(args: list[str], cwd: str | Path = ".", timeout: int = 120) -> 
             break
     else:
         cmd = [sys.executable, "-m", "phonopy"] + args
+    env = os.environ.copy()
+    env.setdefault("OMP_NUM_THREADS", "4")
     return subprocess.run(
-        cmd, capture_output=True, text=True, cwd=str(cwd), timeout=timeout,
+        cmd, capture_output=True, text=True, cwd=str(cwd), timeout=timeout, env=env,
     )
 
 
@@ -198,25 +200,36 @@ def task_phonon_analysis(args: list[str] | None = None, interactive: bool = True
         numbers = [atomic_numbers.get(sp, 0) for sp in [a.species for a in s.atoms]]
         sp = get_path((s.lattice.cell_angstrom.tolist(), positions.tolist(), numbers),
                       with_time_reversal=True)
-        point_coords = sp["point_coords"]  # {label: [k1, k2, k3]}
+        point_coords = sp["point_coords"]
+        # Simplify: skip redundant segments (X→X, GAMMA→GAMMA etc.)
         band_parts: list[str] = []
         band_labels_parts: list[str] = []
-        for seg in sp["path"]:  # [('GAMMA', 'X'), ('X', 'U'), ...]
-            start_label, end_label = seg[0], seg[1]
-            for label in (start_label, end_label):
-                c = point_coords[label]
-                band_parts.append(f"{c[0]:.6f} {c[1]:.6f} {c[2]:.6f}")
-                band_labels_parts.append(label)
+        prev_end = None
+        for seg in sp["path"]:
+            sl, el = seg[0], seg[1]
+            if sl == el:
+                continue  # skip self-loop segments
+            if prev_end is not None and sl != prev_end:
+                continue  # skip disconnected jumps
+            c0 = point_coords[sl]
+            c1 = point_coords[el]
+            if not band_parts:
+                band_parts.append(f"{c0[0]:.6f} {c0[1]:.6f} {c0[2]:.6f}")
+                band_labels_parts.append(sl)
+            band_parts.append(f"{c1[0]:.6f} {c1[1]:.6f} {c1[2]:.6f}")
+            band_labels_parts.append(el)
+            prev_end = el
         kpath_str = "  ".join(band_parts)
         klabels_str = " ".join(band_labels_parts)
-        console.print("  [dim]k-path from seekpath[/dim]")
+        # Use seekpath's primitive transformation
+        prim_mat = sp.get("primitive_transformation_matrix", [[1,0,0],[0,1,0],[0,0,1]])
+        prim_axes = "  ".join(f"{row[0]:.6f} {row[1]:.6f} {row[2]:.6f}" for row in prim_mat)
+        console.print("  [dim]k-path from seekpath (simplified)[/dim]")
     except Exception:
         kpath_str = "0 0 0  0.5 0.5 0  0.5 0.5 0.5  0 0 0"
-        klabels_str = "GM X X UK GM GM L L W W X"
+        klabels_str = "GM X UK GM L W X"
+        prim_axes = "1 0 0  0 1 0  0 0 1"
         console.print("  [yellow]![/yellow] cannot determine k-path, using default")
-
-    # PRIMITIVE_AXES — default identity for now
-    prim_axes = "1 0 0  0 1 0  0 0 1"
 
     band_conf = f"""DIM = {dim_s}
 MESH = {mesh_s}
@@ -226,21 +239,34 @@ PRIMITIVE_AXES = {prim_axes}
         f.write(band_conf)
     console.print("  [green]✓ band.conf[/green]")
 
-    # --- Step 3: Compute phonon bands ---
+    # --- Step 2.5: Compute FORCE_CONSTANTS (expensive, one-time) ---
+    fc_file = Path("FORCE_CONSTANTS")
+    if not fc_file.exists():
+        console.print()
+        console.print("[bold]Step 2.5: Compute FORCE_CONSTANTS (one-time)[/bold]")
+        console.print("  [dim]This may take minutes for large systems. Subsequent runs reuse this file.[/dim]")
+        _run_phonopy_with_progress(console, ["--writefc", "band.conf"], timeout=1200)
+        if not fc_file.exists():
+            console.print("[red]FORCE_CONSTANTS was not created.[/red]")
+            return
+        console.print("  [green]✓ FORCE_CONSTANTS[/green]")
+    else:
+        console.print(f"  [dim]FORCE_CONSTANTS exists ({fc_file.stat().st_size // 1024} KB), reusing[/dim]")
+
+    # --- Step 3: Compute phonon bands (fast with --readfc) ---
     console.print()
     console.print("[bold]Step 3: Compute phonon bands[/bold]")
-    console.print("  Running: [dim]phonopy --band ... band.conf[/dim]")
+    console.print("  Running: [dim]phonopy --readfc --band ... band.conf[/dim]")
 
-    # Split k-path + labels into individual arguments
     kpoints = kpath_str.split()
     klabels = klabels_str.split()
     band_args = (
         ["--band"] + kpoints +
         ["--band-labels"] + klabels +
-        ["--band-points", "101", "--band-connection", "band.conf"]
+        ["--band-points", "51", "--band-connection", "band.conf"]
     )
 
-    result = _run_phonopy(band_args, timeout=120)
+    result = _run_phonopy(band_args, timeout=600)
     if result.returncode != 0:
         console.print("[red]phonopy band calculation failed:[/red]")
         console.print(result.stderr)
@@ -254,13 +280,20 @@ PRIMITIVE_AXES = {prim_axes}
         return
     console.print("  [green]✓ band.yaml[/green]")
 
-    # --- Read band.yaml for frequency range ---
+    # --- Scan band.yaml for frequency range (light: grep, don't parse YAML) ---
     f_auto_min = 0.0
     f_auto_max = 20.0
     try:
-        _, freqs_tmp, _, _ = _parse_band_yaml(Path("band.yaml"))
-        f_auto_min = float(np.min(freqs_tmp)) * 1.05
-        f_auto_max = float(np.max(freqs_tmp)) * 1.05
+        import re
+        freq_vals = []
+        with open("band.yaml") as f:
+            for line in f:
+                m = re.search(r"frequency:\s*([-\d.]+)", line)
+                if m:
+                    freq_vals.append(float(m.group(1)))
+        if freq_vals:
+            f_auto_min = min(freq_vals) * 1.05
+            f_auto_max = max(freq_vals) * 1.05
     except Exception:
         pass
 
@@ -296,7 +329,7 @@ PRIMITIVE_AXES = {prim_axes}
 
 
 def _parse_band_yaml(band_yaml: Path):
-    """Parse band.yaml with segment detection by distance breaks.
+    """Parse band.yaml by streaming (avoids loading huge YAML into memory).
 
     Returns (xs, freqs, tick_pos, tick_labels) where:
       xs[:]      — continuous x-axis (distance)
@@ -304,15 +337,74 @@ def _parse_band_yaml(band_yaml: Path):
       tick_pos   — list of x positions for segment boundaries
       tick_labels — corresponding high-symmetry labels
     """
-    import yaml
+    import re as _re
 
-    data = yaml.safe_load(band_yaml.read_text(encoding="utf-8"))
-    phonon = data.get("phonon", [])
-    if not phonon:
+    # Stream-parse: extract distances, frequencies, labels, segment_nqpoint
+    distances: list[float] = []
+    all_freqs: list[list[float]] = []
+    current_bands: list[float] = []
+    in_band = False
+    seg_nq: list[int] = []
+    raw_labels: list[list[str]] = []
+
+    with open(band_yaml) as f:
+        for line in f:
+            # Track q-point entries
+            if _re.match(r"^- q-position:", line):
+                if current_bands:
+                    all_freqs.append(current_bands)
+                    current_bands = []
+                in_band = False
+            elif _re.match(r"^\s+distance:", line):
+                m = _re.search(r"([-\d.]+(?:[eE][+-]?\d+)?)", line)
+                if m:
+                    distances.append(float(m.group(1)))
+            elif _re.match(r"^\s+frequency:", line):
+                m = _re.search(r"([-\d.]+(?:[eE][+-]?\d+)?)", line)
+                if m:
+                    current_bands.append(float(m.group(1)))
+            elif _re.match(r"^\s+segment_nqpoint:", line):
+                for m in _re.finditer(r"\d+", line):
+                    seg_nq.append(int(m.group()))
+            # Parse labels section
+            elif _re.match(r"^labels:", line):
+                pass  # handled below via yaml for simplicity
+
+    if current_bands:
+        all_freqs.append(current_bands)
+
+    if not all_freqs:
         raise ValueError("band.yaml has no phonon data")
 
-    distances = np.array([q["distance"] for q in phonon], dtype=float)
-    freqs_raw = np.array([[b["frequency"] for b in q["band"]] for q in phonon], dtype=float)
+    distances = np.array(distances, dtype=float)
+    freqs_raw = np.array(all_freqs, dtype=float)
+
+    # Parse labels with yaml (small section, fast)
+    import yaml
+    labels_text = []
+    with open(band_yaml) as f:
+        in_labels = False
+        for line in f:
+            if line.startswith("labels:"):
+                in_labels = True
+                continue
+            if in_labels:
+                if line.startswith("reciprocal_lattice:") or line.startswith("natom:"):
+                    break
+                labels_text.append(line)
+    try:
+        raw_labels = yaml.safe_load("".join(labels_text))
+    except Exception:
+        raw_labels = []
+
+    if not seg_nq:
+        # Estimate: each segment has same number of q-points
+        if raw_labels:
+            seg_nq = [len(distances) // len(raw_labels)] * len(raw_labels)
+        else:
+            seg_nq = [len(distances)]
+
+    # ... rest of the function below, same as before
 
     # Find segment breaks where distance is not monotonically increasing
     breaks = [0]
@@ -336,11 +428,7 @@ def _parse_band_yaml(band_yaml: Path):
     xs_all = np.concatenate(xs_list)
     freq_all = np.concatenate(freq_list, axis=0)
 
-    # Tick positions and labels from band.yaml 'labels' section
-    # Format: labels: [['GAMMA','X'], ['X','X'], ['X','U'], ...]
-    # Each pair corresponds to one segment; use segment_nqpoint for positions.
-    seg_nq = data.get("segment_nqpoint", [])
-    raw_labels = data.get("labels", [])
+    # Build tick positions from segment_nqpoint + labels (already parsed)
     tick_pos = []
     tick_labels_raw: list[list[str]] = []
 
@@ -395,6 +483,48 @@ def _fmt_label(lbl: str) -> str:
     if lbl == r"\Gamma":
         return r"$\Gamma$"
     return f"${lbl}$"
+
+
+def _run_phonopy_with_progress(console, args, timeout=1200):
+    """Run phonopy with real-time progress from stderr."""
+    import shutil as _shutil
+    for candidate in [
+        _shutil.which("phonopy"),
+        Path(sys.executable).parent / "phonopy",
+        Path(sys.prefix) / "bin" / "phonopy",
+    ]:
+        if candidate and Path(str(candidate)).exists():
+            cmd = [str(candidate)] + args
+            break
+    else:
+        cmd = [sys.executable, "-m", "phonopy"] + args
+
+    import time
+    start = time.time()
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, text=True,
+                            bufsize=1)
+    last_line = ""
+    while proc.poll() is None:
+        if proc.stderr:
+            line = proc.stderr.readline()
+            if line:
+                stripped = line.strip()
+                if stripped and stripped != last_line:
+                    elapsed = int(time.time() - start)
+                    console.print(f"  [dim][{elapsed}s] {stripped[:120]}[/dim]")
+                    last_line = stripped
+        if time.time() - start > timeout:
+            proc.kill()
+            console.print(f"[red]Timed out after {int(time.time()-start)}s.[/red]")
+            return
+
+    if proc.returncode != 0:
+        remaining = proc.stderr.read() if proc.stderr else ""
+        console.print(f"[red]phonopy failed (code {proc.returncode}):[/red]")
+        for line in remaining.strip().split("\n")[-5:]:
+            if line.strip():
+                console.print(f"  [dim]{line.strip()[:120]}[/dim]")
 
 
 def _parse_total_dos(path: Path):
@@ -603,8 +733,17 @@ def task_phonon_dos(args: list[str] | None = None, interactive: bool = True,
             pass
     dim_default = setup_info.get("dim", "2 2 2")
 
+    # Read default mesh from existing band.conf if available
+    _mesh_default = "8 8 8"
+    _bc = Path("band.conf")
+    if _bc.exists():
+        import re as _re
+        _txt = _bc.read_text()
+        _m = _re.search(r"MESH\s*=\s*(\d+\s+\d+\s+\d+)", _txt)
+        if _m:
+            _mesh_default = _m.group(1)
     if interactive:
-        mesh_s = _prompt(console, "q-point mesh for DOS", "8 8 8")
+        mesh_s = _prompt(console, "q-point mesh for DOS", _mesh_default)
     elif parsed_args:
         mesh_s = parsed_args.mesh
     else:
@@ -621,14 +760,19 @@ def task_phonon_dos(args: list[str] | None = None, interactive: bool = True,
 
     try:
         from phonopy import load
+        fc_kwargs = {"calculator": "abacus"}
+        if Path("FORCE_CONSTANTS").exists():
+            fc_kwargs["force_constants_filename"] = "FORCE_CONSTANTS"
+            fc_kwargs["produce_fc"] = False
+        else:
+            fc_kwargs["force_sets_filename"] = "FORCE_SETS"
+            fc_kwargs["produce_fc"] = True
         phonon = load(
             supercell_matrix=[int(x) for x in dim_default.split()],
             primitive_matrix="auto",
             unitcell_filename="STRU",
-            force_sets_filename="FORCE_SETS",
-            calculator="abacus",
             is_nac=False,
-            produce_fc=True,
+            **fc_kwargs,
         )
         phonon.run_mesh(mesh)
         phonon.run_total_dos()
@@ -744,8 +888,16 @@ def task_phonon_pdos(args: list[str] | None = None, interactive: bool = True,
             pass
     dim_default = setup_info.get("dim", "2 2 2")
 
+    _mesh_default = "8 8 8"
+    _bc = Path("band.conf")
+    if _bc.exists():
+        import re as _re
+        _txt = _bc.read_text()
+        _m = _re.search(r"MESH\s*=\s*(\d+\s+\d+\s+\d+)", _txt)
+        if _m:
+            _mesh_default = _m.group(1)
     if interactive:
-        mesh_s = _prompt(console, "q-point mesh for PDOS", "8 8 8")
+        mesh_s = _prompt(console, "q-point mesh for PDOS", _mesh_default)
     elif parsed_args:
         mesh_s = parsed_args.mesh
     else:
@@ -775,14 +927,19 @@ def task_phonon_pdos(args: list[str] | None = None, interactive: bool = True,
 
     try:
         from phonopy import load
+        fc_kwargs = {"calculator": "abacus"}
+        if Path("FORCE_CONSTANTS").exists():
+            fc_kwargs["force_constants_filename"] = "FORCE_CONSTANTS"
+            fc_kwargs["produce_fc"] = False
+        else:
+            fc_kwargs["force_sets_filename"] = "FORCE_SETS"
+            fc_kwargs["produce_fc"] = True
         phonon = load(
             supercell_matrix=[int(x) for x in dim_default.split()],
             primitive_matrix="auto",
             unitcell_filename="STRU",
-            force_sets_filename="FORCE_SETS",
-            calculator="abacus",
             is_nac=False,
-            produce_fc=True,
+            **fc_kwargs,
         )
         phonon.run_mesh(mesh, with_eigenvectors=True, is_mesh_symmetry=False)
         phonon.run_projected_dos()
