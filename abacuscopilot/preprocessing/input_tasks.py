@@ -724,6 +724,25 @@ def task_md_input(args: list[str] | None = None, interactive: bool = True,
         if not Path(model).exists():
             console.print(f"  [bold red]! Model file '{model}' not found in current directory![/bold red]")
             console.print("  [bold red]  This file is REQUIRED for DP-MD — place it here before running.[/bold red]")
+        else:
+            # Check model compatibility and auto-convert if needed
+            try:
+                from deepmd.infer import DeepPot
+                DeepPot(model)
+            except Exception:
+                console.print(f"  [bold yellow]⚠  DP model version mismatch detected.[/bold yellow]")
+                console.print(f"  [dim]    Attempting auto-conversion with 'dp convert-from'...[/dim]")
+                import subprocess as _sp
+                converted = model.replace(".pb", "-v2.pb")
+                if not converted.endswith(".pb"): converted = model + "-v2.pb"
+                result = _sp.run(["dp", "convert-from", "auto", "-i", model, "-o", converted],
+                                 capture_output=True, text=True, timeout=120)
+                if result.returncode == 0 and Path(converted).exists():
+                    params.set_param("pot_file", converted)
+                    console.print(f"  [green]✓ Converted to {converted}[/green]")
+                else:
+                    console.print(f"  [yellow]! Auto-conversion failed. Run manually:[/yellow]")
+                    console.print(f"  [dim]    dp convert-from auto -i {model} -o {model.replace('.pb','-v2.pb')}[/dim]")
         # Write STRU-dp: same structure, no pseudo/orbital info needed
         from abacuscopilot.io.stru_file import read_stru
         from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
