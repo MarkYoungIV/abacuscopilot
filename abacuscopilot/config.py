@@ -67,6 +67,7 @@ DEFAULT_CONFIG = {
         "slurm_env_file": "",    # shell script to source in SLURM jobs (CUDA, compiler, etc.)
         "sub_script": "",        # Slurm sbatch template — copied alongside INPUT (101-110)
         "sub_script_dp": "",     # Slurm sbatch template for ABACUS-DP (113)
+        "deepmd_python": "",     # Python binary with deepmd-kit (for 1511 batch force calc)
     },
     "libraries": {
         "pseudo_library": _auto_detect_lib("Pseudopotential"),

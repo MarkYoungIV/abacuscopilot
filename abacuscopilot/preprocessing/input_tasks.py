@@ -580,10 +580,12 @@ def task_relax_input(args: list[str] | None = None, interactive: bool = True,
             params.dft_functional = "pbe"
 
     # Force dft_functional and vdw_method into INPUT (core group needs template_keys)
-    for _k in ("dft_functional", "vdw_method"):
-        if _k in params.extras.get("_template_keys", []) or getattr(params, _k, None) is None:
-            continue
-        params.extras.setdefault("_template_keys", []).append(_k)
+    for _k, _def in (("dft_functional", "pbe"), ("vdw_method", "none")):
+        if getattr(params, _k) != _def:
+            params.extras.setdefault("_template_keys", []).append(_k)
+            _h = params.extras.get("_comment_hints", {})
+            if isinstance(_h, dict):
+                _h.pop(_k, None)
 
     from abacuscopilot.io.input_file import write_input
     write_input(params)

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from abacuscopilot.config import load_config
 from abacuscopilot.console_utils import _get_console, _prompt, _prompt_choice
 from abacuscopilot.tasks import task
 
@@ -47,7 +48,7 @@ def _run_phonopy(args: list[str], cwd: str | Path = ".", timeout: int = 120) -> 
     else:
         cmd = [sys.executable, "-m", "phonopy"] + args
     env = os.environ.copy()
-    env.setdefault("OMP_NUM_THREADS", "4")
+    env.setdefault("OMP_NUM_THREADS", str(min(os.cpu_count() or 4, 16)))
     return subprocess.run(
         cmd, capture_output=True, text=True, cwd=str(cwd), timeout=timeout, env=env,
     )
@@ -200,36 +201,25 @@ def task_phonon_analysis(args: list[str] | None = None, interactive: bool = True
         numbers = [atomic_numbers.get(sp, 0) for sp in [a.species for a in s.atoms]]
         sp = get_path((s.lattice.cell_angstrom.tolist(), positions.tolist(), numbers),
                       with_time_reversal=True)
-        point_coords = sp["point_coords"]
-        # Simplify: skip redundant segments (X→X, GAMMA→GAMMA etc.)
+        point_coords = sp["point_coords"]  # {label: [k1, k2, k3]}
         band_parts: list[str] = []
         band_labels_parts: list[str] = []
-        prev_end = None
-        for seg in sp["path"]:
-            sl, el = seg[0], seg[1]
-            if sl == el:
-                continue  # skip self-loop segments
-            if prev_end is not None and sl != prev_end:
-                continue  # skip disconnected jumps
-            c0 = point_coords[sl]
-            c1 = point_coords[el]
-            if not band_parts:
-                band_parts.append(f"{c0[0]:.6f} {c0[1]:.6f} {c0[2]:.6f}")
-                band_labels_parts.append(sl)
-            band_parts.append(f"{c1[0]:.6f} {c1[1]:.6f} {c1[2]:.6f}")
-            band_labels_parts.append(el)
-            prev_end = el
+        for seg in sp["path"]:  # [('GAMMA', 'X'), ('X', 'U'), ...]
+            start_label, end_label = seg[0], seg[1]
+            for label in (start_label, end_label):
+                c = point_coords[label]
+                band_parts.append(f"{c[0]:.6f} {c[1]:.6f} {c[2]:.6f}")
+                band_labels_parts.append(label)
         kpath_str = "  ".join(band_parts)
         klabels_str = " ".join(band_labels_parts)
-        # Use seekpath's primitive transformation
-        prim_mat = sp.get("primitive_transformation_matrix", [[1,0,0],[0,1,0],[0,0,1]])
-        prim_axes = "  ".join(f"{row[0]:.6f} {row[1]:.6f} {row[2]:.6f}" for row in prim_mat)
-        console.print("  [dim]k-path from seekpath (simplified)[/dim]")
+        console.print("  [dim]k-path from seekpath[/dim]")
     except Exception:
         kpath_str = "0 0 0  0.5 0.5 0  0.5 0.5 0.5  0 0 0"
-        klabels_str = "GM X UK GM L W X"
-        prim_axes = "1 0 0  0 1 0  0 0 1"
+        klabels_str = "GM X X UK GM GM L L W W X"
         console.print("  [yellow]![/yellow] cannot determine k-path, using default")
+
+    # PRIMITIVE_AXES — default identity for now
+    prim_axes = "1 0 0  0 1 0  0 0 1"
 
     band_conf = f"""DIM = {dim_s}
 MESH = {mesh_s}
@@ -263,7 +253,7 @@ PRIMITIVE_AXES = {prim_axes}
     band_args = (
         ["--band"] + kpoints +
         ["--band-labels"] + klabels +
-        ["--band-points", "51", "--band-connection", "band.conf"]
+        ["--band-points", "101", "--band-connection", "band.conf"]
     )
 
     result = _run_phonopy(band_args, timeout=600)
@@ -478,10 +468,12 @@ def _fmt_label(lbl: str) -> str:
     if not lbl:
         return ""
     u = lbl.upper()
-    if u in ("GAMMA", "GM", "G", "\\GAMMA"):
+    if u in ("GAMMA", "GM", "G"):
         return r"$\Gamma$"
-    if lbl == r"\Gamma":
+    if lbl in (r"\Gamma", r"$\Gamma$"):
         return r"$\Gamma$"
+    if lbl.startswith("$") and lbl.endswith("$"):
+        return lbl
     return f"${lbl}$"
 
 
@@ -1087,4 +1079,944 @@ def task_phonon_combined(args: list[str] | None = None, interactive: bool = True
     except Exception as e:
         console.print(f"[red]Combined plot failed: {e}[/red]")
 
+    console.print()
+
+
+# =============================================================================
+# MLP-SSCHA: temperature-dependent phonons via machine-learned potential
+# =============================================================================
+
+@task(1505, category="Lattice Dynamics", name="MLP-SSCHA Setup",
+      description="Generate random displacements for MLP training (SSCHA workflow)",
+      cli_args=[
+          {"name": "--dim", "type": str, "default": "2 2 2",
+           "help": "Supercell dimensions (e.g. '2 2 2')"},
+          {"name": "--rd", "type": int, "default": 1000,
+           "help": "Number of random displacements (default 1000)"},
+          {"name": "--amin", "type": float, "default": 0.03,
+           "help": "Minimum displacement amplitude (default 0.03)"},
+          {"name": "--amax", "type": float, "default": 1.5,
+           "help": "Maximum displacement amplitude (default 1.5)"},
+          {"name": "--basis", "type": str, "default": "lcao",
+           "help": "Basis type: lcao, pw, dp"},
+          {"name": "--solver", "type": str, "default": "",
+           "help": "LCAO solver: genelpa (CPU) or cusolver (GPU)"},
+      ])
+def task_mlp_sscha_setup(args=None, interactive=True, parsed_args=None):
+    """Generate random displacements for MLP-SSCHA phonon training.
+
+    Uses ``phonopy-init --rd N`` to create many supercells with random
+    atomic displacements (not symmetry-adapted).  These are used as
+    training data for ``pypolymlp`` to fit a machine-learned potential,
+    which then feeds the SSCHA (self-consistent harmonic approximation)
+    to compute temperature-dependent phonons.
+    """
+    import shutil as _shutil
+
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== MLP-SSCHA Setup ===[/bold cyan]")
+    console.print("[dim]Random displacements → MLP training → SSCHA phonons[/dim]")
+    console.print()
+
+    # --- Parameters ---
+    if interactive:
+        dim_s = _prompt(console, "Supercell dimensions", "2 2 2")
+    elif parsed_args:
+        dim_s = parsed_args.dim
+    else:
+        dim_s = "2 2 2"
+
+    if interactive:
+        rd_s = _prompt(console, "Number of random displacements", "300")
+    elif parsed_args:
+        rd_s = str(parsed_args.rd)
+    else:
+        rd_s = "300"
+    n_rd = int(rd_s)
+
+    if interactive:
+        amin_s = _prompt(console, "Min displacement amplitude", "0.03")
+        amax_s = _prompt(console, "Max displacement amplitude", "1.5")
+    elif parsed_args:
+        amin_s = str(parsed_args.amin)
+        amax_s = str(parsed_args.amax)
+    else:
+        amin_s, amax_s = "0.03", "1.5"
+
+    console.print(f"  Supercell: {dim_s},  displacements: {n_rd}")
+    console.print(f"  Amplitude: {amin_s} ~ {amax_s}")
+    if n_rd > 100:
+        console.print("  [bold yellow]⚠  MLP-SSCHA works best for small primitive cells (Al, Si, GaN, MgO).[/bold yellow]")
+        console.print("  [bold yellow]    Large/complex systems (30+ atoms) may run out of memory.[/bold yellow]")
+
+    # --- Basis type ---
+    from abacuscopilot.preprocessing.input_tasks import (
+        _prompt_choice as _pc, _get_template, _apply_template,
+        _ask_lcao_solver, _apply_solver_override,
+        _auto_prepare_files,
+    )
+    if interactive:
+        basis = _pc(console, "Basis type", ["lcao", "pw", "dp"], "lcao")
+    elif parsed_args:
+        basis = parsed_args.basis if parsed_args.basis in ("lcao", "pw", "dp") else "lcao"
+    else:
+        basis = "lcao"
+
+    # --- INPUT params ---
+    from abacuscopilot.core.models import InputParams
+    params = InputParams()
+    params.suffix = "ABACUS"
+    params.calculation = "scf"
+    params.cal_force = 1
+    # Point to parent dir for pseudo/orbital to avoid copying to every subdir
+    params.pseudo_dir = "../"
+    if basis != "dp":
+        params.orbital_dir = "../"
+
+    if basis == "dp":
+        params.esolver_type = "dp"
+        pot_file = "graph.pb"
+        if interactive:
+            pot_file = _prompt(console, "DP model file", "graph.pb")
+        if not Path(pot_file).exists():
+            console.print(f"[red]DP model not found: {pot_file}[/red]")
+            return
+        params.pot_file = pot_file
+    else:
+        template = _get_template(basis, "scf")
+        if template:
+            _apply_template(params, template)
+        if interactive and basis == "lcao":
+            _ask_lcao_solver(console, params)
+
+        # Force cal_force into INPUT (default=1, template overwrites template_keys)
+        if "cal_force" not in params.extras.get("_template_keys", []):
+            params.extras.setdefault("_template_keys", []).append("cal_force")
+
+        # --- Functional + D3 (DFT only, skip for DP) ---
+        if interactive and basis != "dp":
+            use_func = _pc(console, "Exchange-correlation functional", ["PBEsol", "PBE"], "PBEsol")
+            if "PBEsol" in use_func:
+                params.dft_functional = "pbesol"
+
+            use_d3 = _pc(console, "D3 dispersion correction", ["No", "d3_0 (zero-damping)", "d3_bj (Becke-Johnson)"], "No")
+            if "d3_0" in use_d3:
+                params.vdw_method = "d3_0"
+            elif "d3_bj" in use_d3:
+                params.vdw_method = "d3_bj"
+            if params.vdw_method != "none" and params.dft_functional == "pbesol":
+                console.print("  [bold yellow]⚠  ABACUS D3 does not support dft_functional=pbesol.[/bold yellow]")
+                console.print("  [dim]    Setting dft_functional to 'pbe' for D3 compatibility.[/dim]")
+                console.print("  [dim]    PBEsol reuses PBE D3 parameters — this is standard practice.[/dim]")
+                params.dft_functional = "pbe"
+
+            # Force only non-default values into INPUT
+            for _k, _def in (("dft_functional", "pbe"), ("vdw_method", "none")):
+                if getattr(params, _k) != _def:
+                    params.extras.setdefault("_template_keys", []).append(_k)
+                    # Remove redundant comment hint (already active)
+                    _hints = params.extras.get("_comment_hints", {})
+                    if isinstance(_hints, dict):
+                        _hints.pop(_k, None)
+
+    # Remove _comment_hints for cal_force/cal_stress (already active)
+    _hints = params.extras.get("_comment_hints", {})
+    for _k in ("cal_force", "cal_stress"):
+        if isinstance(_hints, dict):
+            _hints.pop(_k, None)
+
+    # --- Read STRU ---
+    from abacuscopilot.io.stru_file import read_stru, write_stru
+    stru_path = Path("STRU")
+    if not stru_path.exists():
+        console.print("[red]No STRU file found.[/red]")
+        return
+
+    structure = read_stru(stru_path)
+    if structure.coordinate_type != "Direct":
+        if "Cartesian" in structure.coordinate_type:
+            cell_bohr = structure.lattice.cell
+            cell_inv = np.linalg.inv(cell_bohr)
+            for atom in structure.atoms:
+                pos = atom.position.copy()
+                if "angstrom" in structure.coordinate_type.lower():
+                    from abacuscopilot.core.constants import ANGSTROM_TO_BOHR
+                    pos = pos * ANGSTROM_TO_BOHR
+                atom.position = pos @ cell_inv
+        structure.coordinate_type = "Direct"
+
+    # Copy pseudopotentials/orbitals (DFT only)
+    pseudo_files: list[Path] = []
+    orbital_files: list[Path] = []
+    if basis != "dp":
+        _auto_prepare_files(console, params, interactive)
+        structure = read_stru(stru_path)
+        for species in structure.species_order:
+            for pat in Path(".").glob(f"{species}_*.upf"):
+                if pat not in pseudo_files:
+                    pseudo_files.append(pat)
+            if basis == "lcao":
+                for pat in Path(".").glob(f"{species}_*.orb"):
+                    if pat not in orbital_files:
+                        orbital_files.append(pat)
+
+    # --- Run phonopy-init --rd ---
+    console.print()
+    console.print(f"  Running: [dim]phonopy-init --rd {n_rd} --dim {dim_s} --amin {amin_s} --amax {amax_s} --abacus[/dim]")
+    rd_result = _run_phonopy_init(
+        ["--rd", str(n_rd), "--dim", dim_s,
+         "--amin", amin_s, "--amax", amax_s, "--abacus"],
+        timeout=300,
+    )
+    if rd_result.returncode != 0:
+        console.print("[red]phonopy-init --rd failed:[/red]")
+        console.print(rd_result.stderr)
+        return
+    if rd_result.stderr:
+        for line in rd_result.stderr.strip().split("\n")[:5]:
+            console.print(f"  [dim]{line}[/dim]")
+
+    # Find generated STRU-XXX files
+    stru_files = sorted(Path(".").glob("STRU-*"))
+    if not stru_files:
+        console.print("[red]No STRU-* files generated.[/red]")
+        return
+    console.print(f"  Generated: {len(stru_files)} structures")
+
+    # --- Handle sub.abacus (sub.abacus-dp for DP) ---
+    config = load_config()
+    sub_src: Path | None = None
+    if basis == "dp":
+        dp_path = config.get("paths", {}).get("sub_script_dp", "")
+        if dp_path:
+            p = Path(dp_path).expanduser()
+            if p.exists():
+                sub_src = p
+    if sub_src is None:
+        sub_path = config.get("paths", {}).get("sub_script", "")
+        if sub_path:
+            p = Path(sub_path).expanduser()
+            if p.exists():
+                sub_src = p
+    if sub_src:
+        console.print(f"  sub.abacus: [dim]{sub_src}[/dim]")
+    else:
+        console.print("  sub.abacus: [dim]skipped[/dim]")
+
+    # --- Create disp-XXX directories ---
+    console.print()
+    console.print("[bold]Creating directories:[/bold]")
+
+    from abacuscopilot.io.input_file import write_input
+    for i, sf in enumerate(stru_files, 1):
+        dir_name = f"disp-{i:04d}"
+        dir_path = Path(dir_name)
+        dir_path.mkdir(exist_ok=True)
+        _shutil.copy2(sf, dir_path / "STRU")
+
+        if basis == "dp":
+            with open(dir_path / "INPUT", "w") as f:
+                f.write("INPUT_PARAMETERS\n")
+                f.write("calculation          scf\n")
+                f.write("esolver_type         dp\n")
+                pot_ref = f"../{params.pot_file}" if not params.pot_file.startswith("/") else params.pot_file
+                f.write(f"pot_file             {pot_ref}\n")
+                f.write("cal_force            1\n")
+                f.write("symmetry             1\n")
+        else:
+            write_input(params, dir_path / "INPUT")
+
+        if sub_src and sub_src.exists():
+            _shutil.copy2(sub_src, dir_path / "sub.abacus")
+
+        if i % 100 == 0:
+            console.print(f"  [dim]... {i}/{len(stru_files)}[/dim]")
+
+    # --- Cleanup parent sub.abacus ---
+    local_sub = Path("sub.abacus")
+    if local_sub.exists() and sub_src:
+        local_sub.unlink()
+
+    # --- Save setup ---
+    import json as _json
+    _setup = {"dim": dim_s, "basis": basis, "n_rd": n_rd,
+              "amin": float(amin_s), "amax": float(amax_s),
+              "n_structures": len(stru_files)}
+    with open("phonopy_setup.json", "w") as f:
+        _json.dump(_setup, f, indent=2)
+
+    # Keep UPF/ORB in parent dir — all disp dirs reference them via ../pseudo_dir
+    console.print()
+    console.print(f"[green]✓ MLP-SSCHA setup complete: {len(stru_files)} structures[/green]")
+    console.print(f"  Run ABACUS in all disp-*/ dirs, then: [bold]abacuscopilot -task 1506[/bold]")
+    console.print()
+
+
+@task(1506, category="Lattice Dynamics", name="MLP Training",
+      description="Extract forces from disp dirs and train MLP (pypolymlp) for SSCHA",
+      cli_args=[
+          {"name": "--ntrain", "type": int, "default": 100,
+           "help": "Number of structures for training (default 100)"},
+          {"name": "--ntest", "type": int, "default": 20,
+           "help": "Number of structures for testing (default 20)"},
+          {"name": "--range", "type": str, "default": "",
+           "help": "Range of disp dirs to use, e.g. '1-120'"},
+      ])
+def task_mlp_training(args=None, interactive=True, parsed_args=None):
+    """Extract forces from ABACUS outputs and train an MLP via pypolymlp.
+
+    Step 1: ``phonopy --sp -f disp-*/OUT*/running_scf.log``
+    Step 2: Compress ``phonopy_params.yaml`` → ``.xz``
+    Step 3: ``phonopy-load ... --pypolymlp`` → ``polymlp.yaml``
+    """
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== MLP Training (pypolymlp) ===[/bold cyan]")
+    console.print()
+
+    # --- Collect log files ---
+    disp_dirs = sorted(Path(".").glob("disp-*"))
+    if not disp_dirs:
+        console.print("[red]No disp-*/ directories found.[/red]")
+        console.print("[dim]Run 'abacuscopilot -task 1505' first.[/dim]")
+        return
+
+    log_paths = []
+    range_str = getattr(parsed_args, "range", "") if parsed_args else ""
+    if range_str:
+        import re as _re
+        m = _re.match(r"(\d+)-(\d+)", range_str)
+        if m:
+            lo, hi = int(m.group(1)), int(m.group(2))
+            disp_dirs = [d for d in disp_dirs if lo <= int(d.name.split("-")[-1]) <= hi]
+
+    for dd in disp_dirs:
+        candidates = list(dd.glob("OUT*/running_scf.log")) + list(dd.glob("OUT*/running_relax.log"))
+        if candidates:
+            log_paths.append(candidates[0])
+    if not log_paths:
+        console.print("[red]No ABACUS output logs found.[/red]")
+        return
+    console.print(f"  Using {len(log_paths)}/{len(disp_dirs)} completed calculations")
+
+    # --- Step 1: phonopy --sp -f ---
+    console.print()
+    console.print("[bold]Step 1: Extract forces (phonopy-init --sp -f)[/bold]")
+    sp_args = ["--sp", "-f"] + [str(p) for p in log_paths]
+    result = _run_phonopy_init(sp_args, timeout=300)
+    if result.returncode != 0:
+        console.print("[red]Force extraction failed:[/red]")
+        console.print(result.stderr[-500:])
+        return
+    params_file = Path("phonopy_params.yaml")
+    if not params_file.exists():
+        console.print("[red]phonopy_params.yaml was not created.[/red]")
+        return
+    console.print("  [green]✓ phonopy_params.yaml[/green]")
+
+    # --- Step 1.5: Inject supercell energies (ABACUS doesn't output them) ---
+    console.print()
+    console.print("[bold]Step 1.5: Inject supercell energies[/bold]")
+    try:
+        import yaml as _yaml
+        with open("phonopy_params.yaml") as f:
+            _pp = _yaml.safe_load(f)
+        _ds = _pp.get("dataset", {})
+        _n_disp = len(_ds.get("forces", []) if isinstance(_ds, dict) else [])
+        _energies = []
+        for _i in range(_n_disp):
+            _dn = f"disp-{_i + 1:04d}"
+            _log = Path(_dn) / "OUT.ABACUS" / "running_scf.log"
+            if not _log.exists():
+                _log = Path(_dn) / "OUT.ABACUS" / "running_relax.log"
+            _ev = 0.0
+            if _log.exists():
+                with open(_log) as _lf:
+                    for _line in _lf:
+                        _m = re.search(r"!FINAL_ETOT_IS\s+([\-\d\.Ee+]+)", _line)
+                        if _m:
+                            _ev = float(_m.group(1))
+                            break
+            _energies.append(_ev)
+        if _energies and isinstance(_ds, dict):
+            _ds["supercell_energies"] = _energies
+            with open("phonopy_params.yaml", "w") as f:
+                _yaml.safe_dump(_pp, f, default_flow_style=False)
+            console.print(f"  [green]✓ Injected energies for {_n_disp} supercells[/green]")
+        else:
+            console.print("  [yellow]! Could not inject energies[/yellow]")
+    except Exception as _e:
+        console.print(f"  [yellow]! Energy injection failed: {_e}[/yellow]")
+
+    # --- Step 2: Compress ---
+    console.print()
+    console.print("[bold]Step 2: Compress dataset[/bold]")
+    import subprocess as _sp
+    xz_file = Path("phonopy_params.yaml.xz")
+    _sp.run(["xz", "-f", "phonopy_params.yaml"], check=False)
+    if xz_file.exists():
+        console.print("  [green]✓ phonopy_params.yaml.xz[/green]")
+    else:
+        console.print("  [yellow]! xz compression may have failed, trying without[/yellow]")
+
+    # --- Step 3: MLP training ---
+    console.print()
+    console.print("[bold]Step 3: Train MLP (pypolymlp)[/bold]")
+    ntrain = getattr(parsed_args, "ntrain", 100) if parsed_args else 100
+    ntest = getattr(parsed_args, "ntest", 20) if parsed_args else 20
+    if interactive:
+        ntrain_s = _prompt(console, "Training set size", str(ntrain))
+        ntrain = int(ntrain_s) if ntrain_s.strip() else ntrain
+        ntest_s = _prompt(console, "Test set size", str(ntest))
+        ntest = int(ntest_s) if ntest_s.strip() else ntest
+
+    mlp_args = ["--pypolymlp", f"--mlp-params=ntrain={ntrain}, ntest={ntest}, gtinv_order=2"]
+    if xz_file.exists():
+        mlp_args = [str(xz_file)] + mlp_args
+    else:
+        mlp_args = [str(params_file)] + mlp_args
+
+    console.print(f"  Running: [dim]phonopy-load ... --pypolymlp ntrain={ntrain}, ntest={ntest}[/dim]")
+    result = _run_phonopy(mlp_args, timeout=600)
+    if result.returncode != 0:
+        console.print("[red]MLP training failed:[/red]")
+        console.print(result.stderr[-500:])
+        return
+    if result.stderr:
+        for line in result.stderr.strip().split("\n")[:5]:
+            console.print(f"  [dim]{line}[/dim]")
+    if Path("polymlp.yaml").exists():
+        console.print("  [green]✓ polymlp.yaml[/green]")
+    else:
+        console.print("  [yellow]! polymlp.yaml not found, check logs[/yellow]")
+
+    console.print()
+    console.print("[green]✓ MLP training complete[/green]")
+    console.print("  [dim]Next: abacuscopilot -task 1507 (SSCHA)[/dim]")
+    console.print()
+
+
+@task(1507, category="Lattice Dynamics", name="SSCHA Run",
+      description="Run SSCHA iterations for temperature-dependent force constants",
+      cli_args=[
+          {"name": "--temperature", "type": float, "default": 300,
+           "help": "Target temperature in K (default 300)"},
+          {"name": "--iterations", "type": int, "default": 10,
+           "help": "Number of SSCHA iterations (default 10)"},
+          {"name": "--rd", "type": int, "default": 1000,
+           "help": "Number of random displacements (default 1000)"},
+      ])
+def task_sscha_run(args=None, interactive=True, parsed_args=None):
+    """Run SSCHA self-consistent iterations for temperature-dependent phonons.
+
+    Requires ``polymlp.yaml`` and ``phonopy_params.yaml.xz`` from task 1506.
+    Outputs ``phonopy_sscha_fc_N.yaml.xz`` for each iteration.
+    """
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== SSCHA Run ===[/bold cyan]")
+    console.print("[dim]Self-consistent harmonic approximation[/dim]")
+    console.print()
+
+    params_file = Path("phonopy_params.yaml.xz")
+    if not params_file.exists():
+        params_file = Path("phonopy_params.yaml")
+    if not params_file.exists():
+        console.print("[red]phonopy_params.yaml[.xz] not found.[/red]")
+        console.print("[dim]Run 'abacuscopilot -task 1506' first.[/dim]")
+        return
+    if not Path("polymlp.yaml").exists():
+        console.print("[red]polymlp.yaml not found.[/red]")
+        return
+
+    if interactive:
+        t_s = _prompt(console, "Target temperature (K)", "300")
+        temperature = float(t_s) if t_s.strip() else 300.0
+        n_iter_s = _prompt(console, "SSCHA iterations", "10")
+        n_iter = int(n_iter_s) if n_iter_s.strip() else 10
+        n_rd_s = _prompt(console, "Random displacements per iteration", "1000")
+        n_rd = int(n_rd_s) if n_rd_s.strip() else 1000
+    elif parsed_args:
+        temperature = float(parsed_args.temperature)
+        n_iter = int(parsed_args.iterations)
+        n_rd = int(parsed_args.rd)
+    else:
+        temperature, n_iter, n_rd = 300.0, 10, 1000
+
+    console.print(f"  Temperature: {temperature} K,  iterations: {n_iter},  rd: {n_rd}")
+    console.print(f"  Running: [dim]phonopy-load ... --pypolymlp --sscha {n_iter} --rd-temperature {temperature} --rd {n_rd}[/dim]")
+    console.print("  [dim]This may take a while for large systems...[/dim]")
+
+    sscha_args = [
+        str(params_file), "--pypolymlp",
+        "--sscha", str(n_iter),
+        "--rd-temperature", str(int(temperature)),
+        "--rd", str(n_rd),
+    ]
+    # Stream stderr in real-time for progress
+    import shutil as _sh, os as _os
+    for _cand in [_sh.which("phonopy"), _sh.which("phonopy-load"),
+                 Path(sys.executable).parent / "phonopy",
+                 Path(sys.prefix) / "bin" / "phonopy",
+                 Path(sys.executable).parent / "phonopy-load",
+                 Path(sys.prefix) / "bin" / "phonopy-load"]:
+        if _cand and Path(str(_cand)).exists():
+            _exe = str(_cand)
+            break
+    else:
+        _exe = sys.executable
+        sscha_args = ["-m", "phonopy"] + sscha_args
+    _env = _os.environ.copy()
+    _env.setdefault("OMP_NUM_THREADS", str(_os.cpu_count() or 4))
+    _proc = subprocess.Popen([_exe] + sscha_args, stderr=subprocess.PIPE,
+                              text=True, bufsize=1, env=_env)
+    _last = ""
+    while _proc.poll() is None:
+        _line = _proc.stderr.readline() if _proc.stderr else ""
+        if _line:
+            _s = _line.strip()
+            if _s and _s != _last:
+                console.print(f"  [dim]{_s[:140]}[/dim]")
+                _last = _s
+    _rc = _proc.returncode
+    if _rc != 0:
+        _rem = _proc.stderr.read() if _proc.stderr else ""
+        console.print(f"[red]SSCHA failed (code {_rc}):[/red]")
+        console.print(_rem[-500:])
+        return
+
+    fc_files = sorted(Path(".").glob("phonopy_sscha_fc_*.yaml.xz"))
+    if fc_files:
+        console.print(f"  [green]✓ {len(fc_files)} force constant files generated[/green]")
+        for fc in fc_files:
+            console.print(f"    [dim]{fc.name}[/dim]")
+    else:
+        console.print("  [yellow]! No SSCHA force constant files found[/yellow]")
+
+    console.print()
+    console.print("[green]✓ SSCHA complete[/green]")
+    console.print(f"  Next: [bold]abacuscopilot -task 1508[/bold] (plot convergence)")
+    console.print()
+
+
+@task(1508, category="Lattice Dynamics", name="SSCHA Plot",
+      description="Plot SSCHA convergence: band structures across iterations",
+      cli_args=[
+          {"name": "--fmin", "type": float, "default": None,
+           "help": "Minimum frequency for plot y-axis (auto if unset)"},
+          {"name": "--fmax", "type": float, "default": None,
+           "help": "Maximum frequency for plot y-axis (auto if unset)"},
+      ])
+def task_sscha_plot(args=None, interactive=True, parsed_args=None):
+    """Plot phonon band convergence across SSCHA iterations.
+
+    Reads ``phonopy_sscha_fc_N.yaml.xz`` for N=1..max_iter,
+    computes band structure for each, and overlays them on one plot.
+    """
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== SSCHA Convergence Plot ===[/bold cyan]")
+    console.print()
+
+    fc_files = sorted(Path(".").glob("phonopy_sscha_fc_*.yaml.xz"))
+    if not fc_files:
+        console.print("[red]No phonopy_sscha_fc_*.yaml.xz files found.[/red]")
+        console.print("[dim]Run 'abacuscopilot -task 1507' first.[/dim]")
+        return
+
+    console.print(f"  Found {len(fc_files)} SSCHA iteration files")
+
+    # --- Compute band for each iteration ---
+    band_files = []
+    for fc in fc_files:
+        band_out = Path(f"band_sscha_{fc.stem}.yaml")
+        if not band_out.exists():
+            console.print(f"  Computing band for {fc.name} ...")
+            result = _run_phonopy(
+                ["--band", "auto", "--band-points", "101", "-s", str(fc)],
+                timeout=300,
+            )
+            if result.returncode == 0 and Path("band.yaml").exists():
+                import shutil as _shutil
+                _shutil.move("band.yaml", str(band_out))
+        if band_out.exists():
+            band_files.append(band_out)
+
+    if not band_files:
+        console.print("[red]No band structures computed.[/red]")
+        return
+
+    # Read auto frequency range from last iteration
+    try:
+        _last_freqs = []
+        with open(band_files[-1]) as f:
+            for line in f:
+                m = re.search(r"frequency:\s*([-\d.]+)", line)
+                if m:
+                    _last_freqs.append(float(m.group(1)))
+        _auto_min = min(_last_freqs) * 1.05 if _last_freqs else 0.0
+        _auto_max = max(_last_freqs) * 1.05 if _last_freqs else 20.0
+    except Exception:
+        _auto_min, _auto_max = 0.0, 20.0
+
+    fmin_plot = getattr(parsed_args, "fmin", None) if parsed_args else None
+    fmax_plot = getattr(parsed_args, "fmax", None) if parsed_args else None
+
+    if interactive and fmin_plot is None:
+        fmin_s = _prompt(console,
+            f"Frequency min (auto: {_auto_min:.1f} THz, enter for auto)", "")
+        fmax_s = _prompt(console,
+            f"Frequency max (auto: {_auto_max:.1f} THz, enter for auto)", "")
+        fmin_plot = float(fmin_s) if fmin_s.strip() else None
+        fmax_plot = float(fmax_s) if fmax_s.strip() else None
+
+    # Plot overlay
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from abacuscopilot.plotting.style import load_style_from_config
+    load_style_from_config()
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = plt.cm.viridis(np.linspace(0, 1, len(band_files)))
+
+    for i, bf in enumerate(band_files):
+        try:
+            xs, freqs, _, _ = _parse_band_yaml(bf)
+            n_bands = freqs.shape[1]
+            alpha = 0.3 if i < len(band_files) - 1 else 0.9
+            lw = 0.5 if i < len(band_files) - 1 else 1.5
+            for b in range(n_bands):
+                ax.plot(xs, freqs[:, b], color=colors[i], lw=lw, alpha=alpha)
+        except Exception:
+            pass
+
+    # Last iteration labels
+    try:
+        _, _, tick_pos, tick_labels = _parse_band_yaml(band_files[-1])
+        ax.set_xticks(tick_pos)
+        ax.set_xticklabels(tick_labels, fontsize=10)
+        ax.set_xlim(0, tick_pos[-1])
+    except Exception:
+        pass
+
+    ax.set_ylabel("Frequency (THz)", fontsize=12)
+    ax.set_title("SSCHA Convergence", fontsize=13)
+    f_lo = fmin_plot if fmin_plot is not None else _auto_min
+    f_hi = fmax_plot if fmax_plot is not None else _auto_max
+    ax.set_ylim(f_lo, f_hi)
+
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.5)
+        spine.set_visible(True)
+    ax.tick_params(axis="both", direction="out")
+    fig.tight_layout(pad=1.2)
+    out_png = "sscha_convergence.png"
+    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    console.print(f"  [green]✓ {out_png}[/green] ({len(band_files)} iterations)")
+
+    console.print()
+
+
+@task(1509, category="Lattice Dynamics", name="MLP-SSCHA (DP)",
+      description="One-shot: random displ. + DeePMD forces → phonopy_params.yaml",
+      cli_args=[
+          {"name": "--dim", "type": str, "default": "2 2 2",
+           "help": "Supercell dimensions (e.g. '2 2 2')"},
+          {"name": "--rd", "type": int, "default": 300,
+           "help": "Number of random displacements (default 300)"},
+          {"name": "--amin", "type": float, "default": 0.03,
+           "help": "Min displacement amplitude (default 0.03)"},
+          {"name": "--amax", "type": float, "default": 1.5,
+           "help": "Max displacement amplitude (default 1.5)"},
+          {"name": "--model", "type": str, "default": "graph.pb",
+           "help": "DP model file"},
+          {"name": "--dp-python", "type": str, "default": "",
+           "help": "Python with deepmd-kit (reads from config if unset)"},
+      ])
+def task_mlp_sscha_dp(args=None, interactive=True, parsed_args=None):
+    """All-in-one MLP-SSCHA setup for DP: displacements + forces + energies.
+
+    Uses the phonopy Python API to generate random displacements, then
+    the DeePMD Python API to compute forces and energies in a single
+    process (no intermediate files, no subdirectories).  Writes
+    ``phonopy_params.yaml`` ready for training (task 1506).
+    """
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== MLP-SSCHA (DP, one-shot) ===[/bold cyan]")
+    console.print("[dim]phonopy random displ. + DeePMD forces → phonopy_params.yaml[/dim]")
+    console.print()
+
+    # --- Parameters ---
+    if interactive:
+        dim_s = _prompt(console, "Supercell dimensions", "2 2 2")
+    elif parsed_args:
+        dim_s = parsed_args.dim
+    else:
+        dim_s = "2 2 2"
+
+    if interactive:
+        rd_s = _prompt(console, "Number of random displacements", "300")
+    elif parsed_args:
+        rd_s = str(parsed_args.rd)
+    else:
+        rd_s = "300"
+    n_rd = int(rd_s)
+
+    if interactive:
+        amin_s = _prompt(console, "Min displacement amplitude", "0.03")
+        amax_s = _prompt(console, "Max displacement amplitude", "1.5")
+    elif parsed_args:
+        amin_s, amax_s = str(parsed_args.amin), str(parsed_args.amax)
+    else:
+        amin_s, amax_s = "0.03", "1.5"
+
+    if interactive:
+        pot_file = _prompt(console, "DP model file", "graph.pb")
+    elif parsed_args:
+        pot_file = parsed_args.model
+    else:
+        pot_file = "graph.pb"
+    if not Path(pot_file).exists():
+        console.print(f"[red]Model not found: {pot_file}[/red]")
+        return
+
+    dim = [int(x) for x in dim_s.split()]
+    if n_rd > 100:
+        console.print("  [bold yellow]⚠  MLP-SSCHA works best for small primitive cells (Al, Si, GaN, MgO).[/bold yellow]")
+        console.print("  [bold yellow]    Large/complex systems (30+ atoms) may run out of memory or produce garbage.[/bold yellow]")
+    console.print(f"  Supercell: {dim_s},  displacements: {n_rd}")
+    console.print(f"  Amplitude: {amin_s} ~ {amax_s},  Model: {pot_file}")
+
+    # DP Python path
+    config = load_config()
+    dp_python = config.get("paths", {}).get("deepmd_python", "")
+    if parsed_args and getattr(parsed_args, "dp_python", ""):
+        dp_python = parsed_args.dp_python
+    if not dp_python:
+        dp_python = sys.executable
+    if not Path(dp_python).expanduser().exists():
+        console.print(f"[red]deepmd Python not found: {dp_python}[/red]")
+        return
+
+    # Save to config
+    if dp_python != config.get("paths", {}).get("deepmd_python", ""):
+        from abacuscopilot.config import save_config
+        config.setdefault("paths", {})["deepmd_python"] = dp_python
+        save_config(config)
+
+    # --- Build batch script ---
+    script = f'''
+import os, sys
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["OMP_NUM_THREADS"] = "4"
+import numpy as np
+from phonopy import Phonopy
+from phonopy.interface.abacus import read_crystal_structure
+from deepmd import DeepPot
+
+unitcell = read_crystal_structure("STRU", interface_mode="abacus")
+phonon = Phonopy(unitcell, supercell_matrix=[{dim[0]},{dim[1]},{dim[2]}],
+                 primitive_matrix="auto")
+phonon.generate_random_displacements(number_of_snapshots={n_rd},
+    distance={amin_s}, max_distance={amax_s})
+displacements, supercells = phonon.random_displacements, phonon.supercells_with_displacements
+
+# Auto-detect model compatibility and convert if needed
+import subprocess as sp
+model_file = "{pot_file}"
+try:
+    _test = DeepPot(model_file)
+    print(f"Model loaded: type_map={{_test.get_type_map()}}, cutoff={{_test.get_rcut()}}", flush=True)
+except Exception:
+    print(f"Model incompatible, attempting auto-conversion...", flush=True)
+    backup = model_file + ".original"
+    if not os.path.exists(backup):
+        import shutil as _sh
+        _sh.copy2(model_file, backup)
+    converted = model_file.replace(".pb", "-v2.pb")
+    if not converted.endswith(".pb"):
+        converted = model_file + "-v2.pb"
+    sp.run(["dp", "convert-from", "auto", "-i", backup, "-o", converted], check=True)
+    _test2 = DeepPot(converted)
+    print(f"Converted model loaded: type_map={{_test2.get_type_map()}}, cutoff={{_test2.get_rcut()}}", flush=True)
+    model_file = converted
+
+model = DeepPot(model_file)
+forces_list = []
+energies = []
+
+BOHR_TO_ANG = 0.529177210903
+for i, sc in enumerate(supercells):
+    coord_bohr = sc.get_positions()
+    cell_bohr = sc.get_cell()
+    coord_ang = coord_bohr * BOHR_TO_ANG
+    cell_ang = cell_bohr * BOHR_TO_ANG
+    atype = np.array(sc.get_atomic_numbers(), dtype=np.int32)
+    e, f, v = model.eval(coord_ang, cell_ang, atype)
+    energies.append(float(e))
+    forces_list.append(f.tolist())
+    if (i + 1) % 100 == 0:
+        print(f"  ... {{i+1}}/{{{n_rd}}}", flush=True)
+
+# Write phonopy_params.yaml
+import yaml
+dataset = {{
+    "displacements": [d.tolist() for d in displacements],
+    "forces": forces_list,
+    "supercell_energies": energies,
+}}
+pp = phonon.get_phonopy_params()
+pp["dataset"] = dataset
+with open("phonopy_params.yaml", "w") as f:
+    yaml.safe_dump(pp, f, default_flow_style=False)
+print(f"  Done: {{len(supercells)}} structures", flush=True)
+'''
+    script_path = Path("_dp_mlp_sscha.py")
+    script_path.write_text(script)
+
+    console.print()
+    console.print(f"  Running: [dim]phonopy + DeePMD ({n_rd} structures)...[/dim]")
+    console.print("  [dim]This may take minutes for large datasets.[/dim]")
+
+    import subprocess as _sp
+    py_path = Path(dp_python).expanduser()
+    result = _sp.run(
+        [str(py_path), str(script_path)],
+        capture_output=True, text=True, timeout=7200, cwd=".",
+    )
+    for line in result.stdout.strip().split("\n"):
+        if line.strip():
+            console.print(f"  [dim]{line.strip()[:120]}[/dim]")
+    if result.returncode != 0:
+        console.print(f"[red]Failed:[/red]")
+        console.print(result.stderr[-500:])
+        script_path.unlink(missing_ok=True)
+        return
+
+    script_path.unlink(missing_ok=True)
+
+    if not Path("phonopy_params.yaml").exists():
+        console.print("[red]phonopy_params.yaml was not created.[/red]")
+        return
+
+    # --- Auto-continue: train → SSCHA → plot ---
+    console.print()
+    if interactive:
+        answer = _prompt_choice(console, "Proceed to MLP training + SSCHA?",
+                                ["Yes (auto train + SSCHA + plot)", "No (stop here)"], "Yes (auto train + SSCHA + plot)")
+        if "No" in answer:
+            console.print("  [dim]Stopped. Run 'abacuscopilot -task 1506' manually.[/dim]")
+            return
+    else:
+        answer = "Yes"
+
+    temperature = 300.0
+    if interactive:
+        t_s = _prompt(console, "Target temperature (K)", "300")
+        temperature = float(t_s) if t_s.strip() else 300.0
+
+    # --- 1) Compress ---
+    console.print()
+    console.print("[bold cyan]Auto: Compress + Train + SSCHA + Plot[/bold cyan]")
+    console.print("[bold]→ Compress dataset[/bold]")
+    import subprocess as _sp
+    _sp.run(["xz", "-f", "phonopy_params.yaml"], check=False)
+    xz_file = Path("phonopy_params.yaml.xz")
+    if xz_file.exists():
+        console.print("  [green]✓ phonopy_params.yaml.xz[/green]")
+    else:
+        console.print("  [yellow]! Compress failed, using plain YAML[/yellow]")
+        xz_file = Path("phonopy_params.yaml")
+
+    # --- 2) Train MLP (9:1 split) ---
+    n_train = int(n_rd * 0.9)
+    n_test = n_rd - n_train
+    console.print(f"[bold]→ Train MLP (train={n_train}, test={n_test})[/bold]")
+    mlp_args = [str(xz_file), "--pypolymlp", f"--mlp-params=ntrain={n_train}, ntest={n_test}"]
+    result = _run_phonopy(mlp_args, timeout=600)
+    if result.returncode != 0:
+        console.print(f"[red]MLP training failed: {result.stderr[-300:]}[/red]")
+        return
+    if not Path("polymlp.yaml").exists():
+        console.print("[red]polymlp.yaml was not created.[/red]")
+        return
+    console.print("  [green]✓ polymlp.yaml[/green]")
+
+    # --- 3) SSCHA ---
+    n_iter = 10
+    console.print(f"[bold]→ SSCHA (T={temperature:.0f}K, {n_iter} iter)[/bold]")
+    sscha_args = [
+        str(xz_file), "--pypolymlp",
+        "--sscha", str(n_iter),
+        "--rd-temperature", str(int(temperature)),
+        "--rd", str(n_rd),
+    ]
+    result = _run_phonopy(sscha_args, timeout=3600)
+    if result.returncode != 0:
+        console.print(f"[red]SSCHA failed: {result.stderr[-300:]}[/red]")
+        return
+    fc_files = sorted(Path(".").glob("phonopy_sscha_fc_*.yaml.xz"))
+    console.print(f"  [green]✓ {len(fc_files)} SSCHA force constants[/green]")
+
+    # --- 4) Plot ---
+    console.print("[bold]→ Plot convergence[/bold]")
+    band_files = []
+    for fc in fc_files:
+        band_out = Path(f"band_sscha_{fc.stem}.yaml")
+        if not band_out.exists():
+            _run_phonopy(["--band", "auto", "--band-points", "101", "-s", str(fc)], timeout=300)
+            if Path("band.yaml").exists():
+                import shutil as _shutil2
+                _shutil2.move("band.yaml", str(band_out))
+        if band_out.exists():
+            band_files.append(band_out)
+
+    if band_files:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from abacuscopilot.plotting.style import load_style_from_config
+        load_style_from_config()
+        fig, ax = plt.subplots(figsize=(8, 6))
+        colors = plt.cm.viridis(np.linspace(0, 1, len(band_files)))
+        for i, bf in enumerate(band_files):
+            try:
+                xs, freq, _, _ = _parse_band_yaml(bf)
+                alpha = 0.3 if i < len(band_files) - 1 else 0.9
+                lw = 0.5 if i < len(band_files) - 1 else 1.5
+                for b in range(freq.shape[1]):
+                    ax.plot(xs, freq[:, b], color=colors[i], lw=lw, alpha=alpha)
+            except Exception:
+                pass
+        try:
+            _, _, tp, tl = _parse_band_yaml(band_files[-1])
+            ax.set_xticks(tp); ax.set_xticklabels(tl, fontsize=10)
+            ax.set_xlim(0, tp[-1])
+        except Exception:
+            pass
+        f_lo = float(np.min([np.min(_parse_band_yaml(bf)[1]) for bf in band_files])) * 1.05
+        f_hi = float(np.max([np.max(_parse_band_yaml(bf)[1]) for bf in band_files])) * 1.05
+        ax.set_ylim(f_lo, f_hi)
+        ax.set_ylabel("Frequency (THz)", fontsize=12)
+        ax.set_title(f"SSCHA Convergence (T={temperature:.0f}K)", fontsize=13)
+        for s in ax.spines.values():
+            s.set_linewidth(0.5); s.set_visible(True)
+        ax.tick_params(axis="both", direction="out")
+        fig.tight_layout(pad=1.2)
+        fig.savefig("sscha_convergence.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        console.print(f"  [green]✓ sscha_convergence.png ({len(band_files)} iterations)[/green]")
+
+    console.print()
+    console.print(f"[green]✓ MLP-SSCHA pipeline complete[/green]")
+    console.print(f"  Temperature: {temperature:.0f}K,  structures: {n_rd}")
     console.print()

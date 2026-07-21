@@ -139,9 +139,11 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
     template = _get_template(basis, "scf")
     if template:
         _apply_template(params, template)
-    # Phonon: SCF with forces, no relaxation
+    # Phonon: SCF with forces, no relaxation. Point to parent for pseudo/orbital.
     params.calculation = "scf"
     params.cal_force = 1
+    params.pseudo_dir = "../"
+    params.orbital_dir = "../"
     if "_template_keys" not in params.extras:
         params.extras["_template_keys"] = []
     if "cal_force" not in params.extras["_template_keys"]:
@@ -244,12 +246,6 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
         # Write INPUT
         write_input(params, dir_path / "INPUT")
 
-        # Copy pseudopotential + orbital files
-        for pf in pseudo_files:
-            shutil.copy2(pf, dir_path / pf.name)
-        for of in orbital_files:
-            shutil.copy2(of, dir_path / of.name)
-
         # Copy sub.abacus if present
         sub_path = Path("sub.abacus")
         if sub_path.exists():
@@ -258,10 +254,7 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
         console.print(f"  [green]✓[/green] {dir_name}/  ({sf.name})")
 
     # --- Cleanup ---
-    for pf in pseudo_files:
-        pf.unlink(missing_ok=True)
-    for of in orbital_files:
-        of.unlink(missing_ok=True)
+    # Keep UPF/ORB in parent dir — all disp dirs reference them via ../pseudo_dir
     local_sub = Path("sub.abacus")
     if local_sub.exists():
         local_sub.unlink()
