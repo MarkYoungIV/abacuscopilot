@@ -89,7 +89,9 @@ fi
 
 # 3c. Install C++ packages (conda preferred, timeout 60s, pip fallback)
         echo -e "        Installing pypolymlp + symfc..."
-        conda config --add channels conda-forge 2>/dev/null
+        # Add Tsinghua mirror for conda (fast in China)
+        conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge 2>/dev/null
+        conda config --set custom_channels.conda-forge https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud 2>/dev/null
         timeout 60 conda install pypolymlp symfc -c conda-forge -y -q 2>/dev/null || \
             pip install pypolymlp symfc --timeout 120 2>/dev/null || \
             echo -e "        ${YELLOW}pypolymlp install failed (try: conda install pypolymlp -c conda-forge)${NC}"
