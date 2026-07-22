@@ -87,7 +87,11 @@ if [[ "${IS_UPGRADE}" == "1" ]] && pip show abacuscopilot >/dev/null 2>&1; then
     pip uninstall -y abacuscopilot >/dev/null 2>&1 || true
 fi
 
-# 3c. Editable install — tiered mirror fallback:
+# 3c. Install C++ packages via conda (Eigen3 auto-resolved)
+        echo -e "        Installing pypolymlp + symfc via conda..."
+        conda install pypolymlp symfc -c conda-forge -y -q 2>/dev/null
+
+# 3d. Editable install — tiered mirror fallback:
 #      1. Alibaba Cloud (fast, rarely blocked)
 #      2. Tsinghua (may be blocked on some networks)
 #      3. Default PyPI (global backstop)
