@@ -87,9 +87,12 @@ if [[ "${IS_UPGRADE}" == "1" ]] && pip show abacuscopilot >/dev/null 2>&1; then
     pip uninstall -y abacuscopilot >/dev/null 2>&1 || true
 fi
 
-# 3c. Install C++ packages via conda (Eigen3 auto-resolved)
-        echo -e "        Installing pypolymlp + symfc via conda..."
-        conda install pypolymlp symfc -c conda-forge -y -q 2>/dev/null
+# 3c. Install C++ packages (conda preferred, timeout 60s, pip fallback)
+        echo -e "        Installing pypolymlp + symfc..."
+        conda config --add channels conda-forge 2>/dev/null
+        timeout 60 conda install pypolymlp symfc -c conda-forge -y -q 2>/dev/null || \
+            pip install pypolymlp symfc --timeout 120 2>/dev/null || \
+            echo -e "        ${YELLOW}pypolymlp install failed (try: conda install pypolymlp -c conda-forge)${NC}"
 
 # 3d. Editable install — tiered mirror fallback:
 #      1. Alibaba Cloud (fast, rarely blocked)
