@@ -87,16 +87,7 @@ if [[ "${IS_UPGRADE}" == "1" ]] && pip show abacuscopilot >/dev/null 2>&1; then
     pip uninstall -y abacuscopilot >/dev/null 2>&1 || true
 fi
 
-# 3c. Install C++ packages (conda preferred, timeout 60s, pip fallback)
-        echo -e "        Installing pypolymlp + symfc..."
-        # Add Tsinghua mirror for conda (fast in China)
-        conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge 2>/dev/null
-        conda config --set custom_channels.conda-forge https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud 2>/dev/null
-        timeout 60 conda install pypolymlp symfc -c conda-forge -y -q 2>/dev/null || \
-            pip install pypolymlp symfc --timeout 120 2>/dev/null || \
-            echo -e "        ${YELLOW}pypolymlp install failed (try: conda install pypolymlp -c conda-forge)${NC}"
-
-# 3d. Editable install — tiered mirror fallback:
+# 3c. Editable install — tiered mirror fallback:
 #      1. Alibaba Cloud (fast, rarely blocked)
 #      2. Tsinghua (may be blocked on some networks)
 #      3. Default PyPI (global backstop)
@@ -141,4 +132,15 @@ echo ""
 echo -e "  ${GREEN}${BOLD}Setup complete!${NC}"
 echo ""
 echo -e "  To start:  ${BOLD}conda activate ${ENV_NAME} && abacuscopilot${NC}"
+echo ""
+echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "  ${YELLOW}  MLP-SSCHA (tasks 1505-1508) requires extra packages:${NC}"
+echo -e "  ${YELLOW}    pypolymlp  symfc  dpdata${NC}"
+echo -e "  ${YELLOW}  Recommended install (with Tsinghua mirror):${NC}"
+echo -e "  ${YELLOW}    conda install pypolymlp symfc -c conda-forge${NC}"
+echo -e "  ${YELLOW}    pip install dpdata -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple${NC}"
+echo -e "  ${YELLOW}  If conda is slow, add mirror first:${NC}"
+echo -e "  ${YELLOW}    conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge${NC}"
+echo -e "  ${YELLOW}  These are NOT required for standard phonon (112/113) or other tasks.${NC}"
+echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""

@@ -36,9 +36,6 @@ dependencies = [
     "seekpath>=2.0",
     "atst-tools[parallel]==2.1.2",
     "phonopy>=2.19",
-    "pypolymlp",
-    "symfc",
-    "dpdata",
 ]
 
 [project.optional-dependencies]
