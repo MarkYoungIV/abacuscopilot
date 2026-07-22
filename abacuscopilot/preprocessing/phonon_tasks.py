@@ -173,11 +173,9 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
             console.print("  [dim]    PBEsol reuses PBE D3 parameters — this is standard practice.[/dim]")
             params.dft_functional = "pbe"
 
-    # Force dft_functional and vdw_method into INPUT (core group needs template_keys)
-    for _k in ("dft_functional", "vdw_method"):
-        if _k in params.extras.get("_template_keys", []) or getattr(params, _k, None) is None:
-            continue
-        params.extras.setdefault("_template_keys", []).append(_k)
+    for _k, _def in (("dft_functional", "pbe"), ("vdw_method", "none")):
+        if getattr(params, _k) != _def:
+            params.extras.setdefault("_template_keys", []).append(_k)
 
     # --- Read STRU and prepare files ---
     from abacuscopilot.io.stru_file import read_stru, write_stru
