@@ -66,7 +66,7 @@ Examples:
     parser.add_argument(
         "--state",
         action="store_true",
-        help="Quick calculation status: done? converged? energy? (same as task 9908)",
+        help="Show ionic/electronic step summary table (same as task 713)",
     )
     parser.add_argument(
         "--md",
@@ -205,7 +205,7 @@ def main(argv: list[str] | None = None):
         registry = TaskRegistry()
         registry.discover_modules()
         try:
-            registry.dispatch(9908, args=remaining, interactive=True,
+            registry.dispatch(713, args=remaining, interactive=True,
                             output_dir=args.output_dir)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -216,7 +216,7 @@ def main(argv: list[str] | None = None):
         registry = TaskRegistry()
         registry.discover_modules()
         try:
-            registry.dispatch(9905, args=remaining, interactive=True,
+            registry.dispatch(714, args=remaining, interactive=True,
                             output_dir=args.output_dir)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)

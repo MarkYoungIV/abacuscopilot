@@ -33,7 +33,7 @@ _CATEGORY_LABELS: dict[str, str] = {
     "KPT":                 "K-Point Generation",
     "Structure Editing":   "Structure Editor",
     "Symmetry":            "Symmetry Analysis",
-    "SCF Analysis":        "SCF Convergence Analysis",
+    "SCF Analysis":        "Running Status",
     "Band Structure":      "Band Structure Visualization",
     "DOS/PDOS":            "Density of States (DOS/PDOS)",
     "Charge Density":      "Charge Density Analysis",

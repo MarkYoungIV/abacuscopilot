@@ -700,7 +700,7 @@ def _find_md_log() -> Path | None:
     return None
 
 
-@task(9905, category="System", name="MD Monitor",
+@task(714, category="SCF Analysis", name="MD Monitor",
       description="Live monitor of MD simulation: step, energy, temperature")
 def task_md_monitor(args: list[str] | None = None, interactive: bool = True) -> None:
     """Continuously display MD simulation progress from running_md.log.
@@ -718,7 +718,8 @@ def task_md_monitor(args: list[str] | None = None, interactive: bool = True) -> 
         return
 
 
-    import os, time
+    import os
+    import time
 
     # Fast tail-scan — works even on 1+ GB logs (reads only the last ~10K lines).
     data = _parse_md_progress(log_path, tail=3)
@@ -750,7 +751,8 @@ def task_md_monitor(args: list[str] | None = None, interactive: bool = True) -> 
 
             # Check for exit key
             try:
-                import select, sys as _sys
+                import select
+                import sys as _sys
                 r, _, _ = select.select([_sys.stdin], [], [], 2.0)
                 if r:
                     c = _sys.stdin.read(1)

@@ -304,22 +304,83 @@ def _plot_convergence(data: dict, console) -> None:
 # Task 712: Compare SCF convergence
 # =============================================================================
 
+def _extract_wall_time(log_path: Path) -> float | None:
+    """Extract wall time in seconds from an ABACUS log file.
+
+    Looks for a ``Total Time`` line first (the authoritative total).
+    Falls back to summing per-ion-step ``DONE : INIT SCF Time`` lines.
+    Handles three ABACUS formats:
+
+    * ``TOTAL  Time  : 15``  (integer seconds, often in ``*.out``)
+    * ``Total  Time  : 0 h 0 mins 15 secs``  (human-readable)
+    * ``DONE : INIT SCF Time : 1.23 (SEC)``  (per-ion-step)
+    """
+    _re_total_int = re.compile(r"TOTAL\s+Time\s*:\s*(\d+)", re.IGNORECASE)
+    _re_total_hms = re.compile(
+        r"Total\s+Time\s*:\s*(?:(\d+)\s*h\s*)?\s*(?:(\d+)\s*mins?\s*)?\s*(\d+)\s*secs?",
+        re.IGNORECASE,
+    )
+    _re_per_step = re.compile(
+        r"DONE\s*:\s*INIT\s+SCF\s+Time\s*:\s*(\d+\.?\d*)", re.IGNORECASE,
+    )
+
+    try:
+        text = log_path.read_text(errors="ignore")
+    except OSError:
+        return None
+
+    # 1) Try "Total  Time  : 0 h 0 mins 15 secs" (human-readable)
+    m = _re_total_hms.search(text)
+    if m:
+        h = int(m.group(1) or 0)
+        mi = int(m.group(2) or 0)
+        s = int(m.group(3) or 0)
+        return float(h * 3600 + mi * 60 + s)
+
+    # 2) Try "TOTAL  Time  : 15" (simple integer seconds)
+    m = _re_total_int.search(text)
+    if m:
+        return float(m.group(1))
+
+    # 3) Sum per-ion-step SCF times
+    step_times = [float(t) for t in _re_per_step.findall(text)]
+    if step_times:
+        return round(sum(step_times), 1)
+
+    return None
+
+
+def _format_wall_time(seconds: float) -> str:
+    """Format seconds as human-readable wall time."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        return f"{seconds / 60:.1f}m"
+    else:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        return f"{h}h{m:02d}m"
+
+
 @task(712, category="SCF Analysis", name="SCF Compare",
       description="Compare SCF convergence between multiple calculations")
 def task_scf_compare(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Compare SCF convergence across multiple runs."""
+    """Compare SCF convergence across multiple runs.
+
+    Auto-discovers subdirectories under the current working directory
+    (``*/OUT.*/running*``), or accepts explicit file/directory paths.
+    """
     console = _get_console()
 
     console.print()
     console.print("[bold cyan]=== Compare SCF Convergence ===[/bold cyan]")
     console.print()
 
-    log_files = []
+    log_files: list[Path] = []
     if args:
         for arg in args:
             p = Path(arg)
             if p.is_dir():
-                # Search directory for OUT.*/running* logs
                 found = list(p.glob("OUT.*/running*"))
                 if found:
                     log_files.extend(found)
@@ -343,8 +404,6 @@ def task_scf_compare(args: list[str] | None = None, interactive: bool = True) ->
                 console.print(f"    - {f}")
             choice = console.input("  Use these? (y/n) [y]: ").strip().lower()
             if choice and choice not in ("y", "yes"):
-                log_files = []
-            if choice.lower() not in ("y", "yes"):
                 log_files = []
         if not log_files:
             console.print("[dim]Enter paths (space-separated, blank to finish, q to quit):[/dim]")
@@ -377,11 +436,13 @@ def task_scf_compare(args: list[str] | None = None, interactive: bool = True) ->
         console.print(f"    - {f}")
 
     # Parse all
-    all_data = {}
+    all_data: dict[str, dict] = {}
     for f in log_files:
-        all_data[str(f)] = parse_scf_log(f)
+        data = parse_scf_log(f)
+        data["wall_time_s"] = _extract_wall_time(f)
+        all_data[str(f)] = data
 
-    # Print comparison table
+    # ---- Comparison table ----
     from rich.table import Table
 
     table = Table(title="SCF Convergence Comparison")
@@ -391,19 +452,25 @@ def task_scf_compare(args: list[str] | None = None, interactive: bool = True) ->
     table.add_column("Final E (eV)", justify="right", min_width=16, no_wrap=True)
     table.add_column("Conv.", justify="center", min_width=5)
     table.add_column("Final |dE|", justify="right", min_width=8, no_wrap=True)
+    table.add_column("Wall Time", justify="right", min_width=8)
+
+    from abacuscopilot.core.constants import RY_TO_EV
 
     for label, data in all_data.items():
         p = Path(label)
-        # Show meaningful dir name: ecutwfc_40, kspacing_0.140, etc.
         if p.parent.name.startswith("OUT.") and p.parent.parent.name:
             short_label = p.parent.parent.name
         else:
             short_label = p.parent.name if "OUT" in label else p.name
-        conv = "✓" if data["converged"] else "✗"
+
+        conv = "[green]✓[/green]" if data["converged"] else "[red]✗[/red]"
         final_de = f"{data['ediffs'][-1]:.2e}" if data["ediffs"] else "N/A"
-        from abacuscopilot.core.constants import RY_TO_EV
-        e_ry = data.get("final_energy", 0.0)
+        e_ry = data.get("final_energy", 0.0) or 0.0
         e_ev = e_ry * RY_TO_EV
+
+        wt = data.get("wall_time_s")
+        wall_str = _format_wall_time(wt) if wt is not None else "[dim]—[/dim]"
+
         table.add_row(
             short_label,
             str(data["nsteps"]),
@@ -411,6 +478,7 @@ def task_scf_compare(args: list[str] | None = None, interactive: bool = True) ->
             f"{e_ev:.4f}" if e_ry else "N/A",
             conv,
             final_de,
+            wall_str,
         )
 
     console.print()
@@ -419,7 +487,12 @@ def task_scf_compare(args: list[str] | None = None, interactive: bool = True) ->
 
 
 # =============================================================================
-# Task 713 (also accessible as task 9908): Calculation Status Check
+# Task 713: Per-ionic-step summary table for relax, MD, and SCF runs
+# =============================================================================
+
+
+# ---------------------------------------------------------------------------
+# Task 713 helpers — per-ionic-step summary
 # =============================================================================
 
 
@@ -566,66 +639,255 @@ def _parse_calculation_status(out_dir: Path) -> dict:
     return result
 
 
-@task(713, category="SCF Analysis", name="Calc Status",
-      description="Check SCF convergence: energies, steps, forces, stress")
-def task_scf_status(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Check the SCF convergence status and final energy of an ABACUS run."""
-    console = _get_console()
-    from abacuscopilot.core.constants import RY_TO_EV
+# ---------------------------------------------------------------------------
 
-    console.print()
-    console.print("[bold cyan]=== SCF Status ===[/bold cyan]")
-    console.print()
-
-    out_dir = _find_abacus_output_dir()
-    if out_dir is None:
-        console.print("[yellow]No OUT.* directory found.[/yellow]")
-        console.print("[dim]Run an ABACUS calculation first.[/dim]")
-        return
-
-    status = _parse_calculation_status(out_dir)
-    console.print(f"  [dim]Output: {status['output_dir']}[/dim]")
-    console.print()
-
-    # SCF convergence — the core question
-    icon = "[green]✓[/green]" if status["converged"] else "[red]✗[/red]"
-    console.print(f"  {icon} SCF Converged: {'[green]Yes[/green]' if status['converged'] else '[red]No[/red]'}")
-    console.print(f"  SCF Steps (last run): {status['n_scf_steps']}")
-
-    # Final energy — SCF's main output
-    if status["final_energy_ry"] is not None:
-        e_ry = status["final_energy_ry"]
-        e_ha = e_ry / 2.0
-        e_ev = e_ry * RY_TO_EV
-        console.print()
-        console.print("  [bold]Final Energy:[/bold]")
-        console.print(f"    {e_ry:.8f} Ry   (ABACUS native)")
-        console.print(f"    {e_ha:.8f} Ha   (Hartree)")
-        console.print(f"    {e_ev:.6f} eV")
-        if status.get("natom", 0) > 0:
-            console.print(f"    {e_ev / status['natom']:.6f} eV/atom  ({status['natom']} atoms)")
-
-    # Forces / stress — tell user how far from convergence
-    if status["max_force"] is not None:
-        console.print(f"\n  [bold]Max Force:[/bold] {status['max_force']:.6f} eV/Å")
-    if status["max_stress"] is not None:
-        from abacuscopilot.core.constants import KBAR_TO_GPA
-        console.print(f"  [bold]Max Stress:[/bold] {status['max_stress']:.4f} kbar = {status['max_stress'] * KBAR_TO_GPA:.4f} GPa")
-
-    if status["errors"]:
-        console.print()
-        for e in status["errors"]:
-            console.print(f"  [red]![/red] {e}")
-
-    console.print()
+# Patterns for ABACUS log parsing (compiled once at import time)
+_RE_STEP_RELAX = re.compile(r"STEP\s+OF\s+RELAXATION\s*:\s*(\d+)", re.IGNORECASE)
+_RE_STEP_MD = re.compile(r"STEP\s+OF\s+MOLECULAR\s+DYNAMICS\s*:\s*(\d+)", re.IGNORECASE)
+_RE_ION_ELEC_LEGACY = re.compile(r"ION=\s*(\d+)\s+ELEC=\s*(\d+)")
+_RE_ION_ELEC_V3 = re.compile(r"#ION\s+MOVE#\s+(\d+)\s+#ELEC\s+ITER#\s+(\d+)")
+_RE_FINAL_ETOT = re.compile(r"final\s+etot\s+is\s+(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE)
+_RE_FINAL_ETOT_BANG = re.compile(r"!FINAL_ETOT_IS\s*(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE)
+_RE_CONVERGED = re.compile(
+    r"(?:charge\s+density\s+convergence\s+is\s+achieved|#SCF\s+IS\s+CONVERGED#"
+    r"|converged|SCF\s+done|reach\s+convergence)",
+    re.IGNORECASE,
+)
+# Ionic (geometry) convergence — per-step relaxation verdict
+_RE_IONIC_CONVERGED = re.compile(
+    r"Relaxation\s+is\s+converged", re.IGNORECASE,
+)
+_RE_IONIC_NOT_CONVERGED = re.compile(
+    r"Relaxation\s+is\s+not\s+converged", re.IGNORECASE,
+)
+_RE_FORCE_HEADER = re.compile(r"TOTAL-FORCE\s+\(eV/Angstrom\)", re.IGNORECASE)
+_RE_FORCE_LINE = re.compile(
+    r"^\s*\S+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)",
+)
+_RE_WALLTIME = re.compile(r"Total\s+Time\s*:\s*(.+)", re.IGNORECASE)
+_RE_COMPLETED = re.compile(
+    r"(?:REACH|JOB\s+DONE|calculation\s+finished|PROGRAM\s+ENDS|END\s+OF\s+ABACUS"
+    r"|FINISH\s+Time|Finish\s+Time)",
+    re.IGNORECASE,
+)
+_RE_NATOM = re.compile(r"TOTAL\s+ATOM\s+NUMBER\s*[=:]\s*(\d+)", re.IGNORECASE)
 
 
-@task(9908, category="System", name="Calc Status",
-      description="Overall calculation status: completion, ionic steps, wall time")
+def _parse_ionic_steps(out_dir: Path) -> dict:
+    """Parse ABACUS log line-by-line extracting per-ionic-step data.
+
+    Returns a dict with ``calc_type``, ``completed``, ``wall_time``,
+    ``natom``, and a ``steps`` list of per-ion-step dicts::
+
+        {"ion": int, "elec": int, "converged": bool,
+         "energy_ev": float|None, "max_force": float|None}
+
+    Handles relax, cell-relax, MD, and SCF-only runs.  Works with both
+    legacy (``ION=N ELEC=M``) and v3.x (``#ION MOVE#``) log formats.
+    """
+    result: dict = {
+        "calc_type": "scf",
+        "completed": False,
+        "wall_time": None,
+        "natom": 0,
+        "steps": [],
+    }
+
+    # Find the main log file
+    log_files = (
+        sorted(out_dir.glob("running_*.log"))
+        or sorted(out_dir.glob("output*"))
+        or sorted(out_dir.glob("*.log"))
+    )
+    if not log_files:
+        return result
+
+    log_path = log_files[0]
+
+    # State-machine variables
+    cur_step: dict | None = None  # current ionic step being built
+    calc_detected = False
+    in_force_block = False
+    _force_sep_seen = False  # tracks the "---" separator right after TOTAL-FORCE header
+
+    def _push_step(step: dict):
+        """Finalise *step* and append it to the result list."""
+        if step is None:
+            return
+        # Only keep steps that have at least one electronic iteration
+        if step.get("elec", 0) > 0:
+            result["steps"].append(step)
+
+    try:
+        with open(log_path, "r", errors="ignore") as fh:
+            for line in fh:
+                # --- Detect calculation type from step boundary markers ---
+                relax_match = _RE_STEP_RELAX.search(line)
+                md_match = _RE_STEP_MD.search(line)
+                if relax_match:
+                    calc_detected = True
+                    if result["calc_type"] != "cell-relax":
+                        result["calc_type"] = "relax"
+                    _push_step(cur_step)
+                    cur_step = {
+                        "ion": int(relax_match.group(1)),
+                        "elec": 0,
+                        "converged": False,
+                        "ionic_converged": None,
+                        "energy_ev": None,
+                        "max_force": None,
+                    }
+                    in_force_block = False
+                    continue
+                if md_match:
+                    calc_detected = True
+                    result["calc_type"] = "md"
+                    _push_step(cur_step)
+                    cur_step = {
+                        "ion": int(md_match.group(1)),
+                        "elec": 0,
+                        "converged": False,
+                        "ionic_converged": None,
+                        "energy_ev": None,
+                        "max_force": None,
+                    }
+                    in_force_block = False
+                    continue
+
+                # --- Electronic step counters ---
+                ion_elec_legacy = _RE_ION_ELEC_LEGACY.search(line)
+                ion_elec_v3 = _RE_ION_ELEC_V3.search(line)
+                elec_match = ion_elec_legacy or ion_elec_v3
+                if elec_match:
+                    ion_n = int(elec_match.group(1))
+                    elec_n = int(elec_match.group(2))
+                    # If we haven't seen a STEP marker yet (SCF-only),
+                    # start an implicit first ionic step.
+                    if cur_step is None:
+                        cur_step = {
+                            "ion": ion_n,
+                            "elec": 0,
+                            "converged": False,
+                            "ionic_converged": None,
+                            "energy_ev": None,
+                            "max_force": None,
+                        }
+                        calc_detected = True
+                    # Ensure the current step tracks the right ion number
+                    # (handles rare cases where step boundary markers differ)
+                    if cur_step is not None:
+                        cur_step["ion"] = max(cur_step["ion"], ion_n)
+                        cur_step["elec"] = max(cur_step["elec"], elec_n)
+                    in_force_block = False
+                    continue
+
+                # --- Ionic (geometry) convergence ---
+                # Must be checked BEFORE SCF convergence because
+                # "Relaxation is not converged yet!" contains the word
+                # "converged" and would be falsely caught by _RE_CONVERGED.
+                if cur_step is not None and _RE_IONIC_CONVERGED.search(line):
+                    cur_step["ionic_converged"] = True
+                    continue
+                if cur_step is not None and _RE_IONIC_NOT_CONVERGED.search(line):
+                    cur_step["ionic_converged"] = False
+                    continue
+
+                # --- SCF convergence ---
+                if cur_step is not None and _RE_CONVERGED.search(line):
+                    cur_step["converged"] = True
+                    continue
+
+                # --- Energy ---
+                etot_match = _RE_FINAL_ETOT.search(line) or _RE_FINAL_ETOT_BANG.search(line)
+                if etot_match and cur_step is not None:
+                    try:
+                        cur_step["energy_ev"] = float(etot_match.group(1))
+                    except ValueError:
+                        pass
+                    continue
+
+                # --- TOTAL-FORCE block ---
+                if _RE_FORCE_HEADER.search(line):
+                    in_force_block = True
+                    _force_sep_seen = False
+                    continue
+                if in_force_block and cur_step is not None:
+                    # Skip the "---" separator line right after the header
+                    if not _force_sep_seen and line.strip().startswith("---"):
+                        _force_sep_seen = True
+                        continue
+                    fmatch = _RE_FORCE_LINE.match(line)
+                    if fmatch:
+                        fx = abs(float(fmatch.group(1)))
+                        fy = abs(float(fmatch.group(2)))
+                        fz = abs(float(fmatch.group(3)))
+                        fmax = max(fx, fy, fz)
+                        if cur_step["max_force"] is None or fmax > cur_step["max_force"]:
+                            cur_step["max_force"] = fmax
+                        continue
+                    # Not a force line and not the separator → exit force block
+                    # (but keep the line for further processing)
+                    if _force_sep_seen and not fmatch:
+                        in_force_block = False
+
+                # --- Wall time ---
+                twall = _RE_WALLTIME.search(line)
+                if twall:
+                    result["wall_time"] = twall.group(1).strip()
+                    continue
+
+                # --- Completion ---
+                if not result["completed"] and _RE_COMPLETED.search(line):
+                    result["completed"] = True
+                    continue
+
+                # --- Atom count ---
+                if result["natom"] == 0:
+                    natom_match = _RE_NATOM.search(line)
+                    if natom_match:
+                        result["natom"] = int(natom_match.group(1))
+
+    except OSError:
+        pass
+
+    # Push the last step (possibly incomplete / still running)
+    _push_step(cur_step)
+
+    # Refine calc_type if the INPUT file is available (cell-relax vs relax)
+    try:
+        input_path = out_dir.parent / "INPUT"
+        if not input_path.exists():
+            input_path = out_dir / "INPUT"
+        if input_path.exists():
+            inp = input_path.read_text(errors="ignore")
+            for param_line in inp.split("\n"):
+                stripped = param_line.strip()
+                if re.match(r"^\s*calculation\s+", stripped, re.IGNORECASE):
+                    calc_val = stripped.split(None, 1)[-1].strip().lower()
+                    if calc_val in ("cell-relax", "relax", "md", "scf", "nscf"):
+                        if calc_val == "cell-relax":
+                            result["calc_type"] = "cell-relax"
+                        elif calc_val == "relax":
+                            result["calc_type"] = "relax"
+                        elif calc_val in ("md", "nscf"):
+                            result["calc_type"] = calc_val
+                    break
+    except OSError:
+        pass
+
+    # If no STEP markers but we have electronic steps, it's SCF
+    if not calc_detected and not result["steps"]:
+        result["calc_type"] = "scf"
+
+    return result
+
+
+@task(713, category="SCF Analysis", name="Ion Steps",
+      description="Per-ion-step summary: SCF iters, convergence, energy, forces")
 def task_sys_status(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Check the overall calculation status — ideal for monitoring relax/MD runs."""
+    """Show a per-ionic-step summary table — ideal for monitoring relax/MD runs."""
     console = _get_console()
-    from abacuscopilot.core.constants import RY_TO_EV
+    from rich.table import Table
 
     console.print()
     console.print("[bold cyan]=== Calculation Status ===[/bold cyan]")
@@ -636,44 +898,141 @@ def task_sys_status(args: list[str] | None = None, interactive: bool = True) -> 
         console.print("[yellow]No OUT.* directory found.[/yellow]")
         return
 
-    status = _parse_calculation_status(out_dir)
-    console.print(f"  [dim]Output: {status['output_dir']}[/dim]")
+    data = _parse_ionic_steps(out_dir)
+    steps = data["steps"]
+
+    if not steps:
+        console.print("[yellow]No ionic/electronic step data found in log.[/yellow]")
+        return
+
+    # ---- Header line ----
+    calc_labels = {
+        "scf": "SCF", "relax": "relax", "cell-relax": "cell-relax",
+        "md": "MD", "nscf": "NSCF",
+    }
+    calc_name = calc_labels.get(data["calc_type"], data["calc_type"])
+    completed = data["completed"]
+    status_icon = "[green]✓[/green]" if completed else "[yellow]…[/yellow]"
+    status_text = "completed" if completed else "running"
+    is_relax = data["calc_type"] in ("relax", "cell-relax")
+    is_md = data["calc_type"] == "md"
+
+    # Convergence counts depend on calculation type
+    if is_relax:
+        n_scf_conv = sum(1 for s in steps if s["converged"])
+        n_ionic_conv = sum(1 for s in steps if s["ionic_converged"] is True)
+        n_total = len(steps)
+    else:
+        n_scf_conv = sum(1 for s in steps if s["converged"])
+        n_total = len(steps)
+
+    header_parts = [
+        f"[dim]Output:[/dim] {out_dir}",
+        f"[dim]Calc:[/dim] {calc_name}",
+        f"[dim]Status:[/dim] {status_icon} {status_text}",
+    ]
+    if data["wall_time"]:
+        header_parts.append(f"[dim]Wall:[/dim] {data['wall_time']}")
+    console.print(f"  {'  |  '.join(header_parts)}")
     console.print()
 
-    # Top-line: is it done?
-    if status["completed"]:
-        console.print("  [green]✓ Calculation completed[/green]")
+    # ---- Build the table ----
+    show_force = is_relax
+
+    # Choose Conv column header based on calc type
+    conv_header = "Conv" if is_relax else "SCF"
+
+    table = Table(expand=False, box=None, padding=(0, 1))
+    table.add_column("ION", justify="right", style="dim", min_width=4)
+    table.add_column("SCF", justify="right", min_width=4)
+    table.add_column(conv_header, justify="center", min_width=5)
+    table.add_column("Energy(eV)", justify="right", min_width=16)
+    table.add_column("ΔE(eV)", justify="right", min_width=10)
+    if show_force:
+        table.add_column("Max|F|", justify="right", min_width=9)
+
+    prev_energy = None
+    for s in steps:
+        ion = str(s["ion"])
+        elec = str(s["elec"])
+
+        # Convergence cell: for relax, show ionic convergence;
+        # fall back to SCF convergence when no ionic verdict (e.g. running step)
+        if is_relax:
+            if s["ionic_converged"] is True:
+                conv = "[green]✓[/green]"
+            elif s["ionic_converged"] is False:
+                # SCF converged but ionic not yet — normal relax progression
+                if s["converged"]:
+                    conv = "[yellow]→[/yellow]"
+                else:
+                    conv = "[red]⚡[/red]"  # SCF failed too
+            else:
+                # No ionic verdict yet (last step still running)
+                conv = "[green]✓[/green]" if s["converged"] else "[red]⚡[/red]"
+        else:
+            # MD / SCF: show SCF convergence
+            conv = "[green]✓[/green]" if s["converged"] else "[red]✗[/red]"
+
+        if s["energy_ev"] is not None:
+            energy = f"{s['energy_ev']: .4f}"
+            if prev_energy is not None:
+                delta = s["energy_ev"] - prev_energy
+                delta_str = f"{delta:+.4f}"
+            else:
+                delta_str = "[dim]—[/dim]"
+            prev_energy = s["energy_ev"]
+        else:
+            energy = "[yellow](no energy)[/yellow]"
+            delta_str = "[dim]—[/dim]"
+
+        row = [ion, elec, conv, energy, delta_str]
+        if show_force:
+            if s["max_force"] is not None:
+                row.append(f"{s['max_force']:.4f}")
+            else:
+                row.append("[dim]—[/dim]")
+        table.add_row(*row)
+
+    console.print(table)
+
+    # ---- Footer ----
+    if is_relax:
+        # Ionic convergence — just say yes or no
+        if n_ionic_conv > 0:
+            footer_parts = ["[green]✓ Ionic converged[/green]"]
+        else:
+            footer_parts = ["[yellow]→ Ionic not converged yet[/yellow]"]
+        # SCF is secondary info — only mention if any step failed
+        if n_scf_conv < n_total:
+            failed_indices = [str(s["ion"]) for s in steps if not s["converged"]]
+            footer_parts.append(
+                f"[dim]SCF: {n_scf_conv}/{n_total} converged"
+                + (f" (step{'s' if len(failed_indices) > 1 else ''} {','.join(failed_indices)} failed)" if failed_indices else "")
+                + "[/dim]"
+            )
     else:
-        console.print("  [yellow]… Calculation still running[/yellow]")
+        scf_icon = "[green]✓[/green]" if n_scf_conv == n_total else "[red]✗[/red]"
+        footer_parts = [
+            f"{scf_icon} [bold]SCF: {n_scf_conv}/{n_total} converged[/bold]"
+        ]
+    if data["natom"] > 0:
+        footer_parts.append(f"{data['natom']} atoms")
+    if is_relax:
+        if n_total > 0 and steps[-1]["energy_ev"] is not None:
+            final_e = steps[-1]["energy_ev"]
+            footer_parts.append(f"final {final_e:.4f} eV")
+            if data["natom"] > 0:
+                footer_parts.append(f"{final_e / data['natom']:.4f} eV/atom")
+    if data["wall_time"]:
+        footer_parts.append(f"wall: {data['wall_time']}")
+    console.print(f"  {'  |  '.join(footer_parts)}")
 
-    # Ionic steps — key for relax/MD monitoring
-    if status["n_ionic_steps"]:
-        console.print(f"  Ionic Steps:          {status['n_ionic_steps']}")
-
-    # SCF convergence snapshot
-    console.print(f"  SCF Converged:        {'[green]Yes[/green]' if status['converged'] else '[red]No[/red]'}  ({status['n_scf_steps']} steps)")
-
-    # Energy
-    if status["final_energy_ry"] is not None:
-        e_ry = status["final_energy_ry"]
-        e_ev = e_ry * RY_TO_EV
-        natom = status.get("natom", 0)
-        console.print(f"  Final Energy:         {e_ry:.6f} Ry  ({e_ev:.4f} eV"
-                      + (f", {e_ev/natom:.4f} eV/atom)" if natom > 0 else ")"))
-    else:
-        console.print("  [yellow]Energy not yet available[/yellow]")
-
-    # Wall time
-    if status["wall_time"]:
-        console.print(f"  Wall Time:            {status['wall_time']}")
-
-    # Forces — tells if relax is converging
-    if status["max_force"] is not None:
-        console.print(f"  Max Force:            {status['max_force']:.6f} eV/Å")
-
-    if status["errors"]:
+    # Legend for Conv column symbols
+    if is_relax:
         console.print()
-        for e in status["errors"]:
-            console.print(f"  [red]![/red] {e}")
+        console.print(
+            "  [dim]Conv:  [green]✓[/] converged  [yellow]→[/] in progress  [red]⚡[/] SCF failed[/dim]"
+        )
 
     console.print()
