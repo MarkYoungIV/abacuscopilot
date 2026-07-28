@@ -1,11 +1,9 @@
 Metadata-Version: 2.4
 Name: abacuscopilot
-Version: 0.1.0
+Version: 0.1.21
 Summary: Your AI copilot for the ABACUS DFT software — pre- and post-processing made simple
 Author: AbacusCopilot Developers
 License: GPL-3.0
-Project-URL: Homepage, https://github.com/abacuskit/abacus-kit
-Project-URL: Repository, https://github.com/abacuskit/abacus-kit
 Keywords: abacus,dft,materials-science,copilot,post-processing,pre-processing
 Classifier: Development Status :: 3 - Alpha
 Classifier: Intended Audience :: Science/Research
@@ -24,20 +22,22 @@ Requires-Dist: scipy>=1.7
 Requires-Dist: matplotlib>=3.5
 Requires-Dist: rich>=13.0
 Requires-Dist: pyyaml>=6.0
-Provides-Extra: ase
-Requires-Dist: ase>=3.22; extra == "ase"
+Requires-Dist: ase>=3.22
+Requires-Dist: seekpath>=2.0
+Requires-Dist: atst-tools[parallel]==2.1.2
+Requires-Dist: phonopy>=2.19
 Provides-Extra: symmetry
 Requires-Dist: spglib>=2.0; extra == "symmetry"
-Provides-Extra: kpath
-Requires-Dist: seekpath>=2.0; extra == "kpath"
 Provides-Extra: xml
 Requires-Dist: lxml>=4.9; extra == "xml"
 Provides-Extra: full
-Requires-Dist: abacuscopilot[ase,symmetry,xml]; extra == "full"
+Requires-Dist: abacuscopilot[symmetry,xml]; extra == "full"
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: pytest-cov>=4.0; extra == "dev"
 Requires-Dist: ruff>=0.1; extra == "dev"
+Requires-Dist: mypy>=1.0; extra == "dev"
+Requires-Dist: pre-commit>=3.0; extra == "dev"
 
 # AbacusCopilot
 

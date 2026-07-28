@@ -1,11 +1,13 @@
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
+
 here = Path(__file__).parent
+from abacuslite import Abacus, AbacusProfile
+from abacuslite.io.generalio import load_orbital, load_pseudo
 from ase.build import bulk
 from ase.optimize import BFGS
-from abacuslite.io.generalio import load_pseudo, load_orbital
-from abacuslite import AbacusProfile, Abacus
+
 
 class TestIonicRelaxationWithStress(unittest.TestCase):
 

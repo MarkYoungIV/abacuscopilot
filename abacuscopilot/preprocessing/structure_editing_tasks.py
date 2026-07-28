@@ -1040,7 +1040,7 @@ def task_reorder_species(args: list[str] | None = None, interactive: bool = True
 
     # Validate: every species must appear exactly once
     if set(new_order) != set(old_order) or len(new_order) != len(old_order):
-        console.print(f"[red]Invalid order: must contain each species exactly once.[/red]")
+        console.print("[red]Invalid order: must contain each species exactly once.[/red]")
         console.print(f"  Expected: {' '.join(old_order)}")
         return
 

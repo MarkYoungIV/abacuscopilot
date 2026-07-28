@@ -3,20 +3,20 @@ scipy>=1.7
 matplotlib>=3.5
 rich>=13.0
 pyyaml>=6.0
-
-[ase]
 ase>=3.22
+seekpath>=2.0
+atst-tools[parallel]==2.1.2
+phonopy>=2.19
 
 [dev]
 pytest>=7.0
 pytest-cov>=4.0
 ruff>=0.1
+mypy>=1.0
+pre-commit>=3.0
 
 [full]
-abacuscopilot[ase,symmetry,xml]
-
-[kpath]
-seekpath>=2.0
+abacuscopilot[symmetry,xml]
 
 [symmetry]
 spglib>=2.0

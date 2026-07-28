@@ -1,25 +1,27 @@
 import re
-import shutil
 import unittest
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from ase.atoms import Atoms
-from ase.calculators.singlepoint import (
-    SinglePointKPoint,
-    SinglePointDFTCalculator
-)
-from ase.units import Ry, eV, GPa, bar
+from ase.calculators.singlepoint import SinglePointDFTCalculator, SinglePointKPoint
 from ase.stress import full_3x3_to_voigt_6_stress
+from ase.units import GPa, Ry, eV
+
 # from ase.utils import reader
 
-__all__ = ['read_kpoints_from_running_log', 
-           'read_band_from_running_log', 'read_traj_from_running_log',
-           'read_traj_from_md_dump', 'read_forces_from_running_log',
-           'read_stress_from_running_log', 'read_energies_from_running_log',
-           'read_abacus_out']
+__all__ = [
+    'read_abacus_out',
+    'read_band_from_running_log',
+    'read_energies_from_running_log',
+    'read_forces_from_running_log',
+    'read_kpoints_from_running_log',
+    'read_stress_from_running_log',
+    'read_traj_from_md_dump',
+    'read_traj_from_running_log',
+]
 
 def parse_kpoints_table(raw: List[str]) \
     -> Tuple[np.ndarray, np.ndarray, List[int] | None]:
@@ -135,7 +137,7 @@ def read_kpoints_from_running_log(src: str | Path | List[str]) \
 
         # update the starting point to search for the next table
         istart += itb + jtb + 1
-    
+
     # sort tables...
     kibz = tables.pop(0)
     # get the number of kpoints, then will use in reshaping the kpoints trajectories
@@ -214,7 +216,7 @@ def read_band_from_running_log(src: str | Path | List[str]) \
     #     raw = f.readlines()
     raw = [l.strip() for l in raw]
     raw = [l for l in raw if l] # remove empty lines
-    
+
     # search for the number of spin channels, bands and kpoints first
     # r'nspin\s+=\s+(\d+)'
     nspin = [re.search(r'nspin\s+=\s+(\d+)', l) for l in raw]
@@ -249,7 +251,7 @@ def read_band_from_running_log(src: str | Path | List[str]) \
                     + r'(-?\d(\.\d+)?(e-\d+)?)\s+' \
                     + r'\(\d+\s+pws\)'
     iekb = [i for i, l in enumerate(raw) if re.match(ekb_leading_pat, l)]
-    assert len(iekb) > 0, f'No k-point found'
+    assert len(iekb) > 0, 'No k-point found'
     assert len(iekb) % (masknspin(nspin)*nk) == 0, \
            f'Inconsistent number of k-points: {len(iekb)} vs {nk}'
     k_raw = [re.match(ekb_leading_pat, raw[i]).groups() for i in iekb]
@@ -287,7 +289,7 @@ def read_band_from_running_log(src: str | Path | List[str]) \
     # reshape the k-points to (nframe, nspin, nk, 3)
     k = k.reshape(nframe, masknspin(nspin), nk, 3)
 
-    return [{'k': ki, 'e': eki, 'occ': occi} 
+    return [{'k': ki, 'e': eki, 'occ': occi}
             for ki, eki, occi in zip(k, ekb, occ)]
 
 def read_traj_from_running_log(src: str | Path | List[str]) \
@@ -352,7 +354,7 @@ def read_traj_from_running_log(src: str | Path | List[str]) \
     # r'^Lattice vectors: \(Cartesian coordinate: in unit of a\_0\)$'
     icell = [i for i, l in enumerate(raw)
                 if re.match(r'^Lattice vectors: \(Cartesian coordinate: in unit of a_0\)$', l)]
-    assert len(icell) > 0, f'No cell found'
+    assert len(icell) > 0, 'No cell found'
     # nframe = len(icell) # will be 1 for NVT MD
     # assert nframe > 0, f'Invalid trajectory with length {nframe}')
     cell_raw = [raw[i+1:i+1+3] for i in icell]
@@ -360,14 +362,14 @@ def read_traj_from_running_log(src: str | Path | List[str]) \
             for c in cell_raw] # convert to Angstrom
     assert all(c.shape == (3, 3) for c in cell), \
            f'Unexpected shape of cell: {[c.shape for c in cell]}'
-    
+
     # search for the elements and coordinates
     # r'^tau[c|d]_([A-Z][a-z]?)\d+\s+(-?\d+(\.\d+)?)\s+(-?\d+(\.\d+)?)\s+(-?\d+(\.\d+)?)*'
     m_tau = [re.match(r'^tau[c|d]_([A-Z][a-z]?)\d+'
                         r'\s+(-?\d+(\.\d+)?)\s+(-?\d+(\.\d+)?)\s+(-?\d+(\.\d+)?)', l)
                 for l in raw]
     m_tau = [m for m in m_tau if m]
-    assert len(m_tau) > 0, f'No atoms found'
+    assert len(m_tau) > 0, 'No atoms found'
     nframe = len(m_tau) // natoms
     assert nframe > 0, f'Invalid trajectory with length {nframe}'
     elem = [m.group(1) for m in m_tau]
@@ -435,7 +437,7 @@ def read_traj_from_md_dump(src: str | Path | List[str]) \
     # search for the cell
     # r'^LATTICE_VECTORS$'
     icell = [i for i, l in enumerate(raw) if re.match(r'^LATTICE_VECTORS$', l)]
-    assert len(icell) > 0, f'No cell found in file'
+    assert len(icell) > 0, 'No cell found in file'
     cell_raw = [raw[i+1:i+1+3] for i in icell]
     cell = [np.array([list(map(float, l.split())) for l in c])
             for c in cell_raw]
@@ -449,7 +451,7 @@ def read_traj_from_md_dump(src: str | Path | List[str]) \
                         r'(-?\d+(\.\d+)?)\s+(-?\d+(\.\d+)?)\s+(-?\d+(\.\d+)?)', l)
                 for l in raw]
     m_tau = [m for m in m_tau if m]
-    assert len(m_tau) > 0, f'No atoms found'
+    assert len(m_tau) > 0, 'No atoms found'
     natoms = len(m_tau) // nframe
     assert natoms > 0, f'Invalid trajectory with length {nframe}.'
     elem = [m.group(1) for m in m_tau]
@@ -465,7 +467,7 @@ def read_traj_from_md_dump(src: str | Path | List[str]) \
     assert len(elem) == nframe, \
            f'Unexpected number of elements: {len(elem)}, ' \
            f'expected {nframe}'
-    
+
     return [{
         'coordinate': 'Cartesian',
         'cell': c,
@@ -489,7 +491,7 @@ def read_forces_from_running_log(src: str | Path | List[str]) \
 
     # iteratively search for the forces, which led by the title `TOTAL-FORCE`
     forces, istart = [], 0
-    
+
     while istart < len(raw):
         ith = None # index of the table header
         for i, l in enumerate(raw[istart:]):
@@ -516,7 +518,7 @@ def read_forces_from_running_log(src: str | Path | List[str]) \
                 break
         if jtb is None: # no content found
             break
-        
+
         # truncate the force table and append
         force_raw = raw[istart+ith+1+itb:istart+ith+1+itb+jtb]
         force = np.array([list(map(float, l.split()[1:])) for l in force_raw])
@@ -542,7 +544,7 @@ def read_stress_from_running_log(src: str | Path | List[str]) \
 
     # iteratively search for the stress, which led by the title `TOTAL-STRESS`
     stresses, istart = [], 0
-    
+
     while istart < len(raw):
         ith = None # index of the table header
         for i, l in enumerate(raw[istart:]):
@@ -563,7 +565,7 @@ def read_stress_from_running_log(src: str | Path | List[str]) \
             break
         # otherwise
         jtb = 3 # because the stress tensor would be a (3, 3)-matrix
-        
+
         # truncate the stress table and append
         stress_raw = raw[istart+ith+1+itb:istart+ith+1+itb+jtb]
         stress = np.array([list(map(float, l.split())) for l in stress_raw]).reshape(3, 3)
@@ -589,7 +591,7 @@ def read_energies_from_running_log(src: str | Path | List[str]) \
     raw = [l for l in raw if l] # remove empty lines
 
     energies_ry, energies_ev, istart = [], [], 0
-    
+
     while istart < len(raw):
         ith = None # index of the table header
         for i, l in enumerate(raw[istart:]):
@@ -616,7 +618,7 @@ def read_energies_from_running_log(src: str | Path | List[str]) \
                 break
         if jtb is None: # no content found
             break
-        
+
         # truncate the energy table and append
         tb_raw = raw[istart+ith+1+itb:istart+ith+1+itb+jtb]
         # first item is the name of the energy component
@@ -664,12 +666,12 @@ def read_magmom_from_running_log(src: str | Path | List[str]) \
     #     raw = f.readlines()
     raw = [l.strip() for l in raw]
     raw = [l for l in raw if l] # remove empty lines
-    
+
     magmom, istart = [], 0
     while istart < len(raw):
         ith = None # index of the table header
         for i, l in enumerate(raw[istart:]):
-            if re.match(r'\s*Total\sMagnetism\s\(uB\)(\s+x\s+y\s+z)?\s*$', l, 
+            if re.match(r'\s*Total\sMagnetism\s\(uB\)(\s+x\s+y\s+z)?\s*$', l,
                         re.IGNORECASE):
                 ith = i
                 break
@@ -695,7 +697,7 @@ def read_magmom_from_running_log(src: str | Path | List[str]) \
                 break
         if jtb is None: # no content found
             break
-        
+
         # truncate the magmom table and append
         tb_raw = raw[istart+ith+1+itb:istart+ith+1+itb+jtb]
         # first item is the name of the magmom component
@@ -706,7 +708,7 @@ def read_magmom_from_running_log(src: str | Path | List[str]) \
             magmom.append(np.array([list(map(float, res[-1]))]).flatten())
         else: # non-colinear case
             mx, my, mz = res
-            magmom.append(np.array([list(map(float, (mx, my, mz))) 
+            magmom.append(np.array([list(map(float, (mx, my, mz)))
                                     for mx, my, mz in zip(mx, my, mz)]))
         # update the istart
         istart += ith + itb + jtb + 1
@@ -797,8 +799,8 @@ def is_invalid_arr(arr) -> bool:
     return False
 
 # @reader
-def read_abacus_out(fileobj, 
-                    index=slice(None), 
+def read_abacus_out(fileobj,
+                    index=slice(None),
                     results_required=True,
                     sort_atoms_with: Optional[List[int]] = None) -> Atoms | List[Atoms]:
     '''Reads the ABACUS output files. This function would be called by
@@ -839,10 +841,10 @@ def read_abacus_out(fileobj,
     else: # from the `with open(fn) as fileobj:` context
         assert isinstance(fileobj, TextIOWrapper)
         abacus_lines = fileobj.readlines()
-    
+
     # read the esolver type
     eslvtyp = read_esolver_type_from_running_log(abacus_lines)
-    
+
     # read the structure, with the cell, elem, etc. (nframe)
     trajectory = read_traj_from_running_log(abacus_lines)
     # read the eigenvalues (nframe, nk, nbnd)
@@ -866,7 +868,7 @@ def read_abacus_out(fileobj,
         read_energies_from_running_log(abacus_lines)[1],
         read_iter_header_from_running_log(abacus_lines)
     )
-    
+
     # read the magmom
     magmom = read_magmom_from_running_log(abacus_lines)
 
@@ -892,11 +894,11 @@ def read_abacus_out(fileobj,
         trajectory, elecstate, magmom, forces, stress, energies):
         # for each frame, a structure can be defined
         ind = ind or list(range(len(frame['elem'])))
-        atoms = Atoms(symbols=np.array(frame['elem'])[ind].tolist(), 
-                      positions=frame['coords'][ind], 
+        atoms = Atoms(symbols=np.array(frame['elem'])[ind].tolist(),
+                      positions=frame['coords'][ind],
                       cell=frame['cell'],
                       magmoms=mag[ind])
-        
+
         # from result, a calculator can be assembled
         # however, sometimes the force and stress is not calculated
         # in this case, we set them to None
@@ -957,7 +959,7 @@ class TestLegacyIO(unittest.TestCase):
             self.assertTrue(d['k'].shape == (nspin, nk, 3))
             self.assertTrue(d['e'].shape == (nspin, nk, nband))
             self.assertTrue(d['occ'].shape == (nspin, nk, nband))
-        
+
         # nspin 2, cell-relax (multi-frames)
         fn = self.testfiles / 'lcao-symm0-nspin2-multik-cellrelax_'
         data = read_band_from_running_log(fn)
@@ -1057,7 +1059,7 @@ class TestLegacyIO(unittest.TestCase):
         data = read_traj_from_running_log(fn)
         self.assertIsInstance(data, list)
         self.assertEqual(len(data), 1) # it is scf run, only one frame
-        self.assertTrue(all('coordinate' in d and 'cell' in d and 
+        self.assertTrue(all('coordinate' in d and 'cell' in d and
                             'elem' in d and 'coords' in d for d in data))
         for d in data:
             self.assertIn(d['coordinate'], ['Cartesian', 'Direct'])
@@ -1069,10 +1071,10 @@ class TestLegacyIO(unittest.TestCase):
         fn = self.testfiles / 'lcao-symm0-nspin2-multik-relax_'
         data = read_traj_from_running_log(fn)
         self.assertIsInstance(data, list)
-        self.assertEqual(len(data), 1) 
+        self.assertEqual(len(data), 1)
         # relax task will only print the coordinate at the first run
         # but band structure will be printed for multiple times...
-        self.assertTrue(all('coordinate' in d and 'cell' in d and 
+        self.assertTrue(all('coordinate' in d and 'cell' in d and
                             'elem' in d and 'coords' in d for d in data))
         for d in data:
             self.assertIn(d['coordinate'], ['Cartesian', 'Direct'])
@@ -1086,7 +1088,7 @@ class TestLegacyIO(unittest.TestCase):
         data = read_traj_from_running_log(fn)
         self.assertIsInstance(data, list)
         self.assertEqual(len(data), 3) # print each time
-        self.assertTrue(all('coordinate' in d and 'cell' in d and 
+        self.assertTrue(all('coordinate' in d and 'cell' in d and
                             'elem' in d and 'coords' in d for d in data))
         for d in data:
             self.assertIn(d['coordinate'], ['Cartesian', 'Direct'])
@@ -1100,8 +1102,8 @@ class TestLegacyIO(unittest.TestCase):
         data = read_traj_from_md_dump(fn)
         self.assertIsInstance(data, list)
         self.assertEqual(len(data), 2)
-        self.assertTrue(all('coordinate' in d and 'cell' in d and 
-                            'alat_in_angstrom' in d and 'elem' in d and 
+        self.assertTrue(all('coordinate' in d and 'cell' in d and
+                            'alat_in_angstrom' in d and 'elem' in d and
                             'coords' in d for d in data))
         for d in data:
             self.assertEqual(d['coordinate'], 'Cartesian')
@@ -1109,7 +1111,7 @@ class TestLegacyIO(unittest.TestCase):
             self.assertEqual(d['alat_in_angstrom'], 0.529177000000)
             self.assertIsInstance(d['elem'], list)
             self.assertEqual(len(d['elem']), 2)
-            self.assertEqual(d['coords'].shape, (2, 3))        
+            self.assertEqual(d['coords'].shape, (2, 3))
 
     def test_read_forces_from_running_log(self):
         fn = self.testfiles / 'pw-symm0-nspin4-gamma-md_'
@@ -1157,7 +1159,7 @@ class TestLegacyIO(unittest.TestCase):
         self.assertEqual(len(kpoints), 5)
         # thus we unpack
         kibz, kdspnls, kd1traj, kctraj, kd2traj = kpoints
-        
+
         # kibz
         self.assertIsInstance(kibz, tuple)
         self.assertEqual(len(kibz), 3)
@@ -1233,7 +1235,7 @@ class TestLegacyIO(unittest.TestCase):
         self.assertEqual(len(magmoms), 2)
         for magmom in magmoms:
             self.assertTrue(
-                np.allclose(magmom, 
+                np.allclose(magmom,
                             np.array([[0.        , 0.        , 3.62032142],
                                       [0.        , 0.        , 3.62032142]])))
 

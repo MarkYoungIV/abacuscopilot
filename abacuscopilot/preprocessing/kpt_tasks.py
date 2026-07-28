@@ -17,7 +17,6 @@ from abacuscopilot.core.constants import DEFAULT_KSPACING
 from abacuscopilot.core.models import KPoints, Lattice
 from abacuscopilot.tasks import task
 
-
 # =============================================================================
 # Task 301: Auto MP K-point mesh
 # =============================================================================

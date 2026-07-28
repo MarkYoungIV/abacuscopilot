@@ -774,6 +774,7 @@ def task_view_structure(args: list[str] | None = None, interactive: bool = True)
 
     # Shared imports for conversions below
     import tempfile
+
     from ase.io import write as ase_write
     tmpdir = None
     open_path = viewer_path
@@ -918,12 +919,12 @@ def task_stru_to_lammps(args: list[str] | None = None, interactive: bool = True)
             f.write(f"  0.000000  {yhi:.6f}  ylo yhi\n")
             f.write(f"  0.000000  {zhi:.6f}  zlo zhi\n")
 
-        f.write(f"\nMasses\n\n")
+        f.write("\nMasses\n\n")
         for sp in species:
             mass = _ATOMIC_MASSES.get(sp, 0.0)
             f.write(f"  {type_map[sp]}  {mass:.6f}  # {sp}\n")
 
-        f.write(f"\nAtoms\n\n")
+        f.write("\nAtoms\n\n")
         for i, atom in enumerate(structure.atoms, 1):
             t = type_map[atom.species]
             x, y, z = pos_cart[i - 1]
@@ -976,6 +977,7 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
 
     # --- Parse LAMMPS data file ---
     import re
+
     from abacuscopilot.core.models import Atom, Lattice, Structure
 
     n_atoms = n_types = 0
@@ -1097,7 +1099,7 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
         a_auto = round(max(xs) - min(xs) + 2 * margin, 4)
         b_auto = round(max(ys) - min(ys) + 2 * margin, 4)
         c_auto = round(max(zs) - min(zs) + 2 * margin, 4)
-        console.print(f"  [yellow]No box info in file.[/yellow]")
+        console.print("  [yellow]No box info in file.[/yellow]")
         console.print(f"  Auto-computed from atom positions: "
                       f"a={a_auto:.2f}  b={b_auto:.2f}  c={c_auto:.2f} Å  (α=β=γ=90°)")
 

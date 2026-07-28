@@ -122,8 +122,11 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
 
     # --- Basis type ---
     from abacuscopilot.preprocessing.input_tasks import (
-        _apply_template, _ask_lcao_solver, _apply_solver_override,
-        _auto_prepare_files, _get_template,
+        _apply_solver_override,
+        _apply_template,
+        _ask_lcao_solver,
+        _auto_prepare_files,
+        _get_template,
     )
 
     if interactive:
@@ -178,7 +181,7 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
             params.extras.setdefault("_template_keys", []).append(_k)
 
     # --- Read STRU and prepare files ---
-    from abacuscopilot.io.stru_file import read_stru, write_stru
+    from abacuscopilot.io.stru_file import read_stru
 
     stru_path = Path("STRU")
     if not stru_path.exists():
@@ -280,7 +283,7 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
     console.print()
     console.print(f"[green]✓ Phonon setup complete: {len(stru_files)} displacement directories[/green]")
     console.print(f"  Basis: {basis}, ks_solver: {params.ks_solver}")
-    console.print(f"  Run all disp-*/ tasks, then: [bold]abacuscopilot -task 1501[/bold]")
+    console.print("  Run all disp-*/ tasks, then: [bold]abacuscopilot -task 1501[/bold]")
     console.print("  [dim]STRU-* and phonopy_disp.yaml kept for phonopy post-processing.[/dim]")
     console.print()
 
@@ -353,7 +356,7 @@ def task_phonoabacus(args: list[str] | None = None, interactive: bool = True,
     console.print("  [dim]    Compressed models consume extra GPU memory during inference.[/dim]")
 
     # --- Read STRU ---
-    from abacuscopilot.io.stru_file import read_stru, write_stru
+    from abacuscopilot.io.stru_file import read_stru
 
     stru_path = Path("STRU")
     if not stru_path.exists():
@@ -419,7 +422,7 @@ def task_phonoabacus(args: list[str] | None = None, interactive: bool = True,
                 from abacuscopilot.config import save_config
                 config.setdefault("paths", {})["sub_script_dp"] = str(p.resolve())
                 save_config(config)
-                console.print(f"  [dim]Saved to config (sub_script_dp)[/dim]")
+                console.print("  [dim]Saved to config (sub_script_dp)[/dim]")
             else:
                 console.print(f"  [yellow]! File not found: {answer}[/yellow]")
 
@@ -469,5 +472,5 @@ def task_phonoabacus(args: list[str] | None = None, interactive: bool = True,
     console.print()
     console.print(f"[green]✓ PhonoABACUS setup complete: {len(stru_files)} displacement directories[/green]")
     console.print(f"  Model: {pot_file}, calculation: scf (DP)")
-    console.print(f"  Run all disp-*/ tasks, then: [bold]abacuscopilot -task 1501[/bold]")
+    console.print("  Run all disp-*/ tasks, then: [bold]abacuscopilot -task 1501[/bold]")
     console.print()

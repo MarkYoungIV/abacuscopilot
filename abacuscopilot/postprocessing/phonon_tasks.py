@@ -5,7 +5,6 @@ Task 1501: Extract forces, compute phonon bands, and plot.
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import sys
@@ -36,7 +35,8 @@ def _find_phonopy() -> str | None:
 
 def _run_phonopy(args: list[str], cwd: str | Path = ".", timeout: int = 120) -> subprocess.CompletedProcess:
     """Run phonopy as a subprocess (for -p, band plotting, etc.)."""
-    import shutil as _shutil, os
+    import os
+    import shutil as _shutil
     for candidate in [
         _shutil.which("phonopy"),
         Path(sys.executable).parent / "phonopy",
@@ -106,7 +106,7 @@ def task_phonon_analysis(args: list[str] | None = None, interactive: bool = True
         try:
             import json as _json
             setup_info = _json.loads(setup_file.read_text())
-            console.print(f"  [dim]Read setup from phonopy_setup.json[/dim]")
+            console.print("  [dim]Read setup from phonopy_setup.json[/dim]")
         except Exception:
             pass
 
@@ -189,9 +189,10 @@ def task_phonon_analysis(args: list[str] | None = None, interactive: bool = True
     # Try to get k-path from seekpath
     kpath_str = ""
     try:
-        from seekpath import get_path
-        from abacuscopilot.io.stru_file import read_stru
         from ase.data import atomic_numbers
+        from seekpath import get_path
+
+        from abacuscopilot.io.stru_file import read_stru
         s = read_stru("STRU")
         # seekpath expects fractional coords; convert to plain lists
         positions = np.array([a.position for a in s.atoms])
@@ -554,6 +555,7 @@ def _plot_phonon_bands(console, fmin: float | None = None, fmax: float | None = 
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
     from abacuscopilot.plotting.style import load_style_from_config
     load_style_from_config()
 
@@ -600,8 +602,9 @@ def _plot_phonon_combined(console, tdos_path: Path, pdos_path: Path,
     """Combined figure: band + PDOS (if available), or band + TDOS."""
     import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
+    import matplotlib.pyplot as plt
+
     from abacuscopilot.plotting.style import load_style_from_config
     load_style_from_config()
 
@@ -797,6 +800,7 @@ def task_phonon_dos(args: list[str] | None = None, interactive: bool = True,
             import matplotlib
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
+
             from abacuscopilot.plotting.style import load_style_from_config
             load_style_from_config()
 
@@ -983,6 +987,7 @@ def task_phonon_pdos(args: list[str] | None = None, interactive: bool = True,
             import matplotlib
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
+
             from abacuscopilot.plotting.style import load_style_from_config
             load_style_from_config()
 
@@ -1153,9 +1158,13 @@ def task_mlp_sscha_setup(args=None, interactive=True, parsed_args=None):
 
     # --- Basis type ---
     from abacuscopilot.preprocessing.input_tasks import (
-        _prompt_choice as _pc, _get_template, _apply_template,
-        _ask_lcao_solver, _apply_solver_override,
+        _apply_template,
+        _ask_lcao_solver,
         _auto_prepare_files,
+        _get_template,
+    )
+    from abacuscopilot.preprocessing.input_tasks import (
+        _prompt_choice as _pc,
     )
     if interactive:
         basis = _pc(console, "Basis type", ["lcao", "pw", "dp"], "lcao")
@@ -1228,7 +1237,7 @@ def task_mlp_sscha_setup(args=None, interactive=True, parsed_args=None):
             _hints.pop(_k, None)
 
     # --- Read STRU ---
-    from abacuscopilot.io.stru_file import read_stru, write_stru
+    from abacuscopilot.io.stru_file import read_stru
     stru_path = Path("STRU")
     if not stru_path.exists():
         console.print("[red]No STRU file found.[/red]")
@@ -1350,7 +1359,7 @@ def task_mlp_sscha_setup(args=None, interactive=True, parsed_args=None):
     # Keep UPF/ORB in parent dir — all disp dirs reference them via ../pseudo_dir
     console.print()
     console.print(f"[green]✓ MLP-SSCHA setup complete: {len(stru_files)} structures[/green]")
-    console.print(f"  Run ABACUS in all disp-*/ dirs, then: [bold]abacuscopilot -task 1506[/bold]")
+    console.print("  Run ABACUS in all disp-*/ dirs, then: [bold]abacuscopilot -task 1506[/bold]")
     console.print()
 
 
@@ -1558,7 +1567,8 @@ def task_sscha_run(args=None, interactive=True, parsed_args=None):
         "--rd", str(n_rd),
     ]
     # Stream stderr in real-time for progress
-    import shutil as _sh, os as _os
+    import os as _os
+    import shutil as _sh
     for _cand in [_sh.which("phonopy"), _sh.which("phonopy-load"),
                  Path(sys.executable).parent / "phonopy",
                  Path(sys.prefix) / "bin" / "phonopy",
@@ -1599,7 +1609,7 @@ def task_sscha_run(args=None, interactive=True, parsed_args=None):
 
     console.print()
     console.print("[green]✓ SSCHA complete[/green]")
-    console.print(f"  Next: [bold]abacuscopilot -task 1508[/bold] (plot convergence)")
+    console.print("  Next: [bold]abacuscopilot -task 1508[/bold] (plot convergence)")
     console.print()
 
 
@@ -1679,6 +1689,7 @@ def task_sscha_plot(args=None, interactive=True, parsed_args=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
     from abacuscopilot.plotting.style import load_style_from_config
     load_style_from_config()
 

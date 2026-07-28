@@ -30,3 +30,4 @@ Pseudopotential/
 
 # Pre-commit cache
 .pre-commit-cache/
+server-profiles/

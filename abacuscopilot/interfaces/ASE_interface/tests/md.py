@@ -1,13 +1,15 @@
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
+
 here = Path(__file__).parent
+from abacuslite import Abacus, AbacusProfile
+from abacuslite.io.generalio import load_orbital, load_pseudo
 from ase.build import bulk
-from ase.units import fs
 from ase.md import Langevin
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
-from abacuslite.io.generalio import load_pseudo, load_orbital
-from abacuslite import AbacusProfile, Abacus
+from ase.units import fs
+
 
 class TestLangevinMolecularDynamics(unittest.TestCase):
 
@@ -40,9 +42,9 @@ class TestLangevinMolecularDynamics(unittest.TestCase):
 
         silicon.calc = abacus
         MaxwellBoltzmannDistribution(silicon, temperature_K=300)
-        dyn = Langevin(silicon, 
-                       timestep=1.0 * fs, 
-                       temperature_K=300, 
+        dyn = Langevin(silicon,
+                       timestep=1.0 * fs,
+                       temperature_K=300,
                        friction=0.01)
         dyn.run(2)
 

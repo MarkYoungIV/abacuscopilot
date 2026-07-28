@@ -3,16 +3,17 @@ This example shows how to perform a cell-ion joint relaxation with ABACUS
 of Si diamond structure.
 '''
 import shutil
-from pathlib import Path # a more Pythonic alternative to the os.path
+from pathlib import Path  # a more Pythonic alternative to the os.path
+
 here = Path(__file__).parent
 # to the directory where the pseudopotential and orbital files are stored
 # In your case you change to the appropriate one
 pporb = here.parent.parent.parent / 'tests' / 'PP_ORB'
 
+from abacuslite import Abacus, AbacusProfile
 from ase.build import bulk
 from ase.filters import FrechetCellFilter
 from ase.optimize import BFGS
-from abacuslite import Abacus, AbacusProfile
 
 # AbacusProfile: the interface connecting the Abacus calculator instance
 # with the file system and the enviroment
@@ -43,7 +44,7 @@ abacus = Abacus(
     }
 )
 
-# get the structure, can also from the 
+# get the structure, can also from the
 # ```
 # from ase.io import read
 # atoms = read(...)
@@ -61,7 +62,7 @@ print(f'Cell: {atoms.get_cell()}')
 dyn = BFGS(FrechetCellFilter(atoms), logfile='-')
 # or a fixed alpha, beta, gamma relaxation, if you needed
 # dyn = BFGS(FrechetCellFilter(
-#               atoms, 
+#               atoms,
 #               mask=[True, True, True, False, False, False]
 #       ), logfile='-')
 # the first three mask elements are for the strain,

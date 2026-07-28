@@ -1,10 +1,11 @@
 '''this module provides some useful tools for k-sampling'''
-import seekpath
 import unittest
-from typing import Optional, Tuple, List, Dict
+from typing import Dict, List, Tuple
 
 import numpy as np
+import seekpath
 from ase.atoms import Atoms
+
 
 def convert_kspacing_to_kpts(cell: np.ndarray,
                              kspacing: float | Tuple[float, float, float])\
@@ -41,10 +42,10 @@ def get_kpath(atoms: Atoms, n_interpl: int = 10) -> Tuple[np.ndarray, np.ndarray
     ''''''
     from seekpath import get_path as _corefunc_seekpath
     seeked = _corefunc_seekpath(
-        structure=(atoms.get_cell().tolist(), 
-                   atoms.get_scaled_positions(), 
+        structure=(atoms.get_cell().tolist(),
+                   atoms.get_scaled_positions(),
                    atoms.get_atomic_numbers()))
-    
+
     # get the most useful informaiton
     k = np.array(list(seeked['point_coords'].values()))
     assert k.ndim == 2
@@ -52,11 +53,11 @@ def get_kpath(atoms: Atoms, n_interpl: int = 10) -> Tuple[np.ndarray, np.ndarray
     assert dim == 3
 
     # interpolate...
-    kvec = np.vstack([np.linspace(k[i, :], k[i + 1, :], 
-                                  num=n_interpl+int(i == nk - 2), 
-                                  endpoint=bool(i == nk - 2)) 
+    kvec = np.vstack([np.linspace(k[i, :], k[i + 1, :],
+                                  num=n_interpl+int(i == nk - 2),
+                                  endpoint=bool(i == nk - 2))
                      for i in range(nk - 1)])
-    
+
     # for easy-drawing
     kdist = np.linalg.norm(kvec[1:] - kvec[:-1], axis=1)
     kdist = np.cumsum(kdist)
@@ -70,7 +71,7 @@ def get_kpath(atoms: Atoms, n_interpl: int = 10) -> Tuple[np.ndarray, np.ndarray
     assert len(kvec) == len(kdist) == len(kname), f'{len(kvec)}, {len(kdist)}, {len(kname)}'
     return kvec, kdist, kname
 
-def interpolate_kpath(knodes: np.ndarray, 
+def interpolate_kpath(knodes: np.ndarray,
                       knames: List[str],
                       n_interpl: int | List[int] = 10) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     '''
@@ -87,11 +88,11 @@ def interpolate_kpath(knodes: np.ndarray,
     assert dim == 3
     assert len(n_interpl) == len(knames) == nk
 
-    kvec = np.vstack([np.linspace(knodes[i, :], knodes[i + 1, :], 
-                                  num=n_interpl[i]+int(i == nk - 2), 
-                                  endpoint=bool(i == nk - 2)) 
+    kvec = np.vstack([np.linspace(knodes[i, :], knodes[i + 1, :],
+                                  num=n_interpl[i]+int(i == nk - 2),
+                                  endpoint=bool(i == nk - 2))
                      for i in range(nk - 1)])
-    
+
     # for easy-drawing
     kdist = np.linalg.norm(kvec[1:] - kvec[:-1], axis=1)
     kdist = np.cumsum(kdist)
@@ -132,10 +133,10 @@ def merge_ksgm(segments) -> Tuple[List[str], List[bool]]:
             is_brkpt[-1] = True
             klabels.append(start)
             is_brkpt.append(False)
-        
+
         klabels.append(end)
         is_brkpt.append(i == len(segments) - 1)
-    
+
     return klabels, is_brkpt
 
 def make_kstring(klabels: List[str],
@@ -163,8 +164,8 @@ def make_kstring(klabels: List[str],
             out += ','
     return out[:-1] # remove the last comma
 
-def make_klines(kpts, 
-                is_brkpt, 
+def make_klines(kpts,
+                is_brkpt,
                 n_interpl,
                 klabels) -> List[Dict[str, np.ndarray | str | int]]:
     '''
@@ -194,8 +195,8 @@ def make_klines(kpts,
     '''
     def fspawnk(c: np.ndarray, n: int, label: str) -> Dict[str, np.ndarray | str | int]:
         return {'coord': c, 'label': label, 'n': n}
-    
-    return [fspawnk(c, 1 if is_brkpt[i] else n_interpl, klbl) 
+
+    return [fspawnk(c, 1 if is_brkpt[i] else n_interpl, klbl)
             for i, (c, klbl) in enumerate(zip(kpts, klabels))]
 
 def kpathgen(atoms: Atoms) -> Tuple[str, Dict[str, List[float]]]:
@@ -204,8 +205,8 @@ def kpathgen(atoms: Atoms) -> Tuple[str, Dict[str, List[float]]]:
     compatible with ase bandpath module
     '''
     kpathseen = seekpath.get_path(
-        structure=(np.array(atoms.get_cell()), 
-                atoms.get_scaled_positions(), 
+        structure=(np.array(atoms.get_cell()),
+                atoms.get_scaled_positions(),
                 atoms.get_atomic_numbers()),
         with_time_reversal=True
     )
@@ -233,7 +234,7 @@ SILICON_KNAMES = ["G", "X", "X/U", "K", "G", "L", "W", "X"]
 SILICON_NINTPL = [50, 50, 1, 50, 50, 50, 50, 1] # from the DeePTB example :)
 
 class TestKsampling(unittest.TestCase):
-    
+
     def test_convert_kspacing(self):
         # test-reference: ABACUS 3.8.4 implementation
         from ase.geometry import cellpar_to_cell
@@ -244,7 +245,7 @@ class TestKsampling(unittest.TestCase):
         self.assertEqual(kpts, (33, 33, 33))
 
     def test_merge_ksgm(self):
-        klables, is_brkpt = merge_ksgm([('GAMMA', 'X'), ('X', 'U'), ('K', 'GAMMA'), 
+        klables, is_brkpt = merge_ksgm([('GAMMA', 'X'), ('X', 'U'), ('K', 'GAMMA'),
                                         ('GAMMA', 'L'), ('L', 'W'), ('W', 'X')])
         self.assertEqual(klables, ['GAMMA',  'X',  'U',   'K','GAMMA', 'L', 'W', 'X'])
         self.assertEqual(is_brkpt, [False, False, True, False,  False, False, False, True])

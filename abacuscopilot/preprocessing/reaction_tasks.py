@@ -845,9 +845,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
                                    "kspacing (auto mesh)")
         use_kpt = "KPT" in kpt_mode
         if use_kpt:
-            if from_traj:
-                cell_a = structure.lattice.cell_angstrom
-            elif stru_file.exists():
+            if from_traj or stru_file.exists():
                 cell_a = structure.lattice.cell_angstrom
             elif poscar_file.exists():
                 cell_a = _ase_read(str(poscar_file)).cell.array
@@ -1472,6 +1470,7 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
     from abacuscopilot.plotting.style import load_style_from_config
     load_style_from_config()
 
@@ -1540,7 +1539,7 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
             ase_write(f"converged_{i:02d}.vasp", img, format="vasp", direct=True)
         console.print(f"[green]✓ Converged chain: converged.traj + converged_00__{n_img-1:02d}.vasp[/green]")
     else:
-        console.print(f"[green]✓ Converged chain: converged.traj + converged.vasp[/green]")
+        console.print("[green]✓ Converged chain: converged.traj + converged.vasp[/green]")
 
     console.print(f"  Barrier: {spline_barrier:.4f} eV (spline)" if has_spline
                   else f"  Barrier: {barrier:.4f} eV")

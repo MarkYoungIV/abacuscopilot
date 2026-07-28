@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -475,8 +474,9 @@ def task_eos_fitting(args: list[str] | None = None, interactive: bool = True,
     If ``--file`` is given, skip stage 1 and use that file directly.
     """
     import matplotlib.pyplot as plt
-    from abacuscopilot.plotting.style import load_style_from_config
+
     from abacuscopilot.io.stru_file import read_stru
+    from abacuscopilot.plotting.style import load_style_from_config
 
     console = _get_console()
 

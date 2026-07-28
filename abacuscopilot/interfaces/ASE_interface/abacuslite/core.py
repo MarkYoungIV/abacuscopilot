@@ -32,32 +32,30 @@ Refactored from Sun Dec 07 21:41 2025
 
 import os
 import re
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
 
 import numpy as np
+from ase.atoms import Atoms
 from ase.calculators.genericfileio import (
     BaseProfile,
     CalculatorTemplate,
     GenericFileIOCalculator,
-    read_stdout
+    read_stdout,
 )
-from ase.atoms import Atoms
 from ase.dft.kpoints import BandPath
-from ase.io import read
 
 from .io.generalio import (
     file_safe_backup,
     read_input,
-    read_stru,
     read_kpt,
+    read_stru,
     species_group_indices,
     write_input,
+    write_kpt,
     write_stru,
-    write_kpt
 )
 
 __LEGACYIO__ = True
@@ -67,8 +65,8 @@ def switch_io_backend_version(version: str) -> bool:
     '''
     global __LEGACYIO__
     m = re.match(r'^v(\d+)\.(\d+)\.(\d+)(\.\d+|\-(alpha|beta|rc)\.\d+|\-(alpha|beta|rc)\d+)?$', version)
-    assert m, f'Invalid format of version number, please check file version.h'
-    assert int(m.group(1)) >= 3, f'ABACUS v2.x is not supported'
+    assert m, 'Invalid format of version number, please check file version.h'
+    assert int(m.group(1)) >= 3, 'ABACUS v2.x is not supported'
     if int(m.group(2)) >= 11:
         __LEGACYIO__ = False
     elif int(m.group(2)) == 9:
@@ -87,10 +85,10 @@ class AbacusProfile(BaseProfile):
     the practical system'''
     configvars = {'pseudo_dir', 'orbital_dir'}
 
-    def __init__(self, 
-                 command: str, 
-                 pseudo_dir: Optional[str | Path] = None, 
-                 orbital_dir: Optional[str | Path] = None, 
+    def __init__(self,
+                 command: str,
+                 pseudo_dir: Optional[str | Path] = None,
+                 orbital_dir: Optional[str | Path] = None,
                  omp_num_threads: Optional[int] = None,
                  **kwargs):
         '''Initialize ABACUS profile.
@@ -141,7 +139,7 @@ class AbacusProfile(BaseProfile):
         return AbacusProfile.parse_version(read_stdout(cmd_))
 
 class AbacusTemplate(CalculatorTemplate):
-    
+
     implemented_properties = [
         'energy', 'forces', 'stress', 'free_energy', 'magmom'
     ]
@@ -173,7 +171,7 @@ class AbacusTemplate(CalculatorTemplate):
     @staticmethod
     def get_forces_keywords(self) -> Dict[str, str]:
         return {'cal_force': '1'}
-    
+
     @staticmethod
     def get_stress_keywords(self) -> Dict[str, str]:
         return {'cal_stress': '1'}
@@ -231,17 +229,17 @@ class AbacusTemplate(CalculatorTemplate):
         for p in properties:
             assert p in self.implemented_properties
             parameters.update(counter(getattr(self, f'get_{p}_keywords')(parameters)))
-        
+
         # from the parameters, get the file path
         self.suffix = parameters.get('suffix', 'ABACUS')
         self.calculation = parameters.get('calculation', 'scf')
         # with the above two, the running log file can be positioned.
         return parameters
 
-    def write_input(self, 
-                    profile: AbacusProfile, 
+    def write_input(self,
+                    profile: AbacusProfile,
                     directory: Path | str,
-                    atoms: Atoms, 
+                    atoms: Atoms,
                     parameters: Dict[str, str],
                     properties: List[str]) -> None:
         '''Write the input files for the calculation. This function connects
@@ -275,8 +273,8 @@ class AbacusTemplate(CalculatorTemplate):
         ind = species_group_indices(atoms.get_chemical_symbols())
         self.atomorder = sorted(range(len(atoms)), key=lambda i: ind[i]) # revmap
         # then we write
-        _ = write_stru(atoms[ind], 
-                       outdir=directory, 
+        _ = write_stru(atoms[ind],
+                       outdir=directory,
                        pp_file=parameters.get('pseudopotentials'),
                        orb_file=parameters.get('basissets'),
                        fname=parameters.get('stru_file', 'STRU'))
@@ -284,7 +282,7 @@ class AbacusTemplate(CalculatorTemplate):
         # KPT, if needed
         if 'kpts' in parameters:
             _ = file_safe_backup(directory / parameters.get('kpoint_file', 'KPT'))
-            _ = write_kpt(parameters['kpts'], 
+            _ = write_kpt(parameters['kpts'],
                           directory / parameters.get('kpoint_file', 'KPT'))
         # should this function be responsible for checking the integrity
         # of information provided by the user? There may be the case that
@@ -303,7 +301,7 @@ class AbacusTemplate(CalculatorTemplate):
         # update the parameters respect to the properties desired
         parameters = self.get_property_keywords(parameters, properties)
         # postprocess on the parameters: convert the key and values
-        # from any to string. For the case where the value is a 
+        # from any to string. For the case where the value is a
         # array, convert to the string spaced by whitespace
         for k, v in parameters.items():
             # if the v is iterable, convert to the string spaced by whitespace
@@ -328,8 +326,8 @@ class AbacusTemplate(CalculatorTemplate):
         # write the INPUT file to the target directory
         _ = write_input(parameters, dst)
 
-    def execute(self, 
-                directory: Path | str, 
+    def execute(self,
+                directory: Path | str,
                 profile: AbacusProfile):
         '''Execute the ABACUS Lite calculation.
 
@@ -347,15 +345,15 @@ class AbacusTemplate(CalculatorTemplate):
         '''
         from subprocess import SubprocessError
         try:
-            profile.run(directory=directory, 
-                        inputfile=None, 
-                        outputfile=self.outputname, 
+            profile.run(directory=directory,
+                        inputfile=None,
+                        outputfile=self.outputname,
                         errorfile=self.errorname)
         except SubprocessError:
             message = ['ABACUS Lite calculation failed']
-            with open(directory / self.outputname, 'r') as f:
+            with open(directory / self.outputname) as f:
                 message.append(f.read())
-            with open(directory / self.errorname, 'r') as f:
+            with open(directory / self.errorname) as f:
                 message.append(f.read())
             raise SubprocessError('\n'.join(message))
 
@@ -381,9 +379,9 @@ class AbacusTemplate(CalculatorTemplate):
         return AbacusProfile.from_config(cfg, self.name, **kwargs)
 
 class Abacus(GenericFileIOCalculator):
-    def __init__(self, 
-                 profile=None, 
-                 directory='.', 
+    def __init__(self,
+                 profile=None,
+                 directory='.',
                  **kwargs):
         '''Construct the ABACUS calculator.
 
@@ -428,7 +426,7 @@ class Abacus(GenericFileIOCalculator):
         profile = AbacusProfile('abacus') if profile is None else profile
 
         # to be compatible with both the legacy and latest format of i/o, the
-        # switch is needed. 
+        # switch is needed.
         _ = switch_io_backend_version(profile.version())
 
         # because ABACUS run job in folders, based on the assumption that
@@ -455,28 +453,24 @@ class Abacus(GenericFileIOCalculator):
             'pseudopotentials',
             {pporb['symbol']: pporb['pp_file'] for pporb in pporb_read}
         )
-        if 'pseudopotentials' in kwargs:
-            del kwargs['pseudopotentials']
-        
+        kwargs.pop('pseudopotentials', None)
+
         basissets = kwargs.get(
             'basissets',
             {pporb['symbol']: pporb.get('orb_file') for pporb in pporb_read}
         )
-        if 'basissets' in kwargs:
-            del kwargs['basissets']
+        kwargs.pop('basissets', None)
         if all([forb is None for forb in basissets.values()]):
             basissets = {}
         assert all([forb is not None for forb in basissets.values()])
 
         kpts = kwargs.get('kpts', read_kpt(directory / inp_read.get('kpoint_file', 'KPT')))
-        if 'kpts' in kwargs:
-            del kwargs['kpts']
+        kwargs.pop('kpts', None)
 
         inp = inp_read | kwargs.get('inp', {})
-        if 'inp' in kwargs:
-            del kwargs['inp']
+        kwargs.pop('inp', None)
 
-        return cls(profile=profile, 
+        return cls(profile=profile,
                    directory=directory,
                    pseudopotentials=pseudopotentials,
                    basissets=basissets,
@@ -486,8 +480,8 @@ class Abacus(GenericFileIOCalculator):
 
     def fixed_density(self,
                       kpts: BandPath | Dict[str, str | int | List[float]],
-                      symmetry: str = 'off', 
-                      profile=None, 
+                      symmetry: str = 'off',
+                      profile=None,
                       **kwargs) -> 'Abacus':
         '''spawn a new ABACUS calculator with fixed density, based on the present
         instance. This funcionality is mostly only useful when perform the 
@@ -523,7 +517,7 @@ class Abacus(GenericFileIOCalculator):
         '''
         # we should overwrite the 'calculation' to 'nscf', and 'init_chg' to 'file'
         assert symmetry == 'off'
-        
+
         kwargs.setdefault('inp', {}).update({'calculation': 'nscf',
                                              'init_chg': 'file',
                                              'symmetry': 0,
@@ -545,9 +539,9 @@ class Abacus(GenericFileIOCalculator):
         else:
             assert isinstance(kpts, dict)
             kwargs['kpts'] = kpts
-        
+
         # return
-        return Abacus.restart(profile=profile, 
+        return Abacus.restart(profile=profile,
                               directory=self.directory,
                               **kwargs)
 
@@ -587,13 +581,13 @@ class TestAbacusCalculator(unittest.TestCase):
                                     'cal_stress': 1})
             silicon.calc = calculator
             e = silicon.get_potential_energy()
-        
+
         # check!
         self.assertAlmostEqual(e, -194.953053309)
         self.assertIsNotNone(calculator.results)
         self.assertIsInstance(calculator.results, dict)
         for k in ['nspins', 'nkpts', 'nbands', 'eigenvalues', 'occupations',
-                  'fermi_level', 'kpoint_weights', 'ibz_kpoints', 'energy', 
+                  'fermi_level', 'kpoint_weights', 'ibz_kpoints', 'energy',
                   'free_energy', 'natoms', 'forces', 'stress', 'magmoms']:
             self.assertIn(k, calculator.results)
         self.assertEqual(calculator.results['nspins'], 1)
@@ -602,7 +596,7 @@ class TestAbacusCalculator(unittest.TestCase):
         self.assertEqual(calculator.results['energy'], e)
         self.assertEqual(calculator.results['free_energy'], e)
         self.assertEqual(calculator.results['natoms'], 2)
-        
+
         for k in ['eigenvalues', 'occupations', 'ibz_kpoints', 'forces', 'stress', 'magmoms']:
             self.assertIsInstance(calculator.results[k], np.ndarray)
 
@@ -615,7 +609,7 @@ class TestAbacusCalculator(unittest.TestCase):
         self.assertEqual(calculator.results['occupations'].shape, (1, 1, 14))
         occ = [2., 2., 2., 2., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]
         self.assertTrue(np.allclose(calculator.results['occupations'][0, 0, :], np.array(occ)))
-        
+
         self.assertEqual(calculator.results['ibz_kpoints'].shape, (1, 3))
         self.assertTrue(np.allclose(calculator.results['ibz_kpoints'][0, :], np.array([0,0,0])))
 
@@ -625,7 +619,7 @@ class TestAbacusCalculator(unittest.TestCase):
         self.assertEqual(calculator.results['stress'].shape, (6,))
         stress = [-0.19327923, -0.19327923, -0.19327923, -0.        ,  0.        ,   0.        ]
         self.assertTrue(np.allclose(calculator.results['stress'], np.array(stress)))
-        
+
         self.assertEqual(calculator.results['magmoms'].shape, (2,))
         self.assertTrue(np.allclose(calculator.results['magmoms'], np.zeros(2)))
 
@@ -654,7 +648,7 @@ class TestAbacusCalculator(unittest.TestCase):
                                     'cal_stress': 1})
             silicon.calc = calculator
             e = silicon.get_potential_energy()
-        
+
             # restart
             silicon.calc = Abacus.restart(aprof, directory=tmpdir)
             e2 = silicon.get_potential_energy()

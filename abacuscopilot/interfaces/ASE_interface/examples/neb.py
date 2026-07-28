@@ -5,15 +5,16 @@ Learn how to use the NEB module in ASE, please refer to the online manual at:
 https://ase-lib.org/examples_generated/tutorials/neb_idpp.html
 '''
 from pathlib import Path
+
 here = Path(__file__).parent
 
-import numpy as np
-from ase.io import Trajectory
-from ase.atoms import Atoms
-from ase.optimize import FIRE
-from ase.mep import NEB
 import matplotlib.pyplot as plt
+import numpy as np
 from abacuslite import Abacus, AbacusProfile
+from ase.atoms import Atoms
+from ase.io import Trajectory
+from ase.mep import NEB
+from ase.optimize import FIRE
 
 pporb = here.parent.parent.parent / 'tests' / 'PP_ORB'
 
@@ -81,7 +82,7 @@ for irep in range(n_replica):
     image.calc = Abacus(**inp, directory=here / f'neb-{irep}')
     replica.append(image)
 
-neb = NEB(replica, 
+neb = NEB(replica,
           k=0.05, # too high value is hard to converge
           climb=False, # use True in production run, though CI-NEB is harder to converge
           parallel=True)

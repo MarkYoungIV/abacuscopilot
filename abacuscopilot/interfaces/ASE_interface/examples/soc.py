@@ -2,19 +2,21 @@
 spin-orbit coupling calculation'''
 import shutil
 from pathlib import Path
+
 here = Path(__file__).parent
 
 pporb = here.parent.parent.parent / 'tests' / 'PP_ORB'
 
 import numpy as np
-from ase.atoms import Atoms
 from abacuslite import Abacus, AbacusProfile
+from ase.atoms import Atoms
 
 '''SPECIAL: ase does not support the noncolinear spin yet
 till 2026/3/24, see ase/outputs.py:L154-155, in which the 
 magmom cannot be set as the vector, so we release the 
 datatype of magmom and magmoms by ourself'''
 from ase.outputs import _defineprop, all_outputs
+
 del all_outputs['magmom']
 del all_outputs['magmoms']
 _defineprop('magmom', float, shape=3) # re-define the magmom can be set as the vector

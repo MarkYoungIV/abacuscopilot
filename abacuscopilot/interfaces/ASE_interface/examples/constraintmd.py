@@ -1,19 +1,20 @@
 import shutil
 import tempfile
-from pathlib import Path # a more Pythonic alternative to the os.path
+from pathlib import Path  # a more Pythonic alternative to the os.path
+
 here = Path(__file__).parent
 # to the directory where the pseudopotential and orbital files are stored
 # In your case you change to the appropriate one
 pporb = here.parent.parent.parent / 'tests' / 'PP_ORB'
 
-import numpy as np
 import matplotlib.pyplot as plt
-from ase.io import read, Trajectory
+import numpy as np
+from abacuslite import Abacus, AbacusProfile
+from ase.constraints import FixCartesian
+from ase.io import Trajectory, read
 from ase.md import Langevin
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.units import fs
-from ase.constraints import FixCartesian
-from abacuslite import AbacusProfile, Abacus
 
 aprof = AbacusProfile(
     command='mpirun -np 16 abacus',
@@ -73,9 +74,9 @@ atoms.set_constraint(constraint)
 MaxwellBoltzmannDistribution(atoms, temperature_K=300)
 
 atoms.calc = abacus
-dyn = Langevin(atoms, 
-               timestep=1.0 * fs, 
-               temperature_K=300, 
+dyn = Langevin(atoms,
+               timestep=1.0 * fs,
+               temperature_K=300,
                friction=0.004,
                logfile='-',
                trajectory='constraintmd.traj')

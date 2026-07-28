@@ -7,23 +7,21 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from ase.atoms import Atoms
-from ase.calculators.singlepoint import (
-    SinglePointKPoint,
-    SinglePointDFTCalculator
-)
-from ase.units import GPa
+from ase.calculators.singlepoint import SinglePointDFTCalculator, SinglePointKPoint
 from ase.stress import full_3x3_to_voigt_6_stress
+from ase.units import GPa
 
 # some output formats are not updated,
 # for these cases, we import from the legacyio module
 from .legacyio import (
-    read_kpoints_from_running_log,
-    read_energies_from_running_log,
-    read_traj_from_md_dump,
-    read_magmom_from_running_log,
+    find_final_info_with_iter_header,
     is_invalid_arr,
-    find_final_info_with_iter_header
+    read_energies_from_running_log,
+    read_kpoints_from_running_log,
+    read_magmom_from_running_log,
+    read_traj_from_md_dump,
 )
+
 
 def read_esolver_type_from_running_log(src: str | Path | List[str]) \
     -> str:
@@ -99,19 +97,19 @@ def read_band_from_eig_occ(src: str | Path | List[str]) \
                     + r'(-?\d(\.\d+)?(e-\d+)?)\s+' \
                     + r'(-?\d(\.\d+)?(e-\d+)?)\s+' \
                     + r'\(\d+\s+plane wave\)'
-    # from the ekb leading line, there are nspin, nk information, also the 
+    # from the ekb leading line, there are nspin, nk information, also the
     # coordinate of kpoints
     iekb = [i for i, l in enumerate(raw) if re.match(ekb_leading_pat, l)]
-    assert len(iekb) > 0, f'No k-point found'
-    
+    assert len(iekb) > 0, 'No k-point found'
+
     k_raw = [re.match(ekb_leading_pat, raw[i]).groups() for i in iekb]
-    
+
     # spin
     ispin = [int(g[0]) for g in k_raw]
     assert all(i in [1, 2] for i in ispin) # what about nspin 4?
     nspin = len(set(ispin))
     assert nspin in [1, 2]
-    
+
     # k-points
     nk = [int(g[2]) for g in k_raw]
     nk = set(nk)
@@ -128,7 +126,7 @@ def read_band_from_eig_occ(src: str | Path | List[str]) \
     ekbpat += r'(-?\d+(\.\d+)?(e[+-]\d+)?)\s+'
     ekbpat += r'(\d+(\.\d+)?(e[+-]\d+)?)'
     iekb = [i for i, l in enumerate(raw) if re.match(ekbpat, l)]
-    assert len(iekb) > 0, f'No band energy found'
+    assert len(iekb) > 0, 'No band energy found'
     assert len(iekb) % (nspin*nk) == 0
     nb = len(iekb) // (nframe * nspin * nk)
     ekb_raw = np.array([list(map(float, raw[i].split()[1:])) for i in iekb])
@@ -201,7 +199,7 @@ def read_traj_from_running_log(src: str | Path | List[str]) \
     # r'^Lattice vectors: \(Cartesian coordinate: in unit of a\_0\)$'
     icell = [i for i, l in enumerate(raw)
                 if re.match(r'^Lattice vectors: \(Cartesian coordinate: in unit of a_0\)$', l)]
-    assert len(icell) > 0, f'No cell found'
+    assert len(icell) > 0, 'No cell found'
     # nframe = len(icell) # will be 1 for cell-invariant MD
     # assert nframe > 0, f'Invalid trajectory with length {nframe}')
     cell_raw = [raw[i+1:i+1+3] for i in icell]
@@ -288,7 +286,7 @@ def read_forces_from_running_log(src: str | Path | List[str]) \
                 break
         if jtb is None: # no content found
             break
-        
+
         # truncate the force table and append
         force_raw = raw[istart+ith+1+itb:istart+ith+1+itb+jtb]
         force = np.array([list(map(float, l.split()[1:])) for l in force_raw])
@@ -327,7 +325,7 @@ def read_stress_from_running_log(src: str | Path | List[str]) \
 
     # iteratively search for the stress, which led by the title `#TOTAL-STRESS (kbar)#`
     stresses, istart = [], 0
-    
+
     while istart < len(raw):
         ith = None # index of the table header
         for i, l in enumerate(raw[istart:]):
@@ -348,7 +346,7 @@ def read_stress_from_running_log(src: str | Path | List[str]) \
             break
         # otherwise
         jtb = 3 # because the stress tensor would be a (3, 3)-matrix
-        
+
         # truncate the stress table and append
         stress_raw = raw[istart+ith+1+itb:istart+ith+1+itb+jtb]
         stress = np.array([list(map(float, l.split())) for l in stress_raw]).reshape(3, 3)
@@ -384,8 +382,8 @@ def read_iter_header_from_running_log(src: str | Path | List[str]) \
 
     return [(int(pack[0][0]), int(pack[0][1])) for pack in res if pack]
 
-def read_abacus_out(fileobj, 
-                    index=slice(None), 
+def read_abacus_out(fileobj,
+                    index=slice(None),
                     results_required=True,
                     sort_atoms_with: Optional[List[int]] = None) -> Atoms | List[Atoms]:
     '''Reads the ABACUS output files. This function would be called by
@@ -428,7 +426,7 @@ def read_abacus_out(fileobj,
     # invalid and cause the failure
     with open(fileobj) as f:
         abacus_lines = f.readlines()
-    
+
     # read the esolver type
     eslvtyp = read_esolver_type_from_running_log(abacus_lines)
     # FIXME: implement read_ksdft_esolver_out instead of read_abacus_out to
@@ -443,7 +441,7 @@ def read_abacus_out(fileobj,
 
     # read the eigenvalues (nframe, nk, nbnd)
     elecstate = read_band_from_eig_occ(fileobj.parent / 'eig_occ.txt')
-    # FIXME: remove thw following line till the eig_occ.txt is not written 
+    # FIXME: remove thw following line till the eig_occ.txt is not written
     #        in the append mode
     (fileobj.parent / 'eig_occ.txt').unlink()
 
@@ -469,7 +467,7 @@ def read_abacus_out(fileobj,
         read_energies_from_running_log(abacus_lines)[1],
         read_iter_header_from_running_log(abacus_lines)
     )
-    
+
     # read the magmom
     magmom = read_magmom_from_running_log(abacus_lines)
 
@@ -495,8 +493,8 @@ def read_abacus_out(fileobj,
         trajectory, elecstate, magmom, forces, stress, energies):
         # for each frame, a structure can be defined
         ind = ind or list(range(len(frame['elem'])))
-        atoms = Atoms(symbols=np.array(frame['elem'])[ind].tolist(), 
-                      positions=frame['coords'][ind], 
+        atoms = Atoms(symbols=np.array(frame['elem'])[ind].tolist(),
+                      positions=frame['coords'][ind],
                       cell=frame['cell'],
                       magmoms=mag[ind])
         # from result, a calculator can be assembled
@@ -595,7 +593,7 @@ class TestLatestIO(unittest.TestCase):
         self.assertIsNone(
             read_band_from_running_log(self.testfiles / 'lcao-symm0-nspin2-multik-cellrelax')
         )
-    
+
     def test_read_band_from_eig_occ(self):
         fn = self.testfiles / 'nspin4-gamma-eigocc'
         elecstate = read_band_from_eig_occ(fn)
@@ -680,7 +678,7 @@ class TestLatestIO(unittest.TestCase):
 
     def test_read_pw_symm0_nspin4_gamma_md(self):
         # make files ready
-        shutil.copy(self.testfiles / 'pw-symm0-nspin4-gamma-md', 
+        shutil.copy(self.testfiles / 'pw-symm0-nspin4-gamma-md',
                     self.testfiles / 'running_md.log')
         shutil.copy(self.testfiles / 'nspin4-gamma-eigocc',
                     self.testfiles / 'eig_occ.txt')

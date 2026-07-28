@@ -5,18 +5,19 @@ of those implemented in ABACUS.
 In ASE, the CSVR thermostat is named as the Bussi
 '''
 import shutil
-from pathlib import Path # a more Pythonic alternative to the os.path
+from pathlib import Path  # a more Pythonic alternative to the os.path
+
 here = Path(__file__).parent
 # to the directory where the pseudopotential and orbital files are stored
 # In your case you change to the appropriate one
 pporb = here.parent.parent.parent / 'tests' / 'PP_ORB'
 
 import numpy as np
+from abacuslite import Abacus, AbacusProfile
 from ase.atoms import Atoms
 from ase.md import Bussi
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.units import fs
-from abacuslite import Abacus, AbacusProfile
 
 cell = np.eye(3) * 5.43090251
 taud = [
@@ -62,9 +63,9 @@ atoms.calc = abacus
 # initialize the velocities, necessary for CSVR
 MaxwellBoltzmannDistribution(atoms, temperature_K=300)
 
-dyn = Bussi(atoms, 
-            timestep=1*fs, 
-            temperature_K=300, 
+dyn = Bussi(atoms,
+            timestep=1*fs,
+            temperature_K=300,
             taut=10*fs,
             logfile='-') # let's see the trajectory
 dyn.run(2)

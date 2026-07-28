@@ -1,4 +1,4 @@
-'''
+r'''
 To run the metadynamics, you need to configure the plumed correctly:
 
 conda install -c conda-forge plumed=2.8.2=mpi_openmpi_hb0545ae_0
@@ -38,7 +38,8 @@ CSVR thermostat is used to maintain the temperature during the simulation.
 
 import shutil
 import tempfile
-from pathlib import Path # a more Pythonic alternative to the os.path
+from pathlib import Path  # a more Pythonic alternative to the os.path
+
 here = Path(__file__).parent
 # to the directory where the pseudopotential and orbital files are stored
 # In your case you change to the appropriate one
@@ -49,13 +50,18 @@ from ase.md import Bussi
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.units import (
     fs,
+)
+from ase.units import (
     kJ as _kJ,
+)
+from ase.units import (
     mol as _mol,
 )
+
 _ps = 1000 * fs
-from ase.constraints import FixCartesian
+from abacuslite import Abacus, AbacusProfile
 from ase.calculators.plumed import Plumed
-from abacuslite import AbacusProfile, Abacus
+from ase.constraints import FixCartesian
 
 aprof = AbacusProfile(
     command='mpirun -np 16 abacus',
@@ -109,7 +115,7 @@ atoms.center(vacuum=5.0) # to reduce the computational cost
 # constraint the No.5, 6 atoms' X and Y coordiantes so that
 # they can only move along the z-axis, also fix the atom C's
 # all components
-atoms.set_constraint([FixCartesian(a=[4, 5], mask=(True, True, False)), 
+atoms.set_constraint([FixCartesian(a=[4, 5], mask=(True, True, False)),
                       FixCartesian(a=[0])])
 MaxwellBoltzmannDistribution(atoms, temperature_K=300)
 
@@ -131,13 +137,13 @@ setup = [# define the unit within the PLUMED runtime
 
 atoms.calc = Plumed(calc=abacus,
                     input=setup,
-                    timestep=1.0 * fs, 
+                    timestep=1.0 * fs,
                     atoms=atoms,
                     kT=0.1)
 
-dyn = Bussi(atoms, 
-            timestep=1.0 * fs, 
-            temperature_K=300, 
+dyn = Bussi(atoms,
+            timestep=1.0 * fs,
+            temperature_K=300,
             taut=10.0 * fs,
             trajectory='metadynamics.traj',
             logfile='-')

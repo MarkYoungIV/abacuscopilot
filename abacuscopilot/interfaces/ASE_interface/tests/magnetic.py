@@ -2,13 +2,16 @@
 test if ABACUS can perform the calculation on the anti-ferromagnetic
 and ferromagnetic phases calculation on the BCC Fe
 '''
-import unittest
 import tempfile
-import numpy as np
+import unittest
 from pathlib import Path
+
+import numpy as np
+
 here = Path(__file__).parent
+from abacuslite import Abacus, AbacusProfile
 from ase.atoms import Atoms
-from abacuslite import AbacusProfile, Abacus
+
 
 class TestMagneticSCF(unittest.TestCase):
 

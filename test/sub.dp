@@ -1,0 +1,25 @@
+#!/bin/bash
+#SBATCH --job-name=abacus_dp
+#SBATCH --partition=debug
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --gres=gpu:1
+#SBATCH --mem=20G
+#SBATCH --output=%j_dp.out
+#SBATCH --error=%j_dp.err
+
+# Load deepmd environment (must match the one used to compile ABACUS)
+source ~/.bashrc
+conda activate deepmd_v2
+
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export CUDA_VISIBLE_DEVICES=0
+
+echo "Job started at $(date)"
+echo "Working directory: $(pwd)"
+echo "ABACUS binary: ~/softwares/abacus-develop/build_dp/abacus_basic_para"
+
+mpirun -np 1 ~/softwares/abacus-develop/build_dp/abacus_basic_para
+
+echo "Job finished at $(date)"

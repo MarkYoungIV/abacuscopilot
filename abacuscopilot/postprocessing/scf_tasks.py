@@ -719,7 +719,7 @@ def _parse_ionic_steps(out_dir: Path) -> dict:
             result["steps"].append(step)
 
     try:
-        with open(log_path, "r", errors="ignore") as fh:
+        with open(log_path, errors="ignore") as fh:
             for line in fh:
                 # --- Detect calculation type from step boundary markers ---
                 relax_match = _RE_STEP_RELAX.search(line)

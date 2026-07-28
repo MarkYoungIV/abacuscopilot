@@ -1,11 +1,13 @@
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
+
 here = Path(__file__).parent
-from ase.build import bulk
-from abacuslite.io.generalio import load_pseudo, load_orbital
-from abacuslite import AbacusProfile, Abacus
+from abacuslite import Abacus, AbacusProfile
+from abacuslite.io.generalio import load_orbital, load_pseudo
 from abacuslite.utils.ksampling import kpathgen
+from ase.build import bulk
+
 
 class TestSCFFollowedNSCF(unittest.TestCase):
 

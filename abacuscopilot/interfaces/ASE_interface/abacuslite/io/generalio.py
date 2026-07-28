@@ -1,18 +1,18 @@
 '''public functions that can be used by both the LTS and the latest
 version of ABACUS'''
 import re
-import os
 import tempfile
 import unittest
-from pathlib import Path
 from io import TextIOWrapper
-from typing import Optional, Dict, List, Any
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from ase.atoms import Atoms
 from ase.build import bulk
 from ase.constraints import FixAtoms, FixCartesian
-from ase.data import chemical_symbols, atomic_masses
+from ase.data import atomic_masses, chemical_symbols
+
 ATOM_MASS = dict(zip(chemical_symbols, atomic_masses.tolist()))
 
 def load_pseudo(pseudo_dir: str) -> Dict[str, str]:
@@ -49,7 +49,7 @@ def load_orbital(orbital_dir: str, efficiency: bool=True) -> Dict[str, str]:
         SPECTRUM = 'spdfghi'
         num, symb = zip(*[re.match(r'(\d+)([spdfghi])', b).groups() for b in basis])
         return sum((2*SPECTRUM.index(s) + 1) * int(n) for n, s in zip(num, symb))
-    
+
     orbital_dir = Path(orbital_dir)
     ORBPAT_ = r'^([A-Z][a-z]?)_gga_(\d+)au_(\d+(\.\d+)?)Ry_(\w+)\.orb$'
     # a correct parse would yield:
@@ -96,7 +96,7 @@ def file_safe_backup(fn: Path, suffix: str = 'bak'):
 
     for backup_index, backup in sorted(indexed_backups, key=lambda item: item[0], reverse=True):
         backup.rename(backup.parent / f'{fn.name}.{suffix}.{backup_index + 1}')
-    
+
     # backup the latest file, if there is one
     if fn.exists():
         fn.rename(fn.parent / f'{fn.name}.{suffix}.0')
@@ -133,7 +133,7 @@ def _write_stru(job_dir, stru, fname='STRU'):
             f.write('\nNUMERICAL_ORBITAL\n')
             for s in stru['species']:
                 f.write(f"{s['orb_file']}\n")
-        
+
         #============ LATTICE_CONSTANT/PARAMETER/VECTORS ============
         f.write('\nLATTICE_CONSTANT\n')
         f.write(f"{stru['lat']['const']}\n")
@@ -232,14 +232,12 @@ def write_stru(stru: Atoms,
     str
         The path to the written STRU file.
     '''
-    from ase.units import (
-        Bohr as __BOHR__, 
-        Angstrom as __ANGSTROM__
-    )
+    from ase.units import Angstrom as __ANGSTROM__
+    from ase.units import Bohr as __BOHR__
     assert isinstance(stru, Atoms)
     pp_file = pp_file or {} # can be None, for those non-ESolver_KS cases
 
-    elem = stru.get_chemical_symbols()    
+    elem = stru.get_chemical_symbols()
     # ABACUS requires the atoms ranged species-by-species, therefore
     # we need to group atoms by species. Preserve first-occurrence species
     # order from ASE instead of forcing alphabetical order.
@@ -250,7 +248,7 @@ def write_stru(stru: Atoms,
 
     # handle the atomic magnetic moment (issue #6516)
     magmoms = np.array([stru[i].magmom for i in ind]).reshape(len(stru), -1) # ncol in [1, 3]
-    magmoms = [{} if abs(np.linalg.norm(m)) <= 1e-10 
+    magmoms = [{} if abs(np.linalg.norm(m)) <= 1e-10
                else {'mag': m[0] if len(m) == 1 else ('Cartesian', m.tolist())}
                for m in magmoms]
     elem_uniq = list(dict.fromkeys(elem))
@@ -258,7 +256,7 @@ def write_stru(stru: Atoms,
     stru_dict = {
         'coord_type': 'Cartesian',
         'lat': {
-            'const': __ANGSTROM__ / __BOHR__, 
+            'const': __ANGSTROM__ / __BOHR__,
             'vec': np.array(stru.get_cell()).tolist()
         },
         'species': [
@@ -283,7 +281,7 @@ def write_stru(stru: Atoms,
     if orb_file is not None:
         for s in stru_dict['species']:
             s['orb_file'] = orb_file[s['symbol']]
-    
+
     _write_stru(outdir, stru_dict, fname)
 
     return (Path(outdir) / fname).resolve().as_posix()
@@ -319,7 +317,7 @@ def _write_kline(data: Dict[str, Any], f: TextIOWrapper):
     '''
     f.write('K_POINTS\n')
     f.write(f"{data['nk']}\n")
-    f.write('Line_Cartesian\n' if data['coordinate'].lower() == 'cartesian' 
+    f.write('Line_Cartesian\n' if data['coordinate'].lower() == 'cartesian'
                                else 'Line\n')
     for k, nk in zip(data['kpoints'], data['nkinterpl']):
         f.write(f"{k[0]} {k[1]} {k[2]} {nk}\n")
@@ -333,7 +331,7 @@ def _write_ksampl_mp(data: Dict[str, Any], f: TextIOWrapper):
     f.write("Gamma\n" if data['gamma-centered'] else "MP\n")
     f.write(f"{data['nk'][0]} {data['nk'][1]} {data['nk'][2]} "
             f"{data['kshift'][0]} {data['kshift'][1]} {data['kshift'][2]}\n")
-    
+
 def _write_kpoint(data: Dict[str, Any], f: TextIOWrapper):
     '''
     write the k-point file whose mode is specifying kpoints one-by-one
@@ -477,7 +475,7 @@ def read_stru(fn: str) -> Dict[str, Any]:
     def _trim(line):
         return line.split('#')[0].split('//')[0].strip(' \t\n')
 
-    with open(fn, 'r') as f:
+    with open(fn) as f:
         lines = [_trim(line).replace('\t', ' ')
                  for line in f.readlines() if len(_trim(line)) > 0]
 
@@ -532,7 +530,7 @@ def read_input(fn: str) -> Dict[str, Any]:
     '''
     with open(fn) as f:
         raw = [l.strip() for l in f.readlines()]
-    raw = [l for l in raw 
+    raw = [l for l in raw
            if l and not re.match(r'^(INPUT_PARAMETERS|#|//|!)', l)]
     raw = [re.split(r'#|//|!', l)[0].strip() for l in raw]
     raw = [re.split(r'\s+', l) for l in raw]
@@ -554,14 +552,14 @@ def _read_kline(raw: List[str]) -> Dict[str, Any]:
     assert raw[2].lower().startswith('line'), \
              f'Invalid KPT file, expected "Line" in the third line, got {raw[2]}'
     mymatch = [re.match(r'^(-?\d+(\.\d+)?)\s+(-?\d+(\.\d+)?)\s+(-?\d+(\.\d+)?)\s+'
-                        r'(\d+).*', l) 
+                        r'(\d+).*', l)
               for l in raw[3:]]
     assert all(m for m in mymatch), \
              'Invalid KPT file, expected the k-points to be in the format ' \
              '"x y z n # comment"'
     return {
         'mode': 'line',
-        'coordinate': 'Cartesian' if raw[2].lower().endswith('cartesian') else 'Direct', 
+        'coordinate': 'Cartesian' if raw[2].lower().endswith('cartesian') else 'Direct',
         'nk': int(raw[1]),
         'kpoints': [tuple([float(x) for x in m.groups()[:3]]) for m in mymatch],
         'nkinterpl': [int(m.groups()[6]) for m in mymatch]
@@ -603,7 +601,7 @@ def _read_kpoint(raw: List[str]) -> Dict[str, Any]:
              f'Invalid KPT file, expected "Direct" or "Cartesian" in the third line, ' \
              f'got {raw[2]}'
     mymatch = [re.match(r'^(-?\d+(\.\d+)?)\s+(-?\d+(\.\d+)?)\s+(-?\d+(\.\d+)?)\s*'
-                        r'(\d+).*', l) 
+                        r'(\d+).*', l)
               for l in raw[3:]]
     assert all(m for m in mymatch), \
              'Invalid KPT file, expected the k-points to be in the format ' \
@@ -679,11 +677,11 @@ class TestAbacusCalculatorIOUtil(unittest.TestCase):
             self.assertEqual((workdir / 'STRU.bak.note').read_text(), 'note')
 
     def test_stru_io(self):
-        from ase.units import Bohr, Angstrom
+        from ase.units import Angstrom, Bohr
         nacl = bulk('NaCl', 'rocksalt', a=5.64)
         write_stru(
-            nacl, 
-            outdir=self.testfiles, 
+            nacl,
+            outdir=self.testfiles,
             pp_file={
                 'Na': 'Na.pz-bhs.UPF',
                 'Cl': 'Cl.pz-bhs.UPF'
@@ -695,7 +693,7 @@ class TestAbacusCalculatorIOUtil(unittest.TestCase):
         )
         stru_ = read_stru(self.testfiles / 'STRU')
         (self.testfiles / 'STRU').unlink()
-        
+
         self.assertIsInstance(stru_, dict)
         for k in ['lat', 'species', 'coord_type']:
             self.assertIn(k, stru_)
@@ -721,7 +719,7 @@ class TestAbacusCalculatorIOUtil(unittest.TestCase):
                     self.assertIn(k, a)
                 self.assertEqual(a['m'], [1, 1, 1])
                 self.assertEqual(a['v'], [0.0, 0.0, 0.0])
-                
+
         self.assertEqual(stru_['species'][0]['symbol'], 'Na')
         self.assertEqual(stru_['species'][1]['symbol'], 'Cl')
         self.assertEqual(stru_['species'][0]['mass'], ATOM_MASS['Na'])

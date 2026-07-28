@@ -730,8 +730,8 @@ def task_md_input(args: list[str] | None = None, interactive: bool = True,
                 from deepmd.infer import DeepPot
                 DeepPot(model)
             except Exception:
-                console.print(f"  [bold yellow]⚠  DP model version mismatch detected.[/bold yellow]")
-                console.print(f"  [dim]    Attempting auto-conversion with 'dp convert-from'...[/dim]")
+                console.print("  [bold yellow]⚠  DP model version mismatch detected.[/bold yellow]")
+                console.print("  [dim]    Attempting auto-conversion with 'dp convert-from'...[/dim]")
                 import subprocess as _sp
                 converted = model.replace(".pb", "-v2.pb")
                 if not converted.endswith(".pb"): converted = model + "-v2.pb"
@@ -741,7 +741,7 @@ def task_md_input(args: list[str] | None = None, interactive: bool = True,
                     params.set_param("pot_file", converted)
                     console.print(f"  [green]✓ Converted to {converted}[/green]")
                 else:
-                    console.print(f"  [yellow]! Auto-conversion failed. Run manually:[/yellow]")
+                    console.print("  [yellow]! Auto-conversion failed. Run manually:[/yellow]")
                     console.print(f"  [dim]    dp convert-from auto -i {model} -o {model.replace('.pb','-v2.pb')}[/dim]")
         # Write STRU-dp: same structure, no pseudo/orbital info needed
         from abacuscopilot.io.stru_file import read_stru
@@ -1938,5 +1938,5 @@ def task_elastic_setup(args: list[str] | None = None, interactive: bool = True,
     console.print()
     console.print(f"[green]✓ Elastic setup complete: {task_idx} task directories[/green]")
     console.print(f"  Basis: {basis}, ks_solver: {params.ks_solver}")
-    console.print(f"  Run all tasks, then: [bold]abacuscopilot -task 1201[/bold]")
+    console.print("  Run all tasks, then: [bold]abacuscopilot -task 1201[/bold]")
     console.print()
