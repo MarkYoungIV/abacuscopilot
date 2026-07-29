@@ -168,6 +168,47 @@ def read_bands_with_kpt(
     return k_distances, energies, e_fermi, labels, label_positions
 
 
+def _insert_path_breaks(k_dists: np.ndarray, energies: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Insert NaN breaks at k-path discontinuities (seekpath ``Z|X``-style jumps).
+
+    When consecutive k-points share the same k-distance, the path has a
+    discontinuity — drawing a straight line across it is physically meaningless.
+    Inserting NaN prevents matplotlib from connecting these segments.
+    """
+    diffs = np.diff(k_dists)
+    breaks = np.where(diffs < 1e-10)[0]
+    if len(breaks) == 0:
+        return k_dists, energies
+
+    nbreaks = len(breaks)
+    nkpts = len(k_dists)
+    nbands = energies.shape[0]
+
+    new_n = nkpts + nbreaks
+    new_k = np.empty(new_n, dtype=k_dists.dtype)
+    new_e = np.empty((nbands, new_n), dtype=energies.dtype)
+
+    src = 0
+    dst = 0
+    for brk in breaks:
+        ncopy = brk - src + 1
+        new_k[dst:dst + ncopy] = k_dists[src:src + ncopy]
+        new_e[:, dst:dst + ncopy] = energies[:, src:src + ncopy]
+        dst += ncopy
+        new_k[dst] = np.nan
+        new_e[:, dst] = np.nan
+        dst += 1
+        src = brk + 1
+
+    # Copy remaining
+    remaining = nkpts - src
+    if remaining > 0:
+        new_k[dst:dst + remaining] = k_dists[src:]
+        new_e[:, dst:dst + remaining] = energies[:, src:]
+
+    return new_k, new_e
+
+
 def plot_bands(
     bands_path: str | Path,
     kpt: KPoints | str | Path | None = None,
@@ -218,9 +259,13 @@ def plot_bands(
     # Shift energies to E_Fermi = 0
     energies_shifted = energies - e_fermi
 
+    # Break lines at path discontinuities (seekpath Z|X / R|M jumps)
+    k_dists_plot, energies_plot = _insert_path_breaks(k_dists, energies_shifted)
+    nbands_plot = energies_plot.shape[0]
+
     # Plot each band
-    for ib in range(nbands):
-        ax.plot(k_dists, energies_shifted[ib], color=color, alpha=alpha,
+    for ib in range(nbands_plot):
+        ax.plot(k_dists_plot, energies_plot[ib], color=color, alpha=alpha,
                 linewidth=linewidth)
 
     # Fermi level
@@ -322,11 +367,15 @@ def plot_fatbands(
         # proj_data: dict[species -> (nbands, nkpts) weights]
         fig, ax = plt.subplots()
 
+        # Break lines at path discontinuities (seekpath Z|X / R|M jumps)
+        k_dists_plot, energies_plot = _insert_path_breaks(k_dists, energies_shifted)
+        nbands_plot = energies_plot.shape[0]
+
         # Draw thin gray reference lines for all bands first, so that
         # sparse k-path segments (e.g., Z→X, R→M with only 1–2 distinct
         # k-point columns) are still visible as continuous lines.
-        for ib in range(nbands):
-            ax.plot(k_dists, energies_shifted[ib], color="gray", linewidth=0.3,
+        for ib in range(nbands_plot):
+            ax.plot(k_dists_plot, energies_plot[ib], color="gray", linewidth=0.3,
                     alpha=0.4, zorder=1)
 
         for species, weights in proj_data.items():
