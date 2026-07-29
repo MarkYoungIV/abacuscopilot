@@ -571,7 +571,8 @@ def _parse_calculation_status(out_dir: Path) -> dict:
     # Patterns in priority order (most specific first)
     energy_patterns = [
         r"final\s+etot\s+is\s+(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*eV",  # v3.10 PW
-        r"!FINAL_ETOT_IS\s*[=:]*\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*eV",  # v3.x LCAO
+        r"!FINAL_ETOT_IS\s*[=:]*\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*eV",  # v3.x LCAO (older)
+        r"#TOTAL\s+ENERGY#\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*eV",  # v3.x LCAO (newer)
         r"FINAL\s+ENERGY\s*[=:]\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)",
         r"(?:total energy|ETOT|ENERGY)\s*[=:]\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)",
     ]
@@ -648,6 +649,7 @@ _RE_ION_ELEC_LEGACY = re.compile(r"ION=\s*(\d+)\s+ELEC=\s*(\d+)")
 _RE_ION_ELEC_V3 = re.compile(r"#ION\s+MOVE#\s+(\d+)\s+#ELEC\s+ITER#\s+(\d+)")
 _RE_FINAL_ETOT = re.compile(r"final\s+etot\s+is\s+(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE)
 _RE_FINAL_ETOT_BANG = re.compile(r"!FINAL_ETOT_IS\s*(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE)
+_RE_TOTAL_ENERGY = re.compile(r"#TOTAL\s+ENERGY#\s*(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE)
 _RE_CONVERGED = re.compile(
     r"(?:charge\s+density\s+convergence\s+is\s+achieved|#SCF\s+IS\s+CONVERGED#"
     r"|converged|SCF\s+done|reach\s+convergence)",
@@ -761,6 +763,17 @@ def _parse_ionic_steps(out_dir: Path) -> dict:
                 if elec_match:
                     ion_n = int(elec_match.group(1))
                     elec_n = int(elec_match.group(2))
+                    # Detect ionic step boundary: #ION MOVE# increment
+                    if cur_step is not None and cur_step.get("elec", 0) > 0 and ion_n > cur_step.get("ion", 0):
+                        _push_step(cur_step)
+                        cur_step = {
+                            "ion": ion_n,
+                            "elec": 0,
+                            "converged": False,
+                            "ionic_converged": None,
+                            "energy_ev": None,
+                            "max_force": None,
+                        }
                     # If we haven't seen a STEP marker yet (SCF-only),
                     # start an implicit first ionic step.
                     if cur_step is None:
@@ -798,7 +811,7 @@ def _parse_ionic_steps(out_dir: Path) -> dict:
                     continue
 
                 # --- Energy ---
-                etot_match = _RE_FINAL_ETOT.search(line) or _RE_FINAL_ETOT_BANG.search(line)
+                etot_match = _RE_FINAL_ETOT.search(line) or _RE_FINAL_ETOT_BANG.search(line) or _RE_TOTAL_ENERGY.search(line)
                 if etot_match and cur_step is not None:
                     try:
                         cur_step["energy_ev"] = float(etot_match.group(1))
@@ -807,15 +820,22 @@ def _parse_ionic_steps(out_dir: Path) -> dict:
                     continue
 
                 # --- TOTAL-FORCE block ---
+                # Two formats exist:
+                #   PW / MD:  header → --- → force_data  (1 separator)
+                #   LCAO GPU: header → --- → column_hdr → --- → force_data  (2 separators)
                 if _RE_FORCE_HEADER.search(line):
                     in_force_block = True
-                    _force_sep_seen = False
+                    _force_sep_count = 0
                     continue
                 if in_force_block and cur_step is not None:
-                    # Skip the "---" separator line right after the header
-                    if not _force_sep_seen and line.strip().startswith("---"):
-                        _force_sep_seen = True
+                    stripped = line.strip()
+                    # Separator line
+                    if stripped.startswith("---"):
+                        _force_sep_count += 1
                         continue
+                    if _force_sep_count == 0:
+                        continue  # before first separator
+                    # After first separator: try parsing as force data (PW format)
                     fmatch = _RE_FORCE_LINE.match(line)
                     if fmatch:
                         fx = abs(float(fmatch.group(1)))
@@ -825,10 +845,13 @@ def _parse_ionic_steps(out_dir: Path) -> dict:
                         if cur_step["max_force"] is None or fmax > cur_step["max_force"]:
                             cur_step["max_force"] = fmax
                         continue
-                    # Not a force line and not the separator → exit force block
-                    # (but keep the line for further processing)
-                    if _force_sep_seen and not fmatch:
+                    # Not a force line after first separator:
+                    # LCAO GPU has a column header here ("Atoms  Force_x  …") —
+                    # wait for the second separator, then data.
+                    if _force_sep_count >= 2:
+                        # Force data started but this line isn't force → exit block
                         in_force_block = False
+                    # else: _force_sep_count == 1, non-force line → skip (header row)
 
                 # --- Wall time ---
                 twall = _RE_WALLTIME.search(line)
