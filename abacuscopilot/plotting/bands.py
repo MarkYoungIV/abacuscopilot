@@ -355,13 +355,8 @@ def plot_bands(
     # Shift energies to E_Fermi = 0
     energies_shifted = energies - e_fermi
 
-    # Break lines at path discontinuities (seekpath Z|X / R|M jumps),
-    # then compress the x-axis so the empty gap collapses to a small visual break.
-    k_dists_broken, energies_broken = _insert_path_breaks(k_dists, energies_shifted)
-    k_dists_plot, energies_plot, label_map = _compress_path_breaks(k_dists_broken, energies_broken)
-
-    # Remap label positions to compressed x-axis
-    label_positions_plot = [label_map.get(pos, pos) for pos in label_positions]
+    # Break lines at path discontinuities (seekpath Z|X / R|M jumps)
+    k_dists_plot, energies_plot = _insert_path_breaks(k_dists, energies_shifted)
     nbands_plot = energies_plot.shape[0]
 
     # Plot each band
@@ -374,14 +369,14 @@ def plot_bands(
         ax.axhline(y=0.0, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
 
     # High-symmetry labels — replace GAMMA with Γ
-    if labels and label_positions_plot:
+    if labels and label_positions:
         display_labels = [lab.replace("GAMMA", "Γ") for lab in labels]
-        ax.set_xticks(label_positions_plot)
+        ax.set_xticks(label_positions)
         ax.set_xticklabels(display_labels)
-        for pos in label_positions_plot:
+        for pos in label_positions:
             ax.axvline(x=pos, color="gray", linestyle="-", linewidth=0.5, alpha=0.5)
         # Trim x-axis to data range (no empty space on sides)
-        ax.set_xlim(k_dists_plot[0], k_dists_plot[-1])
+        ax.set_xlim(k_dists[0], k_dists[-1])
     else:
         ax.set_xticks([])
 
@@ -468,35 +463,22 @@ def plot_fatbands(
         # proj_data: dict[species -> (nbands, nkpts) weights]
         fig, ax = plt.subplots()
 
-        # Break lines at path discontinuities and compress x-axis gaps
-        k_dists_broken, energies_broken = _insert_path_breaks(k_dists, energies_shifted)
-        k_dists_plot, energies_plot, label_map = _compress_path_breaks(k_dists_broken, energies_broken)
-        label_positions_plot = [label_map.get(pos, pos) for pos in label_positions]
+        # Break lines at path discontinuities (seekpath Z|X / R|M jumps)
+        k_dists_plot, energies_plot = _insert_path_breaks(k_dists, energies_shifted)
         nbands_plot = energies_plot.shape[0]
 
-        # Identify which original k-point indices survive compression
-        # (connector kpts are removed; the rest are kept in order)
-        diffs_orig = np.diff(k_dists)
-        keep_mask = np.ones(nkpts, dtype=bool)
-        for brk in np.where(diffs_orig < 1e-10)[0]:
-            keep_mask[brk + 1] = False  # remove the duplicate connector
-        kept_indices = np.where(keep_mask)[0]  # maps compressed_idx → original_idx
-
-        # Draw thin gray reference lines for all bands
+        # Draw thin gray reference lines for all bands first, so that
+        # sparse k-path segments are still visible as continuous lines.
         for ib in range(nbands_plot):
             ax.plot(k_dists_plot, energies_plot[ib], color="gray", linewidth=0.3,
                     alpha=0.4, zorder=1)
 
-        # Compress scatter x-positions and weights by removing connector kpts.
-        # k_dists_plot has the compressed positions (same length as keep_mask.sum()).
-        energies_compressed = energies_shifted[:, keep_mask]
         for species, weights in proj_data.items():
             color = species_colors.get(species)
-            w_compressed = weights[:, keep_mask]  # (nbands, n_kept)
             for ib in range(nbands):
-                if np.any(w_compressed[ib] > 0.01):
-                    widths = np.maximum(w_compressed[ib] * linewidth, 0.0)
-                    ax.scatter(k_dists_plot, energies_compressed[ib], s=widths * 10,
+                if np.any(weights[ib] > 0.01):
+                    widths = np.maximum(weights[ib] * linewidth, 0.0)
+                    ax.scatter(k_dists, energies_shifted[ib], s=widths * 10,
                               c=color if color else None, alpha=0.6, linewidths=0,
                               label=species if ib == 0 else "", zorder=2)
 
@@ -515,13 +497,13 @@ def plot_fatbands(
     ax.axhline(y=0.0, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
 
     # Symmetry labels — replace GAMMA with Γ
-    if labels and label_positions_plot:
+    if labels and label_positions:
         display_labels = [lab.replace("GAMMA", "Γ") for lab in labels]
-        ax.set_xticks(label_positions_plot)
+        ax.set_xticks(label_positions)
         ax.set_xticklabels(display_labels)
-        for pos in label_positions_plot:
+        for pos in label_positions:
             ax.axvline(x=pos, color="gray", linestyle=":", linewidth=0.5, alpha=0.5)
-        ax.set_xlim(k_dists_plot[0], k_dists_plot[-1])
+        ax.set_xlim(k_dists[0], k_dists[-1])
     else:
         ax.set_xticks([])
 
