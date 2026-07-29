@@ -386,11 +386,19 @@ def plot_fatbands(
 def _find_e_fermi(bands_path: Path) -> float:
     """Try to extract the Fermi energy from SCF/NSCF logs near the BANDS file.
 
-    Searches in: OUT.ABACUS/running_scf.log, OUT.ABACUS/running_nscf.log.
+    Uses the shared dos.py parser which handles all ABACUS log formats
+    (PW / LCAO GPU / LCAO CPU).  Falls back to generic pattern matching.
     Returns 0.0 if not found.
     """
     import re
 
+    # Prefer the unified parser from dos.py (handles all known ABACUS formats)
+    from abacuscopilot.plotting.dos import _find_fermi_from_log
+    e_fermi = _find_fermi_from_log(bands_path)
+    if e_fermi != 0.0:
+        return e_fermi
+
+    # Fallback: generic search in sibling log files
     out_dir = bands_path.parent  # OUT.ABACUS/
     for log_name in ("running_scf.log", "running_nscf.log", "running_relax.log"):
         log_path = out_dir / log_name
