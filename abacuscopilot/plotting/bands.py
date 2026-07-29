@@ -171,36 +171,41 @@ def read_bands_with_kpt(
 def _insert_path_breaks(k_dists: np.ndarray, energies: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Insert NaN breaks at k-path discontinuities (seekpath ``Z|X``-style jumps).
 
-    When consecutive k-points share the same k-distance, the path has a
-    discontinuity — drawing a straight line across it is physically meaningless.
-    Inserting NaN prevents matplotlib from connecting these segments.
+    When consecutive k-points share the same k-distance, the second one is a
+    path-discontinuity connector.  We *drop* that duplicate point entirely and
+    replace it with NaN so matplotlib breaks the line both before AND after
+    the jump, preventing a meaningless straight line across the gap (e.g. the
+    Z→X or R→M segments that have zero intermediate k-points).
     """
     diffs = np.diff(k_dists)
-    breaks = np.where(diffs < 1e-10)[0]
+    breaks = np.where(diffs < 1e-10)[0]  # indices i where k_dists[i]==k_dists[i+1]
     if len(breaks) == 0:
         return k_dists, energies
 
-    nbreaks = len(breaks)
     nkpts = len(k_dists)
     nbands = energies.shape[0]
-
-    new_n = nkpts + nbreaks
+    # Each break removes the duplicate point (brk+1) and inserts a NaN in its place.
+    # Net length change = 0 (remove 1, add 1).
+    new_n = nkpts
     new_k = np.empty(new_n, dtype=k_dists.dtype)
     new_e = np.empty((nbands, new_n), dtype=energies.dtype)
 
     src = 0
     dst = 0
     for brk in breaks:
+        # Copy all points up to and including brk (the last point before the jump)
         ncopy = brk - src + 1
         new_k[dst:dst + ncopy] = k_dists[src:src + ncopy]
         new_e[:, dst:dst + ncopy] = energies[:, src:src + ncopy]
         dst += ncopy
+        # Replace the duplicate point (src + ncopy = brk+1) with NaN
         new_k[dst] = np.nan
         new_e[:, dst] = np.nan
         dst += 1
-        src = brk + 1
+        # Skip the duplicate point in the source arrays
+        src = brk + 2
 
-    # Copy remaining
+    # Copy remaining points (if any)
     remaining = nkpts - src
     if remaining > 0:
         new_k[dst:dst + remaining] = k_dists[src:]
