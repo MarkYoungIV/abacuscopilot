@@ -7,6 +7,7 @@ analyzing calculation outputs, and producing publication-quality figures.
 """
 
 __version__ = "0.1.22"
+__version_date__ = "2026-07-29"
 __author__ = "AbacusCopilot Developers"
 __license__ = "GPL-3.0"
 
@@ -21,5 +22,6 @@ __all__ = [
     "Structure",
     "TaskRegistry",
     "__version__",
+    "__version_date__",
     "task",
 ]

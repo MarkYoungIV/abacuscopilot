@@ -50,8 +50,8 @@ WELCOME_BANNER = """\
 
 def get_version_info() -> str:
     """Get version string with date."""
-    from abacuscopilot import __version__
-    return f"AbacusCopilot v{__version__} (2026-07-29)"
+    from abacuscopilot import __version__, __version_date__
+    return f"AbacusCopilot v{__version__} ({__version_date__})"
 
 
 def get_developer_info() -> str:
