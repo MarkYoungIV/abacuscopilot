@@ -44,17 +44,23 @@ def read_dos_dat(filepath: str | Path) -> tuple[np.ndarray, np.ndarray, float]:
     with open(filepath) as f:
         lines = [l.strip() for l in f if l.strip()]
 
-    # Auto-detect: new format (no header, data starts) vs old (header: nedos e_fermi)
+    # Auto-detect: no header (data starts with energy values) vs
+    # old header format (first line: nedos [e_fermi]).
     first = lines[0].split()
     try:
-        int(first[0])  # if this succeeds, first line is header
-        if len(first) >= 2:
-            nedos = int(first[0])
-            e_fermi = float(first[1])
+        n_check = int(first[0])
+        # Valid header line has a positive integer line count (nedos > 0).
+        # Negative values are energy data (TDOS.dat format), not a header.
+        if n_check > 0:
+            if len(first) >= 2:
+                nedos = n_check
+                e_fermi = float(first[1])
+            else:
+                nedos = n_check
+                e_fermi = 0.0
+            data_start = 1
         else:
-            nedos = int(first[0])
-            e_fermi = 0.0
-        data_start = 1
+            raise ValueError("not a header")
     except (ValueError, IndexError):
         # No header — first line is data
         nedos = len(lines)
@@ -66,10 +72,10 @@ def read_dos_dat(filepath: str | Path) -> tuple[np.ndarray, np.ndarray, float]:
         data.extend(float(x) for x in line.split())
 
     data = np.array(data)
-    if nedos == 0:
+    if nedos <= 0 or len(data) == 0:
         return np.array([]), np.array([]), 0.0
 
-    ncols = len(data) // nedos
+    ncols = max(len(data) // nedos, 1)  # at least energy column
 
     # Column 0 = energy, column 1 = DOS (total), column 2 = integrated (optional)
     energies = data[0:nedos * ncols:ncols]

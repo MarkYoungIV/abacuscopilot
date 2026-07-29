@@ -118,7 +118,24 @@
       "Bash(tar --exclude=.git --exclude=.agents --exclude=.claude --exclude=.codebuddy --exclude=.mypy_cache --exclude=.ruff_cache --exclude=.pytest_cache --exclude=.coverage --exclude=coverage.xml --exclude=__pycache__ --exclude=*.pyc --exclude=.DS_Store --exclude=*.egg-info --exclude=test --exclude=abacuscopilot/abacuscopilot_v*.tar.gz --exclude=abacuscopilot/.gitignore --exclude=abacuscopilot/.pre-commit-config.yaml --exclude=abacuscopilot/server-profiles --no-xattrs -czf abacuscopilot_v0.1.21___CMDSUB_OUTPUT__.tar.gz abacuscopilot/)",
       "Bash(tar --exclude=.git --exclude=.agents --exclude=.claude --exclude=.codebuddy --exclude=.mypy_cache --exclude=.ruff_cache --exclude=.pytest_cache --exclude=.coverage --exclude=coverage.xml --exclude=__pycache__ --exclude=*.pyc --exclude=.DS_Store --exclude=*.egg-info --exclude=test --exclude=abacuscopilot/abacuscopilot_v*.tar.gz --exclude=abacuscopilot/.gitignore --exclude=abacuscopilot/.pre-commit-config.yaml --exclude=abacuscopilot/server-profiles --no-xattrs -czf /Users/young/young/claude-code_file/abacuscopilot_v0.1.21_20260722.tar.gz -C /Users/young/young/claude-code_file abacuscopilot/)",
       "Bash(tar --exclude=.git --exclude=.agents --exclude=.claude --exclude=.codebuddy --exclude=.mypy_cache --exclude=.ruff_cache --exclude=.pytest_cache --exclude=.coverage --exclude=coverage.xml --exclude=__pycache__ --exclude=*.pyc --exclude=.DS_Store --exclude=*.egg-info --exclude=test --exclude=abacuscopilot/abacuscopilot_v*.tar.gz --exclude=abacuscopilot/.gitignore --exclude=abacuscopilot/.pre-commit-config.yaml --exclude=abacuscopilot/server-profiles --no-xattrs -czf abacuscopilot_v0.1.22___CMDSUB_OUTPUT__.tar.gz abacuscopilot/)",
-      "Bash(grep -v \"/$\")"
+      "Bash(grep -v \"/$\")",
+      "Read(//home/young/young/abacus/8-LiGePS/**)",
+      "Bash(ssh young@young \"ls -la ~/young/abacus/8-LiGePS/3-dos/\")",
+      "Read(//Users/young/.ssh/**)",
+      "Read(//private/etc/**)",
+      "Bash(ssh young@10.0.0.1 \"ls ~/young/abacus/8-LiGePS/3-dos/\")",
+      "Bash(ssh young@192.168.1.100 \"ls ~/young/abacus/8-LiGePS/3-dos/\")",
+      "Bash(dscacheutil -q host -a name young)",
+      "Bash(arp -a)",
+      "Read(//Users/young/.abacuscopilot/**)",
+      "Read(//Users/young/**)",
+      "Bash(ssh young *)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(mount)",
+      "Read(//Volumes/**)",
+      "Bash(ls /mnt/)",
+      "Bash(ls /net/)",
+      "Bash(ssh *)"
     ]
   }
 }

@@ -18,10 +18,14 @@ from abacuscopilot.tasks import task
 
 def _find_dos_file() -> Path | None:
     """Find DOS file in working directory."""
-    # v3.7+: DOS1_smearing.dat, DOS1; older: DOS*.dat
-    candidates = (list(Path().glob("DOS1_smearing.dat")) +
+    # v3.7+ LCAO: TDOS.dat; v3.7+ PW: DOS1_smearing.dat, DOS1; older: DOS*.dat
+    candidates = (list(Path().glob("TDOS.dat")) +
+                  list(Path().glob("TDOS_*.dat")) +
+                  list(Path().glob("DOS1_smearing.dat")) +
                   list(Path().glob("DOS1")) +
                   list(Path().glob("DOS*.dat")) +
+                  list(Path().glob("OUT.*/TDOS.dat")) +
+                  list(Path().glob("OUT.*/TDOS_*.dat")) +
                   list(Path().glob("OUT.*/DOS1_smearing.dat")) +
                   list(Path().glob("OUT.*/DOS1")) +
                   list(Path().glob("OUT.*/DOS*.dat")))
@@ -33,9 +37,11 @@ def _find_dos_file() -> Path | None:
 
 def _find_pdos_file() -> Path | None:
     """Find PDOS file in working directory."""
-    # New ABACUS v3.7+: PDOS (no extension); older: PDOS_*.dat
-    candidates = (list(Path().glob("PDOS")) +
+    # v3.7+ LCAO: PDOS.dat; v3.7+ PW: PDOS (no extension); older: PDOS_*.dat
+    candidates = (list(Path().glob("PDOS.dat")) +
+                  list(Path().glob("PDOS")) +
                   list(Path().glob("PDOS_*.dat")) +
+                  list(Path().glob("OUT.*/PDOS.dat")) +
                   list(Path().glob("OUT.*/PDOS")) +
                   list(Path().glob("OUT.*/PDOS_*.dat")))
     if not candidates:
