@@ -19,6 +19,52 @@ PDOS_COLORS = [
 ]
 
 
+def _find_fermi_from_log(filepath: str | Path) -> float:
+    """Try to read Fermi energy from an ABACUS running log near *filepath*.
+
+    Searches ``OUT.*/running_*.log`` in the same directory as *filepath*
+    (or the parent, if *filepath* is inside OUT.*).  Returns the Fermi
+    energy in eV, or 0.0 if nothing found.
+    """
+    import re
+
+    p = Path(filepath)
+    # Determine the search directory: if filepath is inside OUT.*, use
+    # that directory; otherwise look for OUT.* subdirs in filepath's parent.
+    if p.parent.name.startswith("OUT."):
+        search_dir = p.parent
+    else:
+        out_dirs = sorted(p.parent.glob("OUT.*"))
+        search_dir = out_dirs[0] if out_dirs else p.parent
+
+    log_files = sorted(search_dir.glob("running_*.log"))
+    if not log_files:
+        return 0.0
+
+    # Patterns, most specific first
+    patterns = [
+        # LCAO GPU v3.x: "Fermi energy (eV) = 4.46273"
+        re.compile(r"Fermi\s+energy\s*\(\w*eV\w*\)\s*=\s*(\d+\.?\d*)", re.IGNORECASE),
+        # LCAO: "E_Fermi  0.328  4.462" (second column is eV)
+        re.compile(r"E_Fermi\s+[\d.]+\s+([\d.]+)"),
+        # PW: "EFERMI = 4.4627"
+        re.compile(r"EFERMI\s*=\s*(\d+\.?\d*)", re.IGNORECASE),
+        # Generic: "E_f (eV) = 4.4627"
+        re.compile(r"E_?f(?:ermi)?\s*\(\w*eV\w*\)\s*=\s*(\d+\.?\d*)", re.IGNORECASE),
+    ]
+
+    try:
+        content = log_files[0].read_text(errors="ignore")
+        for pat in patterns:
+            m = pat.search(content)
+            if m:
+                return float(m.group(1))
+    except (OSError, ValueError):
+        pass
+
+    return 0.0
+
+
 def read_dos_dat(filepath: str | Path) -> tuple[np.ndarray, np.ndarray, float]:
     """Read an ABACUS DOS_*.dat file.
 
@@ -81,6 +127,11 @@ def read_dos_dat(filepath: str | Path) -> tuple[np.ndarray, np.ndarray, float]:
     energies = data[0:nedos * ncols:ncols]
     dos_tot = data[1:nedos * ncols:ncols] if ncols >= 2 else np.zeros(nedos)
 
+    # Fallback: if no Fermi energy in file header (TDOS.dat has none),
+    # try to read it from the ABACUS running log.
+    if e_fermi == 0.0:
+        e_fermi = _find_fermi_from_log(filepath)
+
     return energies, dos_tot, e_fermi
 
 
@@ -100,8 +151,8 @@ def _read_pdos_xml(filepath: Path) -> dict[str, np.ndarray]:
     ev = root.find("energy_values")
     energies = np.loadtxt(StringIO(ev.text))
 
-    # Get e_fermi from running_scf.log or set to 0
-    e_fermi = 0.0
+    # Get e_fermi from running log (XML PDOS files don't carry it)
+    e_fermi = _find_fermi_from_log(filepath)
 
     # Sum per species+orbital (l)
     l_names = ["s", "p", "d", "f", "g"]
