@@ -146,33 +146,17 @@ def read_bands_with_kpt(
         # Use k-distances from the BANDS file (column 1 = ABACUS-computed path length)
         k_distances = k_distances_raw
 
-        # Map labels to k-distances based on cumulative npoints per segment.
-        # Connector segments (npoints == 1) mark path discontinuities
-        # (seekpath "Z|X", "R|M" breaks).  Merge them with the following
-        # label and place the merged label at the discontinuity position.
+        # Map labels to k-distances based on cumulative npoints per segment
         cum_kpt = 0
-        pending_break_label = None
-        pending_break_pos = None
         for i, seg in enumerate(kpt.line_path):
             npts = seg.get("npoints", 20)
             label = seg.get("label", "")
-            if npts == 1 and label:
-                # Connector segment — defer, will merge with next label
-                pending_break_label = label
-                pending_break_pos = float(k_distances[cum_kpt]) if cum_kpt < len(k_distances) else None
-            else:
-                if label:
-                    if pending_break_label and pending_break_pos is not None:
-                        labels.append(f"{pending_break_label} ∥ {label}")
-                        label_positions.append(pending_break_pos)
-                        pending_break_label = None
-                        pending_break_pos = None
-                    else:
-                        labels.append(label)
-                        label_positions.append(float(k_distances[cum_kpt]))
+            if label:
+                labels.append(label)
+                label_positions.append(float(k_distances[cum_kpt]))
             cum_kpt += npts
 
-        # Add final label (not a connector)
+        # Add final label
         if kpt.line_path:
             end_label = kpt.line_path[-1].get("end_label", "")
             if end_label and cum_kpt < len(k_distances):
