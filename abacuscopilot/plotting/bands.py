@@ -463,16 +463,6 @@ def plot_fatbands(
         # proj_data: dict[species -> (nbands, nkpts) weights]
         fig, ax = plt.subplots()
 
-        # Break lines at path discontinuities (seekpath Z|X / R|M jumps)
-        k_dists_plot, energies_plot = _insert_path_breaks(k_dists, energies_shifted)
-        nbands_plot = energies_plot.shape[0]
-
-        # Draw thin gray reference lines for all bands first, so that
-        # sparse k-path segments are still visible as continuous lines.
-        for ib in range(nbands_plot):
-            ax.plot(k_dists_plot, energies_plot[ib], color="gray", linewidth=0.3,
-                    alpha=0.4, zorder=1)
-
         for species, weights in proj_data.items():
             color = species_colors.get(species)
             for ib in range(nbands):
@@ -480,7 +470,7 @@ def plot_fatbands(
                     widths = np.maximum(weights[ib] * linewidth, 0.0)
                     ax.scatter(k_dists, energies_shifted[ib], s=widths * 10,
                               c=color if color else None, alpha=0.6, linewidths=0,
-                              label=species if ib == 0 else "", zorder=2)
+                              label=species if ib == 0 else "")
 
         # Deduplicate legend
         handles, labels_ = ax.get_legend_handles_labels()
