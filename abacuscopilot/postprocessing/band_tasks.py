@@ -18,9 +18,20 @@ from abacuscopilot.tasks import task
 
 
 def _find_bands_file() -> Path | None:
-    """Find the BANDS file in the working directory."""
-    candidates = (list(Path().glob("BANDS*.dat")) +
-                  list(Path().glob("OUT.*/BANDS*.dat")))
+    """Find the BANDS file in the working directory.
+
+    Handles all ABACUS versions:
+    - PW / older LCAO: ``BANDS_*.dat``
+    - LCAO GPU v3.x:   ``band.txt``
+    """
+    candidates = (list(Path().glob("band.txt")) +
+                  list(Path().glob("band_*.dat")) +
+                  list(Path().glob("BANDS*.dat")) +
+                  list(Path().glob("BANDS*")) +
+                  list(Path().glob("OUT.*/band.txt")) +
+                  list(Path().glob("OUT.*/band_*.dat")) +
+                  list(Path().glob("OUT.*/BANDS*.dat")) +
+                  list(Path().glob("OUT.*/BANDS*")))
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)
@@ -245,9 +256,11 @@ def task_fatbands(args: list[str] | None = None, interactive: bool = True) -> No
 
     # Find projected bands file
     proj_path = None
-    proj_candidates = (list(Path().glob("PBANDS_1")) +
+    proj_candidates = (list(Path().glob("pbands*.xml")) +
+                      list(Path().glob("PBANDS_1")) +
                       list(Path().glob("PBANDS_2")) +
                       list(Path().glob("ProjBands*.dat")) +
+                      list(Path().glob("OUT.*/pbands*.xml")) +
                       list(Path().glob("OUT.*/PBANDS_1")) +
                       list(Path().glob("OUT.*/PBANDS_2")) +
                       list(Path().glob("OUT.*/ProjBands*.dat")) +
