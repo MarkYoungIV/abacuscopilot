@@ -223,7 +223,7 @@ def task_plot_bands(args: list[str] | None = None, interactive: bool = True,
 
     # Plot
     from abacuscopilot.plotting.bands import plot_bands
-    save_name = f"bands_{bands_path.stem}.png"
+    save_name = "BAND.png"
     plot_bands(
         bands_path,
         kpt=kpt_path,
@@ -270,9 +270,11 @@ def task_fatbands(args: list[str] | None = None, interactive: bool = True) -> No
         proj_path = proj_candidates[0]
         console.print(f"  [dim]Projected bands: {proj_path}[/dim]")
     else:
-        console.print("[yellow]No projected band data found.[/yellow]")
-        console.print("[dim]Run with out_proj_band=True to generate projected bands.[/dim]")
-        console.print("[dim]Falling back to regular band plot.[/dim]")
+        console.print("[red]No projected band data found.[/red]")
+        console.print("[yellow]Fat-band plot requires projected band data.[/yellow]")
+        console.print("[yellow]Add 'out_proj_band 1' to INPUT and re-run the NSCF band calculation,[/yellow]")
+        console.print("[yellow]then re-run this task in the output directory.[/yellow]")
+        return
 
     kpt_path = _find_kpt_file()
 
@@ -291,7 +293,7 @@ def task_fatbands(args: list[str] | None = None, interactive: bool = True) -> No
         e_range = None
 
     from abacuscopilot.plotting.bands import plot_fatbands
-    save_name = "fatbands.png"
+    save_name = "PBAND.png"
     plot_fatbands(
         bands_path,
         proj_path or bands_path,

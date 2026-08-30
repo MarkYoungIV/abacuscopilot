@@ -18,7 +18,8 @@ from abacuscopilot.tasks import task
 
 
 def _write_stru_bare(structure: Structure, is_lcao: bool = False,
-                     filepath: str = "STRU", is_dp: bool = False) -> None:
+                     filepath: str = "STRU", is_dp: bool = False,
+                     suppress_f_core: bool = False) -> None:
     """Write STRU file, resolving pseudopotential/orbital filenames from library.
 
     Looks up the configured pseudo_library and orbital_library directories
@@ -30,11 +31,18 @@ def _write_stru_bare(structure: Structure, is_lcao: bool = False,
         is_lcao: Whether LCAO orbital section is needed (ignored if is_dp).
         filepath: Output path (default: "STRU").
         is_dp: If True, skip pseudo/orbital filenames (Deep Potential mode).
+        suppress_f_core: Skip the large-core f-electron-pseudized notice (the
+            caller already printed it).
     """
     from abacuscopilot.config import load_config
     from abacuscopilot.io.stru_file import write_stru
-    from abacuscopilot.preprocessing.system_tasks import _find_file_for_element
+    from abacuscopilot.preprocessing.system_tasks import (
+        _f_core_info_from_structure,
+        _find_file_for_element,
+        warn_f_core,
+    )
 
+    missing = []  # (species, kind, fallback_name, library_dir) for warn-after-write
     if not is_dp:
         config = load_config()
         libraries = config.get("libraries", {})
@@ -44,13 +52,44 @@ def _write_stru_bare(structure: Structure, is_lcao: bool = False,
         for sp in structure.species_order:
             # Always resolve from library; overwrites bare filenames like "S.upf"
             actual = _find_file_for_element(pseudo_lib, sp, ".upf") if pseudo_lib else None
-            structure.pseudo_files[sp] = actual if actual else structure.pseudo_files.get(sp, f"{sp}.upf")
+            if actual:
+                structure.pseudo_files[sp] = actual
+            else:
+                missing.append((sp, "pseudopotential", f"{sp}.upf", pseudo_lib))
+                structure.pseudo_files[sp] = structure.pseudo_files.get(sp, f"{sp}.upf")
 
             if is_lcao:
                 actual = _find_file_for_element(orbital_lib, sp, ".orb") if orbital_lib else None
-                structure.orbital_files[sp] = actual if actual else structure.orbital_files.get(sp, f"{sp}.orb")
+                if actual:
+                    structure.orbital_files[sp] = actual
+                else:
+                    missing.append((sp, "orbital", f"{sp}.orb", orbital_lib))
+                    structure.orbital_files[sp] = structure.orbital_files.get(sp, f"{sp}.orb")
 
     write_stru(structure, filepath=filepath, is_lcao=is_lcao, is_dp=is_dp)
+
+    if missing:
+        console = _get_console()
+        console.print()
+        console.print(
+            f"[yellow]⚠ {len(missing)} species file(s) not found in the configured library — "
+            "the STRU lists placeholder filenames that may not exist:[/yellow]"
+        )
+        for sp, kind, fallback, lib in missing:
+            libs_shown = "; ".join(lib) if isinstance(lib, list) else (lib or "none configured")
+            console.print(
+                f"  [red]{sp} {kind}[/red] → '{fallback}'"
+                f"  [dim](library: {libs_shown})[/dim]"
+            )
+        console.print(
+            "[yellow]Add the missing PP/orbital files to a library directory, or configure "
+            "another library (System & Configuration, task 9901/9902).[/yellow]"
+        )
+
+    if not suppress_f_core:
+        info = _f_core_info_from_structure(structure)
+        if info["f_core_species"]:
+            warn_f_core(_get_console(), info)
 
 
 def _offer_3d_view(console, source_path: str = "STRU") -> None:
@@ -178,6 +217,18 @@ def _run_full_calculation_setup(
     # Ask CPU/GPU so LCAO gets the correct ks_solver (genelpa/cusolver).
     _ask_lcao_solver(console, params)
 
+    # Large-core (f-electron-pseudized) lanthanide awareness: if the structure
+    # uses such PPs (e.g. APNS 'Sm3+_f--core-icmod1...'), their NAO orbitals have
+    # a 300 Ry cutoff.  Offer to raise ecutwfc to match — otherwise the Sm basis
+    # gets truncated and the result is silently wrong.
+    from abacuscopilot.preprocessing.system_tasks import (
+        adjust_ecutwfc_for_f_core,
+        analyze_f_core,
+    )
+    info = analyze_f_core(structure)
+    if info["f_core_species"] and "lcao" in (params.basis_type or ""):
+        adjust_ecutwfc_for_f_core(console, params, info)
+
     # Override specific params for MD
     if calc == "md":
         params.md_type = _prompt_choice(console, "MD ensemble",
@@ -202,7 +253,8 @@ def _run_full_calculation_setup(
     # Step 2: fix STRU with resolved upf/orb filenames
     from abacuscopilot.io.stru_file import read_stru as _read_stru
     _stru = _read_stru("STRU")
-    _write_stru_bare(_stru, is_lcao=params.basis_type == "lcao", filepath="STRU")
+    _write_stru_bare(_stru, is_lcao=params.basis_type == "lcao", filepath="STRU",
+                     suppress_f_core=True)
 
     # Step 3: copy pseudopotential & orbital files
     config = load_config()
@@ -718,7 +770,7 @@ def task_stru_to_pdb(args: list[str] | None = None, interactive: bool = True) ->
 # Task 207: STRU 3D visualization
 # =============================================================================
 
-@task(207, category="STRU", name="View Structure",
+@task(210, category="STRU", name="View Structure",
       description="Open STRU/CIF/POSCAR in ASE 3D viewer for visual inspection")
 def task_view_structure(args: list[str] | None = None, interactive: bool = True) -> None:
     """Open a structure file in ASE's interactive 3D GUI viewer."""
@@ -856,13 +908,22 @@ def task_stru_to_lammps(args: list[str] | None = None, interactive: bool = True)
     console.print("[bold cyan]=== STRU → LAMMPS Data File ===[/bold cyan]")
     console.print()
 
-    # Load STRU
+    # --- Input file ---
     stru_path = "STRU"
     if args:
         for arg in args:
             if Path(arg).exists():
                 stru_path = arg
                 break
+
+    if interactive:
+        inp = _prompt(console, "Input STRU file", str(Path(stru_path)))
+        if inp:
+            stru_path = inp
+
+    if not Path(stru_path).exists():
+        console.print(f"[red]File not found: {stru_path}[/red]")
+        return
 
     try:
         from abacuscopilot.io.stru_file import read_stru
@@ -981,7 +1042,8 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
     from abacuscopilot.core.models import Atom, Lattice, Structure
 
     n_atoms = n_types = 0
-    xlo = xhi = ylo = yhi = zlo = zhi = 0.0
+    _BOX_NIL = -1e30
+    xlo = xhi = ylo = yhi = zlo = zhi = _BOX_NIL
     xy = xz = yz = 0.0
     masses: dict[int, float] = {}
     positions: list[tuple[int, float, float, float]] = []  # (type, x, y, z)
@@ -999,59 +1061,63 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
                 n_types = int(m.group(1))
             continue
 
-        # Section headers (case-insensitive)
+        # Section headers (case-insensitive, use startswith to handle
+        # variants like "Atoms # atomic" / "Masses # comment")
+        # Normalize underscores → spaces so "pair_coeffs" / "pair coeffs" both work.
         low = stripped.lower()
+        low_norm = low.replace("_", " ")
 
-        if low in ("masses",):
+        if low_norm.startswith("masses"):
             section = "masses"
             continue
-        elif low in ("atoms",):
+        elif low_norm.startswith("atoms"):
             section = "atoms"
             continue
-        elif low in ("velocities", "bonds", "angles", "dihedrals", "impropers",
-                     "pair coeffs", "bond coeffs", "angle coeffs",
-                     "pair_coeffs", "bond_coeffs", "angle_coeffs",
-                     "atoms #", "atoms  #"):
+        elif low_norm.startswith(("velocities", "bonds", "angles",
+                                  "dihedrals", "impropers",
+                                  "pair coeffs", "bond coeffs",
+                                  "angle coeffs")):
             section = None  # skip to end of file
             continue
 
         # Box: xlo xhi [xy xz yz]
+        # Use sentinel _BOX_NIL to detect "not yet set" (0.0 is a valid lower bound).
         if section is None and n_atoms == 0:
             parts = stripped.split()
             if len(parts) >= 2:
                 try:
                     vals = [float(x) for x in parts[:2]]
-                    if xlo == xhi == 0:
+                    if xhi == _BOX_NIL:
                         xlo, xhi = vals[0], vals[1]
                         continue
                 except ValueError:
                     pass
 
-        if section is None and xlo != 0 and xhi != 0:
+        if section is None and xhi != _BOX_NIL and yhi == _BOX_NIL:
             # Try to read ylo yhi
             parts = stripped.split()
             if len(parts) >= 2:
                 try:
                     vals = [float(x) for x in parts[:2]]
-                    if ylo == yhi == 0:
+                    if yhi == _BOX_NIL:
                         ylo, yhi = vals[0], vals[1]
                         continue
                 except ValueError:
                     pass
 
-        if section is None and ylo != 0 and yhi != 0 and zlo == zhi == 0:
+        if section is None and yhi != _BOX_NIL and zhi == _BOX_NIL:
             # Try to read zlo zhi
             parts = stripped.split()
             if len(parts) >= 2:
                 try:
                     vals = [float(x) for x in parts[:2]]
-                    if zlo == zhi == 0:
+                    if zhi == _BOX_NIL:
                         zlo, zhi = vals[0], vals[1]
                         continue
                 except ValueError:
                     pass
 
-        if section is None and zhi != 0:
+        if section is None and zhi != _BOX_NIL:
             # xy xz yz (triclinic)
             parts = stripped.split()
             if len(parts) >= 3:
@@ -1091,7 +1157,7 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
     console.print(f"  [dim]Parsed {len(positions)} atoms, {len(masses)} types[/dim]")
 
     # --- Fallback: compute box from atomic positions if no box info found ---
-    if xlo == xhi == ylo == yhi == zlo == zhi == 0.0:
+    if zhi == _BOX_NIL:
         xs = [p[1] for p in positions]
         ys = [p[2] for p in positions]
         zs = [p[3] for p in positions]
@@ -1233,3 +1299,169 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
     if Path("STRU").exists() and out_path != "STRU":
         console.print("  [dim]Original STRU is unchanged.[/dim]")
     console.print()
+
+
+# =============================================================================
+# Task 207: PDB to STRU (isolated molecules)
+# =============================================================================
+
+
+def _cell_from_params(a: float, b: float, c: float,
+                      alpha: float, beta: float, gamma: float) -> np.ndarray:
+    """Lattice vectors (rows a, b, c, in Å) from cell parameters + angles (°)."""
+    import numpy as _np
+    al, be, ga = _np.radians([alpha, beta, gamma])
+    ax = a
+    bx = b * _np.cos(ga)
+    by = b * _np.sin(ga)
+    cx = c * _np.cos(be)
+    cy = c * ( _np.cos(al) - _np.cos(be) * _np.cos(ga)) / _np.sin(ga)
+    cz = _np.sqrt(max(c ** 2 - cx ** 2 - cy ** 2, 0.0))
+    return _np.array([[ax, 0.0, 0.0], [bx, by, 0.0], [cx, cy, cz]])
+
+
+def _read_pdb(filepath: str | Path):
+    """Minimal PDB reader → ase.Atoms (ase 3.29 dropped the built-in PDB reader).
+
+    Parses ATOM/HETATM records (element, xyz in Å) and the optional CRYST1 cell.
+    Returns an ase.Atoms with a zero cell when no CRYST1 line is present.
+    """
+    from ase import Atoms
+    symbols: list[str] = []
+    positions: list[list[float]] = []
+    cell = None
+    with open(filepath) as f:
+        for line in f:
+            rec = line[:6].strip()
+            if rec == "CRYST1":
+                try:
+                    a = float(line[6:15]); b = float(line[15:24]); c = float(line[24:33])
+                    al = float(line[33:40]); be = float(line[40:47]); ga = float(line[47:54])
+                    cell = _cell_from_params(a, b, c, al, be, ga)
+                except (ValueError, IndexError):
+                    cell = None
+            elif rec in ("ATOM", "HETATM"):
+                try:
+                    el = line[12:16].strip()
+                    x = float(line[30:38]); y = float(line[38:46]); z = float(line[46:54])
+                except (ValueError, IndexError):
+                    continue
+                if not el:  # fall back to the atom-name column
+                    el = line[12:16].strip().lstrip("0123456789")
+                symbols.append(el)
+                positions.append([x, y, z])
+    if not positions:
+        return None
+    atoms = Atoms(symbols=symbols, positions=positions, cell=cell)
+    if atoms.cell is None:
+        atoms.set_cell(np.zeros((3, 3)))
+    return atoms
+
+
+def _center_molecule_in_box(atoms, side: float) -> None:
+    """Set a cubic box of *side* Å and center the molecule's bounding box."""
+    pos = atoms.get_positions()
+    center = (pos.min(axis=0) + pos.max(axis=0)) / 2.0
+    atoms.set_positions(pos + (side / 2.0 - center))
+    atoms.set_cell([[side, 0, 0], [0, side, 0], [0, 0, side]])
+
+
+@task(207, category="STRU", name="PDB to STRU",
+      description="Convert PDB (Protein Data Bank) to ABACUS STRU format")
+def task_stru_from_pdb(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Generate a STRU file from a PDB file (isolated molecule, e.g. water).
+
+    If the PDB carries a cell (CRYST1 line) it is kept.  Otherwise the user
+    supplies a cubic box (default 15 Å) and the molecule is centered in it —
+    suitable for isolated-molecule calculations.
+
+    Offers the same two modes as other structure imports:
+      1. Just convert structure — STRU only
+      2. Configure full calculation — STRU + INPUT + auto-copy PP/orb files
+    """
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== PDB to STRU ===[/bold cyan]")
+    console.print()
+
+    # --- find PDB file ---
+    pdb_path = None
+    if args:
+        for arg in args:
+            if arg.endswith(".pdb") and Path(arg).exists():
+                pdb_path = arg
+                break
+    if pdb_path is None and interactive:
+        pdb_path = _prompt(console, "Path to PDB file")
+        if not pdb_path or not Path(pdb_path).exists():
+            console.print(f"[red]File not found: {pdb_path}[/red]")
+            return
+
+    # --- read PDB ---
+    try:
+        atoms = _read_pdb(pdb_path)
+    except Exception as e:
+        console.print(f"[red]Failed to read PDB file: {e}[/red]")
+        return
+    if atoms is None:
+        console.print("[red]No ATOM/HETATM records found in the PDB file.[/red]")
+        return
+    console.print(f"  [dim]Loaded {len(atoms)} atoms from PDB[/dim]")
+
+    # --- cell / box handling ---
+    if atoms.cell.volume > 1e-6:
+        console.print(f"  [dim]Box from PDB (CRYST1): volume {atoms.cell.volume:.2f} Å³[/dim]")
+    else:
+        side = 15.0
+        if interactive:
+            side_in = _prompt(console, "No box in PDB — cubic box side (Å)", "15")
+            try:
+                side = float(side_in)
+            except (ValueError, TypeError):
+                side = 15.0
+        _center_molecule_in_box(atoms, side)
+        console.print(f"  [dim]Box: {side:.1f} Å cube, molecule centered at "
+                      f"({side / 2:.2f}, {side / 2:.2f}, {side / 2:.2f})[/dim]")
+
+    structure = Structure.from_ase(atoms)
+
+    # --- coordinate type ---
+    if interactive:
+        _choose_coordinate_type(console, structure)
+
+    # --- choose mode ---
+    if interactive:
+        console.print()
+        mode = _prompt_choice(
+            console,
+            "What would you like to do?",
+            [
+                "Just convert structure",
+                "Configure full calculation (STRU + INPUT + files)",
+            ],
+            "Just convert structure",
+        )
+    else:
+        mode = "Just convert structure"
+
+    # --- resolve upf/orb info (标准规范: basis_type decides orbital section) ---
+    if "full" in mode.lower() or "configure" in mode.lower():
+        write_orb = True
+    else:
+        from abacuscopilot.core.standards import is_lcao_basis
+        from abacuscopilot.preprocessing.system_tasks import resolve_basis_type
+        write_orb = is_lcao_basis(resolve_basis_type(structure, interactive))
+
+    _write_stru_bare(structure, is_lcao=write_orb)
+
+    console.print()
+    console.print("[green]✓ STRU file written successfully.[/green]")
+    console.print(f"  {structure.num_atoms} atoms, {structure.num_species} species")
+    console.print(f"  Lattice constant: {structure.lattice.constant:.6f} Bohr")
+    if write_orb:
+        console.print("  [dim]upf/orb filenames resolved from library[/dim]")
+
+    # --- full calculation setup ---
+    if "full" in mode.lower() or "configure" in mode.lower():
+        _run_full_calculation_setup(console, structure, str(pdb_path))

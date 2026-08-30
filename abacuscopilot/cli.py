@@ -6,7 +6,7 @@ task-driven mode (abacuscopilot -task <id> with template defaults).
 Usage:
     abacuscopilot                          # Launch interactive TUI
     abacuscopilot -task 101                # Run task 101 non-interactively (template defaults)
-    abacuscopilot -task 721 --bands OUT.Si/BANDS_1.dat  # Task with args
+    abacuscopilot -task 801 --bands OUT.Si/BANDS_1.dat  # Task with args
     abacuscopilot --list-tasks             # List all registered tasks
     abacuscopilot --version                # Print version
 """
@@ -24,13 +24,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     """Build the main argument parser."""
     parser = argparse.ArgumentParser(
         prog="abacuscopilot",
-        description=f"A pre- and post-processing toolkit for the ABACUS DFT software (v{__version__})",
+        description=f"A pre- and post-processing copilot for the ABACUS DFT software (v{__version__})",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   abacuscopilot                          Launch interactive mode
   abacuscopilot -task 101                Generate SCF INPUT interactively
-  abacuscopilot -task 721 --bands OUT/BANDS_1.dat
+  abacuscopilot -task 801 --bands OUT/BANDS_1.dat
   abacuscopilot --list-tasks             Show all available tasks
         """,
     )
@@ -66,7 +66,7 @@ Examples:
     parser.add_argument(
         "--state",
         action="store_true",
-        help="Show ionic/electronic step summary table (same as task 713)",
+        help="Show ionic/electronic step summary table (same as task 703)",
     )
     parser.add_argument(
         "--md",
@@ -205,7 +205,7 @@ def main(argv: list[str] | None = None):
         registry = TaskRegistry()
         registry.discover_modules()
         try:
-            registry.dispatch(713, args=remaining, interactive=True,
+            registry.dispatch(703, args=remaining, interactive=True,
                             output_dir=args.output_dir)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -216,7 +216,7 @@ def main(argv: list[str] | None = None):
         registry = TaskRegistry()
         registry.discover_modules()
         try:
-            registry.dispatch(714, args=remaining, interactive=True,
+            registry.dispatch(704, args=remaining, interactive=True,
                             output_dir=args.output_dir)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)

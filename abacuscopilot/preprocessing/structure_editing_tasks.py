@@ -61,8 +61,10 @@ def build_supercell(structure: Structure, nx: int, ny: int, nz: int) -> Structur
                     if structure.coordinate_type.startswith("Direct"):
                         new_pos = atom.position / np.array([nx, ny, nz]) + offset / np.array([nx, ny, nz])
                     else:
-                        # Cartesian: translate by the original cell vector
-                        cell = structure.lattice.cell
+                        # Cartesian (Å): translate by the original cell vectors
+                        # in Å — lattice.cell is in Bohr and would overshoot
+                        # the cell (atoms spill outside the supercell).
+                        cell = structure.lattice.cell_angstrom
                         new_pos = atom.position + ix * cell[0] + iy * cell[1] + iz * cell[2]
 
                     new_structure.atoms.append(Atom(
@@ -88,13 +90,15 @@ def task_supercell(args: list[str] | None = None, interactive: bool = True) -> N
     console.print("[bold cyan]=== Build Supercell ===[/bold cyan]")
     console.print()
 
-    # Load STRU
+    # Load STRU (defaults to STRU; interactive mode lets the user pick another file)
     stru_path = "STRU"
     if args:
         for arg in args:
             if Path(arg).exists():
                 stru_path = arg
                 break
+    if interactive:
+        stru_path = _prompt(console, "  Input STRU file", stru_path).strip() or stru_path
 
     try:
         from abacuscopilot.io.stru_file import read_stru
@@ -292,6 +296,8 @@ def task_redefine_lattice(args: list[str] | None = None, interactive: bool = Tru
             if Path(arg).exists():
                 stru_path = arg
                 break
+    if interactive:
+        stru_path = _prompt(console, "  Input STRU file", stru_path).strip() or stru_path
 
     try:
         from abacuscopilot.io.stru_file import read_stru
@@ -395,6 +401,8 @@ def task_coord_convert(args: list[str] | None = None, interactive: bool = True) 
             if Path(arg).exists():
                 stru_path = arg
                 break
+    if interactive:
+        stru_path = _prompt(console, "  Input STRU file", stru_path).strip() or stru_path
 
     try:
         from abacuscopilot.io.stru_file import read_stru
@@ -530,6 +538,8 @@ def task_fix_atoms(args: list[str] | None = None, interactive: bool = True) -> N
             if Path(arg).exists():
                 stru_path = arg
                 break
+    if interactive:
+        stru_path = _prompt(console, "  Input STRU file", stru_path).strip() or stru_path
 
     try:
         from abacuscopilot.io.stru_file import read_stru
@@ -686,6 +696,8 @@ def task_slab_builder(args: list[str] | None = None, interactive: bool = True) -
             if Path(arg).exists():
                 stru_path = arg
                 break
+    if interactive:
+        stru_path = _prompt(console, "  Input STRU file", stru_path).strip() or stru_path
 
     try:
         from abacuscopilot.io.stru_file import read_stru
@@ -718,13 +730,44 @@ def task_slab_builder(args: list[str] | None = None, interactive: bool = True) -
         vacuum = 15.0
 
     try:
-        slab_atoms = ase_surface(atoms, (h, k, l), layers=layers, vacuum=vacuum)
+        slab_atoms = ase_surface(atoms, (h, k, l), layers=layers)
     except Exception as e:
         console.print(f"[red]Failed to build slab: {e}[/red]")
         return
 
+    pos = slab_atoms.get_positions()
+    zmin, zmax = float(pos[:, 2].min()), float(pos[:, 2].max())
+    slab_thick = zmax - zmin
+    layer_d = slab_thick / layers if layers > 0 else 0.0
+
+    # Layer semantics: "N 层" = N repeats of the input cell along the surface
+    # normal — each layer is ONE interplanar spacing d(hkl) thick and carries
+    # the full input cell's atoms (not N atomic planes).
+    console.print(f"  [dim]Layers: each of the {layers} layers is one interplanar "
+                  f"spacing d({h}{k}{l}) = {layer_d:.3f} Å thick, "
+                  f"containing all {len(atoms)} input-cell atoms.[/dim]")
+    console.print(f"  [dim]Total slab thickness: {slab_thick:.2f} Å[/dim]")
+    if slab_thick < 10.0:
+        need = max(1, int(np.ceil(10.0 / layer_d))) if layer_d > 0 else layers
+        console.print(f"  [yellow]Warning: slab is only {slab_thick:.2f} Å thick — "
+                      f"too thin for a meaningful surface model (surface effects "
+                      f"reach through the whole slab).[/yellow]")
+        console.print(f"  [yellow]Consider ~{need} layers (≈10 Å) or a "
+                      f"lower-index surface.[/yellow]")
+
+    # Asymmetric vacuum: 3 Å below (fixed buffer, no prompt) and `vacuum` Å on
+    # top — keeps the slab pinned near the cell bottom so relaxed surface
+    # atoms don't drift toward the top of the cell.
+    vac_bottom = 3.0
+    pos[:, 2] += vac_bottom - zmin
+    slab_atoms.set_positions(pos)
+    cell = slab_atoms.get_cell()
+    cell[2, 2] = slab_thick + vac_bottom + vacuum
+    slab_atoms.set_cell(cell, scale_atoms=False)
+
     console.print(f"  [dim]Slab: {len(slab_atoms)} atoms, "
-                  f"cell = {slab_atoms.cell.cellpar()[:3].round(3)} Å[/dim]")
+                  f"cell = {slab_atoms.cell.cellpar()[:3].round(3)} Å "
+                  f"(vacuum: {vacuum:.1f} Å top, {vac_bottom:.1f} Å bottom)[/dim]")
 
     # Convert to Structure and write
     new_structure = Structure.from_ase(slab_atoms)
@@ -733,6 +776,12 @@ def task_slab_builder(args: list[str] | None = None, interactive: bool = True) -
     new_structure.pseudo_files = dict(structure.pseudo_files) if 'structure' in dir() else {}
     new_structure.orbital_files = dict(structure.orbital_files) if 'structure' in dir() else {}
     new_structure.species_order = list(structure.species_order) if 'structure' in dir() else sorted(set(slab_atoms.get_chemical_symbols()))
+    # from_ase stores fractional positions — convert to Cartesian before
+    # declaring the coordinate type, or the fractions get written as Å
+    # (a "collapsed" slab ~70× too thin).
+    cell_ang = new_structure.lattice.cell_angstrom
+    for atom in new_structure.atoms:
+        atom.position = atom.position @ cell_ang
     new_structure.coordinate_type = "Cartesian_angstrom"
 
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
@@ -741,7 +790,8 @@ def task_slab_builder(args: list[str] | None = None, interactive: bool = True) -
     _write_stru_bare(new_structure, is_lcao=is_lcao, filepath=out_path)
 
     console.print()
-    console.print(f"[green]✓ Slab written to {out_path} ({h}{k}{l} surface, {layers} layers, {vacuum:.1f} Å vacuum).[/green]")
+    console.print(f"[green]✓ Slab written to {out_path} ({h}{k}{l} surface, {layers} layers, "
+                  f"{vacuum:.1f} Å vacuum on top, {vac_bottom:.1f} Å below).[/green]")
     console.print("   Original STRU is unchanged.")
     console.print(f"  Atoms: {len(slab_atoms)}, formula: {slab_atoms.get_chemical_formula()}")
     console.print()
@@ -768,6 +818,8 @@ def task_vacuum_layer(args: list[str] | None = None, interactive: bool = True) -
             if Path(arg).exists():
                 stru_path = arg
                 break
+    if interactive:
+        stru_path = _prompt(console, "  Input STRU file", stru_path).strip() or stru_path
 
     try:
         from abacuscopilot.io.stru_file import read_stru
@@ -839,6 +891,8 @@ def task_shift_atoms(args: list[str] | None = None, interactive: bool = True) ->
             if Path(arg).exists():
                 stru_path = arg
                 break
+    if interactive:
+        stru_path = _prompt(console, "  Input STRU file", stru_path).strip() or stru_path
 
     try:
         from abacuscopilot.io.stru_file import read_stru
@@ -941,6 +995,8 @@ def task_sort_atoms(args: list[str] | None = None, interactive: bool = True) -> 
             if Path(arg).exists():
                 stru_path = arg
                 break
+    if interactive:
+        stru_path = _prompt(console, "  Input STRU file", stru_path).strip() or stru_path
 
     try:
         from abacuscopilot.io.stru_file import read_stru
@@ -1009,6 +1065,8 @@ def task_reorder_species(args: list[str] | None = None, interactive: bool = True
             if Path(arg).exists():
                 stru_path = arg
                 break
+    if interactive:
+        stru_path = _prompt(console, "  Input STRU file", stru_path).strip() or stru_path
 
     try:
         from abacuscopilot.io.stru_file import read_stru
@@ -1079,4 +1137,141 @@ def task_reorder_species(args: list[str] | None = None, interactive: bool = True
     console.print(f"[green]✓ Reordered: {'  '.join(old_order)} → {'  '.join(new_order)}[/green]")
     console.print(f"   Written to {out_path}")
     console.print("   Original STRU is unchanged.")
+    console.print()
+
+# =============================================================================
+# =============================================================================
+# Task 410: XYZ transform — reorder lattice vectors (move any vector to
+# the a or b row).  The FFT grid follows the lattice
+# basis, so what matters for efficiency is which ROW the long vector occupies
+# (user manual 2.2.4/2.2.5: vacuum on the c row is up to 3× slower).
+# =============================================================================
+
+@task(410, category="Structure Editing", name="XYZ Transform",
+      description="Reorder lattice vectors — move any lattice vector to the "
+                  "a or b row — improves ABACUS FFT parallel efficiency "
+                  "(user manual 2.2.4/2.2.5)")
+def task_xyz_transform(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Reorder the cell basis: move any lattice vector to the a (X) or b (Y) row.
+
+    This is a PERMUTATION of the lattice-vector rows plus the matching
+    fractional-coordinate columns — the physical crystal is unchanged.  The
+    FFT real-space grid is defined on the lattice basis, so keeping long
+    lattice vectors off the third (c) row improves parallel efficiency.
+    """
+    console = _get_console()
+
+    console.print()
+    console.print("[bold cyan]=== XYZ Coordinate Transform ===[/bold cyan]")
+    console.print()
+
+    stru_path = "STRU"
+    if args:
+        for arg in args:
+            if Path(arg).exists():
+                stru_path = arg
+                break
+    if interactive:
+        stru_path = _prompt(console, "  Input STRU file", stru_path).strip() or stru_path
+
+    try:
+        from abacuscopilot.io.stru_file import read_stru
+        structure = read_stru(stru_path)
+    except Exception as e:
+        console.print(f"[red]Failed to read STRU: {e}[/red]")
+        return
+
+    cell = structure.lattice.cell_angstrom
+    lengths = np.linalg.norm(cell, axis=1)
+    console.print(f"  [dim]Loaded {structure.num_atoms} atoms from {stru_path}[/dim]")
+    console.print("  Current lattice lengths (Å):")
+    console.print(f"    a = {lengths[0]:.6f}   b = {lengths[1]:.6f}   c = {lengths[2]:.6f}")
+
+    long_idx = int(np.argmax(lengths))
+    long_label = "abc"[long_idx]
+    console.print(f"  [bold]Longest lattice vector: {long_label} "
+                  f"({lengths[long_idx]:.6f} Å)[/bold]")
+
+    if interactive:
+        src = _prompt(
+            console, "  Which lattice vector to move (a/b/c)", long_label
+        ).strip().lower()
+    else:
+        src = long_label
+    if src not in ("a", "b", "c"):
+        console.print("[red]Source vector must be a, b or c.[/red]")
+        return
+    src_idx = "abc".index(src)
+    if interactive:
+        target = _prompt(
+            console, "  Move to which row? (a=X / b=Y) [X]: ", "X"
+        ).strip().upper()
+    else:
+        target = "X"
+    if target not in ("X", "Y"):
+        console.print("[red]Target must be X (a row) or Y (b row).[/red]")
+        return
+    target_row = 0 if target == "X" else 1
+
+    # --- Permute rows: move the chosen vector to the target row ---
+    order = [0, 1, 2]
+    order.pop(src_idx)
+    order.insert(target_row, src_idx)
+
+    new_vectors = np.array(structure.lattice.vectors)[order].copy()
+    flip_col = -1
+    if np.linalg.det(new_vectors) < 0:
+        # Keep a right-handed cell: negate the third vector (and its column)
+        new_vectors[2] *= -1.0
+        flip_col = 2
+
+    from abacuscopilot.core.constants import ANGSTROM_TO_BOHR
+
+    new_structure = Structure()
+    new_structure.coordinate_type = "Direct"
+    new_structure.species_order = list(structure.species_order)
+    new_structure.magnetism = dict(structure.magnetism)
+    new_structure.pseudo_files = dict(structure.pseudo_files)
+    new_structure.orbital_files = dict(structure.orbital_files)
+    new_structure.lattice = Lattice(
+        constant=structure.lattice.constant,
+        vectors=new_vectors,
+    )
+
+    cell_bohr = structure.lattice.cell
+    for atom in structure.atoms:
+        if structure.coordinate_type.startswith("Direct"):
+            f = atom.position.copy()
+        elif structure.coordinate_type == "Cartesian_angstrom":
+            f = np.linalg.solve(cell_bohr.T, atom.position * ANGSTROM_TO_BOHR)
+        else:
+            f = np.linalg.solve(cell_bohr.T, atom.position.copy())
+        f_new = f[order]
+        if flip_col >= 0:
+            f_new[flip_col] = (-f_new[flip_col]) % 1.0
+        new_structure.atoms.append(Atom(
+            species=atom.species, position=f_new, fix=atom.fix, magmom=atom.magmom,
+            velocity=atom.velocity, angle1=atom.angle1, angle2=atom.angle2,
+        ))
+
+    out_name = "Rotated.STRU"
+    from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
+    is_lcao = is_lcao_basis(_resolve_bt(structure, interactive))
+    _write_stru_bare(new_structure, is_lcao=is_lcao, filepath=out_name)
+
+    new_cell = new_structure.lattice.cell_angstrom
+    console.print()
+    console.print(f"  [green]✓ Written to {out_name}[/green] "
+                  f"(original {stru_path} unchanged)")
+    console.print("  New lattice vectors (Å):")
+    for i, row in enumerate(new_cell):
+        console.print(f"    {'abc'[i]} = [{row[0]:.6f}  {row[1]:.6f}  {row[2]:.6f}]")
+    console.print(f"  [bold]Vector {src} is now the {'ab'[target_row]} vector "
+                  f"(row {target_row + 1}).[/bold]")
+    console.print("  [dim]Note: this is a lattice-vector reordering, not a rotation —[/dim]")
+    console.print("  [dim]the crystal is unchanged. The FFT real-space grid follows[/dim]")
+    console.print("  [dim]the lattice basis — keeping long lattice vectors off the[/dim]")
+    console.print("  [dim]third row improves ABACUS parallel efficiency (manual[/dim]")
+    console.print("  [dim]2.2.4/2.2.5).[/dim]")
+    console.print("  [yellow]Gamma/MP k-points are unaffected (fractional coords).[/yellow]")
     console.print()

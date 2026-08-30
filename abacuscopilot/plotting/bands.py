@@ -146,64 +146,97 @@ def read_bands_with_kpt(
         # Use k-distances from the BANDS file (column 1 = ABACUS-computed path length)
         k_distances = k_distances_raw
 
-        # Map labels to k-distances based on cumulative npoints per segment
-        cum_kpt = 0
+        # Compute label positions from the DECLARED KPT segments (fractional
+        # coordinates), scaled so the path end matches the BANDS k-axis.  The
+        # BANDS column can be locally wrong (e.g. ABACUS mishandles 1-point
+        # segments), so anchors come from the declared path, not raw k-values.
+        seg_frac_pos = []
+        cum_frac = 0.0
+        for seg in kpt.line_path:
+            start = np.asarray(seg.get("start"), dtype=float)
+            end = np.asarray(seg.get("end"), dtype=float)
+            if start.size == 3 and end.size == 3:
+                cum_frac += float(np.linalg.norm(end - start))
+            seg_frac_pos.append(cum_frac)
+        total_frac = seg_frac_pos[-1] if seg_frac_pos else 0.0
+        scale = float(k_distances[-1] / total_frac) if total_frac > 1e-12 else 1.0
+
+        # Map labels to their declared segment-start distance
         for i, seg in enumerate(kpt.line_path):
-            npts = seg.get("npoints", 20)
             label = seg.get("label", "")
             if label:
                 labels.append(label)
-                label_positions.append(float(k_distances[cum_kpt]))
-            cum_kpt += npts
-
+                pos = seg_frac_pos[i - 1] if i > 0 else 0.0
+                label_positions.append(pos * scale)
         # Add final label
         if kpt.line_path:
             end_label = kpt.line_path[-1].get("end_label", "")
-            if end_label and cum_kpt < len(k_distances):
+            if end_label:
                 labels.append(end_label)
-                label_positions.append(float(k_distances[min(cum_kpt, len(k_distances) - 1)]))
+                label_positions.append(total_frac * scale)
     else:
         k_distances = k_distances_raw if k_distances_raw.size > 0 else np.arange(nkpts, dtype=float)
 
     return k_distances, energies, e_fermi, labels, label_positions
 
 
-def _insert_path_breaks(k_dists: np.ndarray, energies: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _insert_path_breaks(
+    k_dists: np.ndarray,
+    energies: np.ndarray,
+    detect_jumps: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
     """Insert NaN breaks at k-path discontinuities (seekpath ``Z|X``-style jumps).
 
-    When consecutive k-points share the same k-distance, the second one is a
-    path-discontinuity connector.  We *drop* that duplicate point entirely and
-    replace it with NaN so matplotlib breaks the line both before AND after
-    the jump, preventing a meaningless straight line across the gap (e.g. the
-    Z→X or R→M segments that have zero intermediate k-points).
+    Two discontinuity shapes are handled:
+    - duplicate k-distance (jump connectors listed twice) — the duplicate
+      point is dropped and replaced by NaN;
+    - a pure jump much larger than the local sampling spacing
+      (``detect_jumps=True``) — a NaN is inserted between the two sides and
+      no data is dropped.
+
+    Either way matplotlib breaks the line at the junction, preventing a
+    meaningless straight line across the gap.
     """
     diffs = np.diff(k_dists)
-    breaks = np.where(diffs < 1e-10)[0]  # indices i where k_dists[i]==k_dists[i+1]
+    breaks = np.where(diffs < 1e-10)[0]  # duplicate connectors
+    if detect_jumps:
+        pos = diffs[diffs > 1e-10]
+        if pos.size >= 3:
+            med = float(np.median(pos))
+            breaks = np.concatenate(
+                [breaks, np.where(diffs > 5.0 * med)[0]]
+            )
     if len(breaks) == 0:
         return k_dists, energies
+    breaks = np.unique(breaks)
 
     nkpts = len(k_dists)
     nbands = energies.shape[0]
-    # Each break removes the duplicate point (brk+1) and inserts a NaN in its place.
-    # Net length change = 0 (remove 1, add 1).
-    new_n = nkpts
+    # A duplicate break drops one point and adds one NaN (net 0); a pure jump
+    # adds one NaN (net +1).
+    n_pure = int(np.sum(np.abs(k_dists[breaks + 1] - k_dists[breaks]) > 1e-10))
+    new_n = nkpts + n_pure
     new_k = np.empty(new_n, dtype=k_dists.dtype)
     new_e = np.empty((nbands, new_n), dtype=energies.dtype)
 
     src = 0
     dst = 0
     for brk in breaks:
+        if brk < src:
+            continue  # already consumed by an adjacent earlier break
         # Copy all points up to and including brk (the last point before the jump)
         ncopy = brk - src + 1
         new_k[dst:dst + ncopy] = k_dists[src:src + ncopy]
         new_e[:, dst:dst + ncopy] = energies[:, src:src + ncopy]
         dst += ncopy
-        # Replace the duplicate point (src + ncopy = brk+1) with NaN
+        # Break the line here
         new_k[dst] = np.nan
         new_e[:, dst] = np.nan
         dst += 1
-        # Skip the duplicate point in the source arrays
-        src = brk + 2
+        if abs(k_dists[brk + 1] - k_dists[brk]) < 1e-10:
+            src = brk + 2  # drop the duplicate connector point
+        else:
+            src = brk + 1  # keep the point after a pure jump
 
     # Copy remaining points (if any)
     remaining = nkpts - src
@@ -215,7 +248,7 @@ def _insert_path_breaks(k_dists: np.ndarray, energies: np.ndarray) -> tuple[np.n
 
 
 # Gap width between k-path segments at a discontinuity (in normalised units).
-_PATH_BREAK_GAP = 0.03
+_PATH_BREAK_GAP = 0.0
 
 
 def _compress_path_breaks(
@@ -253,8 +286,10 @@ def _compress_path_breaks(
     nbands = energies.shape[0]
 
     # Build compressed arrays: each segment's original x-range is normalised
-    # to its original span, then shifted so segments are adjacent.
-    new_n = sum(end - start for start, end in segments)
+    # to its original span, then shifted so segments are adjacent.  A NaN
+    # separator is kept between runs so line plots break cleanly at the
+    # junction instead of drawing a vertical connector across the gap.
+    new_n = sum(end - start for start, end in segments) + (len(segments) - 1)
     new_k = np.empty(new_n, dtype=k_dists.dtype)
     new_e = np.empty((nbands, new_n), dtype=energies.dtype)
     label_map: dict[int, float] = {}
@@ -262,6 +297,11 @@ def _compress_path_breaks(
     dst = 0
     prev_k_end = 0.0
     for seg_idx, (seg_start, seg_end) in enumerate(segments):
+        if seg_idx > 0:
+            new_k[dst] = np.nan
+            new_e[:, dst] = np.nan
+            dst += 1
+            prev_k_end += _PATH_BREAK_GAP
         seg_len = seg_end - seg_start
         seg_k = k_dists[seg_start:seg_end]        # original x-values
         seg_e = energies[:, seg_start:seg_end]     # (nbands, seg_len)
@@ -275,8 +315,6 @@ def _compress_path_breaks(
         else:
             seg_norm = np.zeros(seg_len)
 
-        if seg_idx > 0:
-            prev_k_end += _PATH_BREAK_GAP
         new_seg = seg_norm * seg_span + prev_k_end
 
         new_k[dst:dst + seg_len] = new_seg
@@ -287,6 +325,87 @@ def _compress_path_breaks(
         prev_k_end = float(new_seg[-1])
 
     return new_k, new_e, label_map
+
+
+
+def _remap_label_positions(
+    positions: list[float],
+    k_old: np.ndarray,
+    k_new: np.ndarray,
+    label_map: dict[float, float],
+) -> list[float]:
+    """Map label positions from the pre-compression k-axis to the compressed axis.
+
+    Positions inside a continuous run shift by the run's offset (slope 1).
+    Positions that fall in a collapsed gap snap to the nearest run boundary —
+    with ``_PATH_BREAK_GAP == 0`` the two boundaries coincide, so labels on
+    either side of a missing segment (e.g. ``X`` and ``R``) land on the same
+    x-position, where the caller merges them into ``X|R``.
+    """
+    mask = ~np.isnan(k_old)
+    runs = []
+    i, n = 0, len(k_old)
+    while i < n:
+        while i < n and not mask[i]:
+            i += 1
+        if i >= n:
+            break
+        s = i
+        while i < n and mask[i]:
+            i += 1
+        runs.append((s, i))
+    run_starts_new = [
+        label_map.get(float(k_old[s]), float(k_new[s])) for s, _ in runs
+    ]
+    span_new = float(k_new[-1] - k_new[0]) if k_new.size else 0.0
+    eps_b = 0.005 * span_new if span_new > 0.0 else 0.0
+    out = []
+    for p in positions:
+        new_p = None
+        for (s, e), start_new in zip(runs, run_starts_new):
+            if k_old[s] - 1e-12 <= p <= k_old[e - 1] + 1e-12:
+                new_p = start_new + (p - k_old[s])
+                break
+        if new_p is None:
+            # p lies in a collapsed gap -> snap to the nearest run boundary
+            best = None
+            for (s, e), start_new in zip(runs, run_starts_new):
+                end_new = start_new + (k_old[e - 1] - k_old[s])
+                for d, pos in ((abs(p - k_old[s]), start_new),
+                               (abs(p - k_old[e - 1]), end_new)):
+                    if best is None or d < best[0]:
+                        best = (d, pos)
+            new_p = best[1]
+        # Snap labels that sit just inside a run onto the run boundary (e.g. a
+        # segment-start label a hair past the first data point), so labels on
+        # either side of a collapsed gap coincide exactly and merge into X|R.
+        for (s, e), start_new in zip(runs, run_starts_new):
+            end_new = start_new + (k_old[e - 1] - k_old[s])
+            if abs(new_p - start_new) <= eps_b:
+                new_p = start_new
+                break
+            if abs(new_p - end_new) <= eps_b:
+                new_p = end_new
+                break
+        out.append(float(new_p))
+    return out
+
+
+def _merge_coincident_ticks(
+    positions: list[float],
+    labels: list[str],
+) -> tuple[list[float], list[str]]:
+    """Merge ticks that coincide (e.g. ``X`` and ``R`` on either side of a
+    collapsed gap) into a single joined label like ``X|R``."""
+    merged_pos: list[float] = []
+    merged_lab: list[str] = []
+    for p, lab in zip(positions, labels):
+        if merged_pos and abs(p - merged_pos[-1]) <= 1e-6:
+            merged_lab[-1] = f"{merged_lab[-1]}|{lab}"
+        else:
+            merged_pos.append(float(p))
+            merged_lab.append(lab)
+    return merged_pos, merged_lab
 
 
 def plot_bands(
@@ -339,8 +458,29 @@ def plot_bands(
     # Shift energies to E_Fermi = 0
     energies_shifted = energies - e_fermi
 
-    # Break lines at path discontinuities (seekpath Z|X / R|M jumps)
-    k_dists_plot, energies_plot = _insert_path_breaks(k_dists, energies_shifted)
+    # Break lines at path discontinuities (seekpath Z|X / R|M jumps), then
+    # compress the gaps so missing k-ranges don't render as blank regions.
+    # Pure jumps are only guessed from the k-column when the declared path is
+    # uniformly sampled (mixed npoints e.g. 2-point connectors would look like
+    # jumps otherwise).
+    if isinstance(kpt, (str, Path)):
+        from abacuscopilot.io.kpt_file import read_kpt
+        try:
+            kpt_obj = read_kpt(kpt)
+        except Exception:
+            kpt_obj = None
+    else:
+        kpt_obj = kpt
+    detect_jumps = bool(
+        kpt_obj is not None
+        and kpt_obj.mode in ("line", "line_cartesian")
+        and kpt_obj.line_path
+        and len({seg.get("npoints", 20) for seg in kpt_obj.line_path}) == 1
+    )
+    k_brk, energies_brk = _insert_path_breaks(
+        k_dists, energies_shifted, detect_jumps=detect_jumps
+    )
+    k_dists_plot, energies_plot, label_map = _compress_path_breaks(k_brk, energies_brk)
     nbands_plot = energies_plot.shape[0]
 
     # Plot each band
@@ -355,12 +495,18 @@ def plot_bands(
     # High-symmetry labels — replace GAMMA with Γ
     if labels and label_positions:
         display_labels = [lab.replace("GAMMA", "Γ") for lab in labels]
+        label_positions = _remap_label_positions(
+            label_positions, k_brk, k_dists_plot, label_map
+        )
+        label_positions, display_labels = _merge_coincident_ticks(
+            label_positions, display_labels
+        )
         ax.set_xticks(label_positions)
         ax.set_xticklabels(display_labels)
         for pos in label_positions:
             ax.axvline(x=pos, color="gray", linestyle="-", linewidth=0.5, alpha=0.5)
         # Trim x-axis to data range (no empty space on sides)
-        ax.set_xlim(k_dists[0], k_dists[-1])
+        ax.set_xlim(k_dists_plot[0], k_dists_plot[-1])
     else:
         ax.set_xticks([])
 
@@ -437,6 +583,29 @@ def plot_fatbands(
     nbands, nkpts = energies.shape
     energies_shifted = energies - e_fermi
 
+    # Break at path discontinuities and compress gaps (same as plot_bands) so
+    # missing k-ranges don't render as blank regions.  Pure jumps are only
+    # guessed from the k-column when the declared path is uniformly sampled
+    # (mixed npoints e.g. 2-point connectors would look like jumps otherwise).
+    if isinstance(kpt, (str, Path)):
+        from abacuscopilot.io.kpt_file import read_kpt
+        try:
+            kpt_obj = read_kpt(kpt)
+        except Exception:
+            kpt_obj = None
+    else:
+        kpt_obj = kpt
+    detect_jumps = bool(
+        kpt_obj is not None
+        and kpt_obj.mode in ("line", "line_cartesian")
+        and kpt_obj.line_path
+        and len({seg.get("npoints", 20) for seg in kpt_obj.line_path}) == 1
+    )
+    k_brk, energies_brk = _insert_path_breaks(
+        k_dists, energies_shifted, detect_jumps=detect_jumps
+    )
+    k_dists_plot, energies_plot, label_map = _compress_path_breaks(k_brk, energies_brk)
+
     # Try to read projected weights
     proj_data = _read_proj_bands(proj_path)
 
@@ -447,24 +616,41 @@ def plot_fatbands(
         # proj_data: dict[species -> (nbands, nkpts) weights]
         fig, ax = plt.subplots()
 
-        for species, weights in proj_data.items():
-            color = species_colors.get(species)
+        palette = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        for si, (species, weights) in enumerate(proj_data.items()):
+            # Apply the same break/compress transform to the projection weights
+            _, weights_plot = _insert_path_breaks(
+                k_dists, weights, detect_jumps=detect_jumps
+            )
+            _, weights_plot, _ = _compress_path_breaks(k_brk, weights_plot)
+            color = species_colors.get(species, palette[si % len(palette)])
             for ib in range(nbands):
-                if np.any(weights[ib] > 0.01):
-                    widths = np.maximum(weights[ib] * linewidth, 0.0)
-                    ax.scatter(k_dists, energies_shifted[ib], s=widths * 10,
-                              c=color if color else None, alpha=0.6, linewidths=0,
-                              label=species if ib == 0 else "")
+                if np.any(weights_plot[ib] > 0.01):
+                    widths = np.nan_to_num(np.maximum(weights_plot[ib] * linewidth, 0.0), nan=0.0)
+                    ax.scatter(k_dists_plot, energies_plot[ib], s=widths * 10,
+                              c=color, alpha=0.6, linewidths=0,
+                              label=species)
 
-        # Deduplicate legend
+        # Deduplicate legend, and give legend markers a representative size —
+        # data markers are size-coded by projection weight, so any single
+        # collection's size looks arbitrary next to the plot.
         handles, labels_ = ax.get_legend_handles_labels()
         by_label = dict(zip(labels_, handles))
         if by_label:
-            ax.legend(by_label.values(), by_label.keys(), loc="upper right")
+            all_sizes = np.concatenate(
+                [c.get_sizes() for c in ax.collections if hasattr(c, "get_sizes")]
+            )
+            med_size = float(np.nanmedian(all_sizes)) if all_sizes.size else 10.0
+            leg = ax.legend(by_label.values(), by_label.keys(), loc="upper right")
+            # Resize only the legend's own handle copies — never the data
+            # collections (their per-point sizes encode projection weights).
+            for h in leg.legend_handles:
+                if hasattr(h, "set_sizes"):
+                    h.set_sizes([med_size])
     else:
         # Fallback: simple line plot with wider lines
         fig, ax = plt.subplots()
-        ax.plot(k_dists, energies_shifted.T, linewidth=linewidth, alpha=0.7)
+        ax.plot(k_dists_plot, energies_plot.T, linewidth=linewidth, alpha=0.7)
         ax = fig.axes[0]
 
     # Fermi level
@@ -473,11 +659,17 @@ def plot_fatbands(
     # Symmetry labels — replace GAMMA with Γ
     if labels and label_positions:
         display_labels = [lab.replace("GAMMA", "Γ") for lab in labels]
+        label_positions = _remap_label_positions(
+            label_positions, k_brk, k_dists_plot, label_map
+        )
+        label_positions, display_labels = _merge_coincident_ticks(
+            label_positions, display_labels
+        )
         ax.set_xticks(label_positions)
         ax.set_xticklabels(display_labels)
         for pos in label_positions:
             ax.axvline(x=pos, color="gray", linestyle=":", linewidth=0.5, alpha=0.5)
-        ax.set_xlim(k_dists[0], k_dists[-1])
+        ax.set_xlim(k_dists_plot[0], k_dists_plot[-1])
     else:
         ax.set_xticks([])
 

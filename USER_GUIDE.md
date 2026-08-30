@@ -1,6 +1,6 @@
 # AbacusCopilot 使用指南
 
-> **版本**: v0.1.0 (2026-07-06)  
+> **版本**: v0.1.33 (2026-08-31)  
 > **开发者**: Xu Yang (xuyangmark@foxmail.com)、Rong-yu Zhang  
 > **简介**: AbacusCopilot 是 ABACUS DFT 软件的前后处理 CLI 工具包，灵感来源于 VASPKIT。
 
@@ -13,23 +13,23 @@
 3. [交互式菜单](#3-交互式菜单)
 4. [命令行模式](#4-命令行模式)
 5. [INPUT 文件生成 (任务 101–109)](#5-input-文件生成)
-6. [STRU 结构文件 (任务 201–205)](#6-stru-结构文件)
+6. [STRU 结构文件 (任务 201–210)](#6-stru-结构文件)
 7. [K 点生成 (任务 301–304)](#7-k-点生成)
 8. [结构编辑 (任务 401–408)](#8-结构编辑)
 9. [对称性分析 (任务 501–502)](#9-对称性分析)
 10. [批处理 (任务 601–604)](#10-批处理)
-11. [SCF 分析 (任务 711–713)](#11-scf-分析)
+11. [SCF 分析 (任务 701–703)](#11-scf-分析)
 12. [能带结构 (任务 801–802)](#12-能带结构)
 13. [态密度 DOS/PDOS (任务 901–903)](#13-态密度-dospdos)
 14. [电荷密度 (任务 1001–1003)](#14-电荷密度)
 15. [功函数 (任务 1101–1102)](#15-功函数)
 16. [力学性质 (任务 1201–1202)](#16-力学性质)
-17. [布居分析 (任务 1301–1303)](#17-布居分析)
-18. [MD 轨迹分析 (任务 1401–1408)](#18-md-轨迹分析)
-19. [反应动力学 (任务 1601–1602)](#19-反应动力学)
+17. [布居分析 (任务 1301)](#17-布居分析)
+18. [MD 轨迹分析 (任务 3101–3108)](#18-md-轨迹分析)
+19. [反应动力学 (任务 3301–3302)](#19-反应动力学)
 20. [配置文件](#20-配置文件)
 21. [常见问题](#21-常见问题)
-22. [系统与配置 (任务 9901–9908)](#22-系统与配置)
+22. [系统与配置 (任务 9901–9904, 9906)](#22-系统与配置)
 
 ---
 
@@ -52,7 +52,7 @@ bash setup.sh
 
 ```bash
 abacuscopilot
-# 首次运行自动进入 System Setup (任务 1501)
+# 首次运行自动进入 System Setup (任务 3201)
 # 或手动: abacuscopilot -task 9901
 ```
 
@@ -60,8 +60,13 @@ abacuscopilot
 
 ```yaml
 libraries:
-  pseudo_library: /path/to/pseudopotentials
-  orbital_library: /path/to/orbitals
+  # 支持单个目录或目录列表(按序查找,自动检测 PP-Orb/ 下的库,失效路径自动剔除)
+  pseudo_library:
+    - /path/to/pseudopotentials
+    - /path/to/lanthanides
+  orbital_library:
+    - /path/to/orbitals
+    - /path/to/lanthanides
 paths:
   abacus_binary: abacus
   mpirun: mpirun
@@ -72,6 +77,12 @@ defaults:
   calculation: scf
   basis_type: pw
 ```
+
+赝势/轨道库放在项目根目录 `PP-Orb/` 下(如 `SG15-Version1p0_Pseudopotential`、
+`SG15-Version1p0__StandardOrbitals-Version2p0`、`lanthanides-f--core.icmod1`),
+首次运行自动检测。文件名大小写不敏感,容忍 `Sm3+_…` 这种带价态前缀的命名;
+库支持递归查找(APNS 镧系包的 `{元素}/{基组}/` 嵌套布局可直接用)。当一个元素
+有多个轨道时默认优先 DZP 基组 `4s2p2d1f` @ 7 au。
 
 ---
 
@@ -90,10 +101,10 @@ abacuscopilot -task 301                      # 自动 MP 网格
 abacuscopilot -task 101 --basis pw          # PW basis SCF
 
 # 4. 检查计算结果
-abacuscopilot -task 713                      # 查看收敛状态
+abacuscopilot -task 703                      # 离子/电子步汇总
 
 # 5. 分析 SCF 收敛
-abacuscopilot -task 711                      # 能量收敛曲线
+abacuscopilot -task 701                      # 能量收敛曲线
 
 # 6. 画能带
 abacuscopilot -task 801                      # 能带图
@@ -252,7 +263,7 @@ abacuscopilot -task 110 --basis pw --images 7
 
 **NEB 工作流**：
 1. 准备初态 (`STRU_ini` 或 `init/STRU`) 和末态 (`STRU_fin` 或 `final/STRU`)
-2. `abacuscopilot -task 1601` 或 `1602` 生成 NEB 路径
+2. `abacuscopilot -task 3301` 或 `3302` 生成 NEB 路径
 3. `abacuscopilot -task 110` 生成 INPUT
 4. 将 INPUT/KPT 复制到每个 `00/` → `NN/` 目录及初末态目录
 
@@ -288,7 +299,7 @@ abacuscopilot -task 109    # 自动扫描 ecutwfc_*/ kspacing_*/
 
 ## 6. STRU 结构文件
 
-任务号 201–205。
+任务号 201–210。
 
 ### 201 — CIF to STRU
 
@@ -324,14 +335,40 @@ abacuscopilot -task 204    # STRU → CIF
 abacuscopilot -task 205    # STRU → POSCAR
 ```
 
-### 206 — View Structure
+### 206 — STRU to PDB
+
+```bash
+abacuscopilot -task 206    # STRU → PDB (VMD/PyMOL)
+```
+
+### 207 — PDB to STRU(分子)
+
+```bash
+abacuscopilot -task 207 water.pdb   # PDB → STRU
+```
+
+孤立分子用(如 H2O)。PDB 自带 CRYST1 盒子则沿用;否则输入立方盒子边长(默认 15 Å),分子自动居中到盒子中心。
+
+### 208 — STRU to LAMMPS
+
+```bash
+abacuscopilot -task 208    # STRU → LAMMPS data 文件
+```
+
+### 209 — LAMMPS to STRU
+
+```bash
+abacuscopilot -task 209    # LAMMPS data → STRU
+```
+
+### 210 — View Structure
 
 在 ASE 3D 交互式窗口中可视化结构。
 
 ```bash
-abacuscopilot -task 206          # 自动检测 STRU/POSCAR/CONTCAR/*.cif
-abacuscopilot -task 206 STRU     # 指定 STRU 文件
-abacuscopilot -task 206 POSCAR   # 指定 POSCAR 文件
+abacuscopilot -task 210          # 自动检测 STRU/POSCAR/CONTCAR/*.cif
+abacuscopilot -task 210 STRU     # 指定 STRU 文件
+abacuscopilot -task 210 POSCAR   # 指定 POSCAR 文件
 ```
 
 **依赖**: `pip install ase pyqt5`
@@ -514,12 +551,12 @@ abacuscopilot -task 604    # 批量提交子目录任务
 
 ## 11. SCF 分析
 
-任务号 711–713。
+任务号 701–704。
 
-### 711 — SCF Convergence
+### 701 — SCF Convergence
 
 ```bash
-abacuscopilot -task 711
+abacuscopilot -task 701
 ```
 
 解析 `running_*.log`，显示步数、能量、收敛状态。可选画收敛图。
@@ -528,21 +565,29 @@ abacuscopilot -task 711
 - 支持 `E_KohnSham` 格式
 - 能量自动识别 Ry/eV 单位
 
-### 712 — SCF Compare
+### 702 — SCF Compare
 
 ```bash
-abacuscopilot -task 712    # 比较多个 SCF 结果
+abacuscopilot -task 702    # 比较多个 SCF 结果
 ```
 
 自动发现 `kspacing_*/` 或 `ecutwfc_*/` 目录，生成对比表格。
 
-### 713 — Calc Status
+### 703 — Ion Steps
 
 ```bash
-abacuscopilot -task 713    # 快速检查计算是否完成
+abacuscopilot -task 703    # 离子步汇总表 (relax/MD/SCF)
 ```
 
 显示完成状态、收敛、能量、原子数。
+
+### 704 — MD Monitor
+
+```bash
+abacuscopilot -task 704    # 实时监控 MD 模拟
+```
+
+实时显示 MD 步数、能量、温度。
 
 ---
 
@@ -616,22 +661,33 @@ abacuscopilot -task 1002   # CHGCAR → Cube/XSF
 abacuscopilot -task 1003   # 差分电荷密度
 ```
 
+Δρ = ρ(AB) − ρ(A) − ρ(B)。依次输入三个体系的电荷密度文件路径。
+
+**输入格式支持两种**（自动识别）：
+
+1. **Gaussian Cube 文本**（ABACUS `out_chg 1` 输出的 `OUT.*/SPIN*_CHG.cube`）。
+2. **ABACUS 二进制 rhog 重启文件**（`OUT.*/ABACUS-CHARGE-DENSITY.restart`，或拷贝改名后的 `CHG`/`chg1` 等）。无需重新计算，直接读 SCF 生成的二进制电荷密度。
+
+三个体系的 FFT 网格需一致（否则自动重采样到 ρ(AB) 的网格）。结果写入 `diff_charge_density.cube`，用 VESTA/Jmol 打开。
+
 ---
 
 ## 15. 功函数
 
-任务号 1101–1102。
+> ⏳ **待开发 (coming soon)**：任务 1101–1102 功能可用性尚未验证，当前已隐藏（交互菜单进入 `11) Work Function Analysis` 会显示"此模块待开发"）。验证通过后重新开放。
+
+任务号 1101–1102（预留）。
 
 ### 1101 — Work Function
 
 ```bash
-abacuscopilot -task 1101   # 功函数计算
+abacuscopilot -task 1101   # 功函数计算（待开发）
 ```
 
 ### 1102 — Macroscopic Avg
 
 ```bash
-abacuscopilot -task 1102   # 宏观平均法功函数
+abacuscopilot -task 1102   # 宏观平均法功函数（待开发）
 ```
 
 ---
@@ -656,7 +712,7 @@ abacuscopilot -task 1202   # 状态方程拟合 (Birch-Murnaghan)
 
 ## 17. 布居分析
 
-任务号 1301–1303。
+任务号 1301。
 
 ### 1301 — Mulliken Analysis
 
@@ -664,79 +720,82 @@ abacuscopilot -task 1202   # 状态方程拟合 (Birch-Murnaghan)
 abacuscopilot -task 1301
 ```
 
-### 1302 — Lowdin Analysis
+> 注 1:键级分析(任务 **1401 Mulliken Bond Order**,即 Mulliken 重叠布居类型,来自 ABACUS `out_mul 1`)已独立为主菜单 **`14) Bond Order`** 模块。后续 Mayer/Wiberg 等其他键级类型可在 1402 之后追加。
+>
+> 注 2:Lowdin(原 1302)已移除——ABACUS v3.10 不输出 Lowdin 数据,无法分析。
 
-```bash
-abacuscopilot -task 1302
-```
+### Bader(1304)/ Hirshfeld(1305)/ RESP(1306)均已隐藏
 
-### 1303 — Bond Order
-
-```bash
-abacuscopilot -task 1303
-```
+> **Bader (1304)**:ABACUS `SPIN1_CHG.cube` 数据是 z-fastest 循环,读取器曾按标准 x-fastest 解析导致密度错位、Bader 电荷错误(水 O=8/H=0);转置修复后网格仍难分辨 H 小盆地。下架待修。
+>
+> **Hirshfeld (1305)**:ABACUS v3.10 不支持 `out_hirshfeld`,永远找不到数据。
+>
+> **RESP (1306)**:多原子分子拟合病态。三者待后续版本修复后再开放。
 
 ---
 
 ## 18. MD 轨迹分析
 
-任务号 1401–1408。支持 ABACUS MD_dump、LAMMPS dump、VASP XDATCAR 三种格式。
+任务号 3101–3108。支持 ABACUS MD_dump、LAMMPS dump、VASP XDATCAR 三种格式。
 
-### 1401 — MD Trajectory → PDB
+### 3101 — MD Trajectory → PDB
 
 ```bash
-abacuscopilot -task 1401
+abacuscopilot -task 3101
 ```
 
 将 MD_dump 转为 VMD 可读的 PDB 格式。支持单帧/全部帧/范围导出。
 
-### 1402 — Extract Frames
+### 3102 — Extract Frames
 
 ```bash
-abacuscopilot -task 1402   # 按步长采样
+abacuscopilot -task 3102   # 按步长采样
 ```
 
-### 1403 — MSD
+### 3103 — MSD
 
 ```bash
-abacuscopilot -task 1403
+abacuscopilot -task 3103
 ```
 
 均方根位移 + 扩散系数。支持 x/y/z 方向分离。计算使用 GPU 加速 (macOS M-chip PyTorch MPS，自动检测)。
 
-### 1404 — RDF
+### 3104 — RDF
 
 ```bash
-abacuscopilot -task 1404
+abacuscopilot -task 3104
 ```
 
 径向分布函数。可选计算配位数 CN(r)。支持双 Y 轴合并图或分别作图。
 
-### 1405 — Probability Density
+### 3105 — Probability Density
 
 ```bash
-abacuscopilot -task 1405
+abacuscopilot -task 3105
 ```
 
 3-D 概率密度 → CHGCAR 格式。VESTA 可直接打开看等值面。
 
-### 1406 — van Hove
+### 3106 — van Hove
 
 ```bash
-abacuscopilot -task 1406
+abacuscopilot -task 3106
 ```
 
-van Hove 关联函数 (Gs + Gd + NGP)。GPU 加速。
+van Hove 关联函数 (Gs + 方向分量 + Gd + NGP)。GPU 加速。
 
 输出:
 - `vanHove_X_Gs_heatmap.png` + `vanHove_X_Gd_heatmap.png` — 热力图，用户自定义颜色范围
+- `vanHove_X_Gs_X/Y/Z_heatmap.png` — 方向自关联 P(|Δx|,t)、P(|Δy|,t)、P(|Δz|,t)，用于分析 x/y/z 方向离子 hopping
 - `vanHove_X_NGP.png` — 非高斯参数
 - `vanHove_X_Gs_slices.png` — 分时切片 (可选平滑)
 
-### 1407 — LAMMPS → MD_dump
+`vanHove_X.npz` 同时保存全部结果 (r, time_lags, gs, gsx/gsy/gsz, gd, ngp) 及计算参数 (r_max, dr, stride, 帧范围)。再次运行时若当前目录检测到有效缓存，会交互式询问是否复用——选择复用则**跳过漫长的轨迹读取**，直接从缓存重建所有图 (可继续调整颜色范围)。旧版本 (无方向分量的) npz 会自动忽略并重算。
+
+### 3107 — LAMMPS → MD_dump
 
 ```bash
-abacuscopilot -task 1407 new.dump
+abacuscopilot -task 3107 new.dump
 ```
 
 将 LAMMPS 轨迹 dump 转为 ABACUS MD_dump 格式。自动检测原子类型，交互式映射元素符号。
@@ -744,10 +803,10 @@ abacuscopilot -task 1407 new.dump
 - LAMMPS "real" units: Å, fs
 - 原子按 LAMMPS ID 排序确保跨帧一致性
 
-### 1408 — XDATCAR → MD_dump
+### 3108 — XDATCAR → MD_dump
 
 ```bash
-abacuscopilot -task 1408 XDATCAR
+abacuscopilot -task 3108 XDATCAR
 ```
 
 VASP XDATCAR 转 ABACUS MD_dump。
@@ -759,7 +818,7 @@ VASP XDATCAR 转 ABACUS MD_dump。
 
 ## 22. 系统与配置
 
-任务号 9901–9908。在交互式菜单中显示为 `99) System & Configuration`。
+任务号 9901–9904、9906。在交互式菜单中显示为 `99) System & Configuration`。
 
 | 任务 | 说明 |
 |------|------|
@@ -767,23 +826,20 @@ VASP XDATCAR 转 ABACUS MD_dump。
 | 9902 | Show Config — 显示当前配置 |
 | 9903 | Check Environment — 检查环境和依赖 |
 | 9904 | Clean Directory — 清理 (保留 INPUT/STRU/KPT/upf/orb) |
-| 9905 | MD Monitor — 实时监控 MD 模拟 |
 | 9906 | Set Submit Script — 配置提交脚本路径 |
-| 9907 | Prepare Files — 从库复制赝势/轨道文件 |
-| 9908 | Calc Status — 快速检查计算状态 |
 
 ---
 
 ## 19. 反应动力学
 
-任务号 1601–1602。NEB 路径生成。
+任务号 3301–3302。NEB 路径生成。
 
-### 1601 — NEB Path (Linear)
+### 3301 — NEB Path (Linear)
 
 线性插值生成 NEB 中间像。
 
 ```bash
-abacuscopilot -task 1601
+abacuscopilot -task 3301
 ```
 
 自动检测 `init/STRU` 和 `final/STRU`（或 `STRU_ini`/`STRU_fin`、`POSCAR_ini`/`POSCAR_fin`）。计算最大原子位移并建议图像数（d_max / 0.8 Å）。
@@ -793,15 +849,15 @@ abacuscopilot -task 1601
 - `trj.STRU` + `trj.vasp` — 合并视图（移动原子多帧展示，静态原子只出现一次）
 - `path_Nframes.traj` — ASE 动画文件（用 `abacuscopilot -task 206` 打开）
 
-### 1602 — NEB Path (IDPP)
+### 3302 — NEB Path (IDPP)
 
 IDPP 原子对距离优化插值。先用线性插值创建初始路径，再用 `ase.mep.idpp_interpolate` 优化键长畸变。
 
 ```bash
-abacuscopilot -task 1602
+abacuscopilot -task 3302
 ```
 
-参数和输出同 1601。IDPP 避免原子碰撞，产生物理合理的中间结构。
+参数和输出同 3301。IDPP 避免原子碰撞，产生物理合理的中间结构。
 
 ### 输出格式选择
 
@@ -848,8 +904,12 @@ paths:
   sub_script: /home/user/bin/sub.abacus
 
 libraries:
-  pseudo_library: /home/user/PP/SG15_ONCV_v1.0_upf
-  orbital_library: /home/user/Orb/SG15_StandardOrbitals_v2.0
+  pseudo_library:
+    - /home/user/PP/SG15_ONCV_v1.0_upf
+    - /home/user/PP/lanthanides-f--core.icmod1
+  orbital_library:
+    - /home/user/Orb/SG15_StandardOrbitals_v2.0
+    - /home/user/PP/lanthanides-f--core.icmod1
 
 user_presets: {}
 ```

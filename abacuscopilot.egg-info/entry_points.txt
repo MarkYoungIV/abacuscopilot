@@ -1,2 +1,0 @@
-[console_scripts]
-abacuscopilot = abacuscopilot.cli:main

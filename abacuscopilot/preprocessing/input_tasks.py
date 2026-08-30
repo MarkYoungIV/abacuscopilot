@@ -50,6 +50,30 @@ def _prompt_choice(console, question: str, options: list[str], default: str = ""
     return default or options[0]
 
 
+def _abacus_supports_hirshfeld() -> bool:
+    """Whether the configured ABACUS binary supports ``out_hirshfeld``.
+
+    LTS v3.10.0 does NOT (it rejects the keyword with "Bad parameter");
+    support was added later.  Detects by grepping the binary for the string.
+    Returns False when the binary can't be located or confirmed.
+    """
+    import shutil as _shutil
+    import subprocess as _sp
+
+    from abacuscopilot.config import load_config
+    cfg = load_config()
+    bin_path = cfg.get("paths", {}).get("abacus_binary", "abacus") or "abacus"
+    p = _shutil.which(bin_path) or Path(bin_path).expanduser()
+    if p and Path(p).is_file():
+        try:
+            r = _sp.run(["strings", str(p)], capture_output=True, text=True,
+                        timeout=20)
+            return "hirshfeld" in (r.stdout + r.stderr).lower()
+        except Exception:
+            pass
+    return False
+
+
 def _apply_template(params: InputParams, template: dict) -> InputParams:
     """Apply a template dict to an InputParams object.
 
@@ -327,6 +351,29 @@ def _auto_prepare_files(console, params: InputParams, interactive: bool = True) 
     if not species:
         return  # nothing to work with, skip
 
+    # Large-core (f-electron-pseudized) lanthanide awareness.  Warn about the PP
+    # regardless of basis; in LCAO offer to raise ecutwfc to the highest orbital
+    # cutoff (300 Ry for the APNS lanthanide NAOs).  INPUT is re-written if the
+    # user confirms — it was written by the caller before species were known.
+    from abacuscopilot.core.standards import is_lcao_basis
+    from abacuscopilot.preprocessing.system_tasks import (
+        adjust_ecutwfc_for_f_core,
+        analyze_f_core,
+        warn_f_core,
+    )
+    info = analyze_f_core(species, libraries)
+    if info["f_core_species"]:
+        warn_f_core(console, info)
+        if is_lcao_basis(params.basis_type):
+            changed = adjust_ecutwfc_for_f_core(console, params, info, interactive)
+            if changed:
+                from abacuscopilot.io.input_file import write_input
+                write_input(params)
+                console.print(
+                    f"  [yellow]✓ INPUT rewritten: ecutwfc = {params.ecutwfc} Ry[/yellow]"
+                )
+                console.print()
+
     # Check if files are already present — if so, skip silently
     all_present = True
     for elem in species:
@@ -411,7 +458,10 @@ def _sync_stru_filenames(console, params: InputParams, interactive: bool) -> Non
         if "new" in choice.lower():
             target = "STRU-new"
 
-    _write_stru_bare(structure, is_lcao=is_lcao, filepath=target)
+    # suppress_f_core: the large-core PP notice was already printed by
+    # _auto_prepare_files before files were resolved here.
+    _write_stru_bare(structure, is_lcao=is_lcao, filepath=target,
+                     suppress_f_core=True)
     if target == "STRU":
         console.print("  [green]✓ STRU updated[/green] (filenames match library)")
     else:
@@ -503,6 +553,26 @@ def task_scf_input(args: list[str] | None = None, interactive: bool = True,
         _ask_lcao_solver(console, params)
     elif parsed_args and parsed_args.solver:
         _apply_solver_override(console, params, parsed_args.solver)
+
+    # Enable analysis outputs for post-processing tasks (Mulliken/Hirshfeld/CHG).
+    if interactive:
+        if basis == "lcao":
+            if _abacus_supports_hirshfeld():
+                an_choices = ["none", "Mulliken + CHG", "all (Mulliken + Hirshfeld + CHG)"]
+            else:
+                an_choices = ["none", "Mulliken + CHG"]
+        else:
+            an_choices = ["none", "CHG"]
+        an = _prompt_choice(
+            console, "Enable analysis outputs (Mulliken/Hirshfeld/CHG)?",
+            an_choices, "none",
+        )
+        if an != "none":
+            params.out_chg = True
+        if "Mulliken" in an:
+            params.out_mul = True
+        if "Hirshfeld" in an:
+            params.set_param("out_hirshfeld", 1)
 
     from abacuscopilot.io.input_file import write_input
     write_input(params)
@@ -706,6 +776,71 @@ def task_md_input(args: list[str] | None = None, interactive: bool = True,
     elif parsed_args and parsed_args.solver:
         _apply_solver_override(console, params, parsed_args.solver)
 
+    if params.esolver_type == "dp":
+        model = params.get_param("pot_file")
+        console.print(f"  Deep Potential model: {model}")
+        if not Path(model).exists():
+            console.print(f"  [bold red]! Model file '{model}' not found in current directory![/bold red]")
+            console.print("  [bold red]  This file is REQUIRED for DP-MD — place it here before running.[/bold red]")
+        else:
+            # Check model compatibility and auto-convert if needed
+            try:
+                from deepmd.infer import DeepPot
+                DeepPot(model)
+            except Exception:
+                console.print("  [bold yellow]⚠  DP model version mismatch detected.[/bold yellow]")
+                console.print("  [dim]    Auto-converting model (original will be backed up)...[/dim]")
+                import subprocess as _sp
+                original_model = model + "_original"
+
+                # Resolve the 'dp' command — try direct PATH first, then ask user
+                dp_cmd = None
+                try:
+                    _sp.run(["dp", "--version"], capture_output=True, check=True, timeout=10)
+                    dp_cmd = ["dp"]
+                except (FileNotFoundError, Exception):
+                    if interactive:
+                        console.print()
+                        console.print("  [yellow]'dp' CLI not found in current PATH.[/yellow]")
+                        console.print("  [dim]  I'll run the conversion for you — just tell me where dp is.[/dim]")
+                        user_env = _prompt(
+                            console,
+                            "  Deepmd-kit conda env name (or full path to dp)",
+                            ""
+                        ).strip()
+                        if user_env:
+                            if "/" in user_env or user_env.endswith("dp"):
+                                dp_cmd = [user_env]
+                            else:
+                                dp_cmd = ["conda", "run", "-n", user_env, "dp"]
+                    else:
+                        console.print("  [yellow]! 'dp' CLI not found. Run manually with your deepmd-kit env:[/yellow]")
+                        console.print(f"  [dim]    conda activate <your-deepmd-env> && dp convert-from auto -i {model} -o {model}[/dim]")
+
+                if dp_cmd:
+                    try:
+                        # Rename original → backup, then convert to original name
+                        Path(model).rename(original_model)
+                        result = _sp.run(dp_cmd + ["convert-from", "auto",
+                                         "-i", original_model, "-o", model],
+                                        capture_output=True, text=True, timeout=120)
+                        if result.returncode == 0 and Path(model).exists():
+                            console.print(f"  [green]✓ Model converted: {model} (original → {original_model})[/green]")
+                        else:
+                            # Restore original on failure
+                            console.print("  [yellow]! Auto-conversion failed.[/yellow]")
+                            if not Path(model).exists():
+                                Path(original_model).rename(model)
+                            else:
+                                console.print(f"  [dim]    Original preserved as {original_model}[/dim]")
+                    except Exception as _e:
+                        console.print(f"  [yellow]! dp convert-from failed: {_e}[/yellow]")
+                        console.print("  [dim]    Original model unchanged. Run manually:[/dim]")
+                        console.print(f"  [dim]    conda activate <your-deepmd-env> && dp convert-from auto -i {model} -o {model}[/dim]")
+                        # Restore original if rename happened
+                        if not Path(model).exists() and Path(original_model).exists():
+                            Path(original_model).rename(model)
+
     from abacuscopilot.io.input_file import write_input
     write_input(params)
 
@@ -721,28 +856,6 @@ def task_md_input(args: list[str] | None = None, interactive: bool = True,
     if params.esolver_type == "dp":
         model = params.get_param("pot_file")
         console.print(f"  Deep Potential model: {model}")
-        if not Path(model).exists():
-            console.print(f"  [bold red]! Model file '{model}' not found in current directory![/bold red]")
-            console.print("  [bold red]  This file is REQUIRED for DP-MD — place it here before running.[/bold red]")
-        else:
-            # Check model compatibility and auto-convert if needed
-            try:
-                from deepmd.infer import DeepPot
-                DeepPot(model)
-            except Exception:
-                console.print("  [bold yellow]⚠  DP model version mismatch detected.[/bold yellow]")
-                console.print("  [dim]    Attempting auto-conversion with 'dp convert-from'...[/dim]")
-                import subprocess as _sp
-                converted = model.replace(".pb", "-v2.pb")
-                if not converted.endswith(".pb"): converted = model + "-v2.pb"
-                result = _sp.run(["dp", "convert-from", "auto", "-i", model, "-o", converted],
-                                 capture_output=True, text=True, timeout=120)
-                if result.returncode == 0 and Path(converted).exists():
-                    params.set_param("pot_file", converted)
-                    console.print(f"  [green]✓ Converted to {converted}[/green]")
-                else:
-                    console.print("  [yellow]! Auto-conversion failed. Run manually:[/yellow]")
-                    console.print(f"  [dim]    dp convert-from auto -i {model} -o {model.replace('.pb','-v2.pb')}[/dim]")
         # Write STRU-dp: same structure, no pseudo/orbital info needed
         from abacuscopilot.io.stru_file import read_stru
         from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
@@ -1000,12 +1113,15 @@ def _setup_convergence_subdir(
     for f in ("STRU", "stru"):
         if Path(f).exists() and not dry_run:
             shutil.copy(f, dir_path / "STRU")
-            # Always rewrite STRU with properly resolved upf/orb filenames
+            # Always rewrite STRU with properly resolved upf/orb filenames.
+            # suppress_f_core: the large-core PP notice was already shown when
+            # the parent INPUT was generated — don't repeat it per sub-directory.
             from abacuscopilot.io.stru_file import read_stru
             from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
             structure = read_stru(dir_path / "STRU")
             _write_stru_bare(structure, is_lcao=params.basis_type == "lcao",
-                             filepath=str(dir_path / "STRU"))
+                             filepath=str(dir_path / "STRU"),
+                             suppress_f_core=True)
 
     if not dry_run:
         from abacuscopilot.io.input_file import write_input
@@ -1055,7 +1171,7 @@ def _copy_sub_script(target_dir: Path, script_path: str | None, console) -> None
         shutil.copy(script_path, dest)
         (target_dir / dest.name).chmod(0o755)
     else:
-        console.print("  [yellow]![/yellow] No submission script configured (task 1506 to set)")
+        console.print("  [yellow]![/yellow] No submission script configured (task 9906 to set)")
 
 
 def _build_sub_script(name: str) -> str:
@@ -1080,24 +1196,49 @@ srun abacus > {name}.log 2>&1
 # Task 107: Ecutwfc convergence test
 # =============================================================================
 
+def _max_orbital_ecut_from_stru() -> float:
+    """Highest energy cutoff (Ry) recorded in the resolved orbital files for the
+    current STRU's species (0.0 if it can't be determined).
+
+    Used as the LCAO ecutwfc-sweep start point: sweeping below the orbital
+    cutoff is meaningless because the orbitals are truncated on the grid.
+    """
+    if not Path("STRU").exists():
+        return 0.0
+    try:
+        from abacuscopilot.io.stru_file import read_stru
+        from abacuscopilot.preprocessing.system_tasks import analyze_f_core
+        structure = read_stru("STRU")
+        info = analyze_f_core(structure.species_order, None)
+        return float(info.get("max_orb_ecut", 0.0))
+    except Exception:
+        return 0.0
+
+
 @task(107, category="INPUT", name="Ecutwfc Test",
-      description="Generate INPUTs for ecutwfc convergence test (PW only)")
+      description="Generate INPUTs for ecutwfc convergence test (PW & LCAO)")
 def task_ecutwfc_test(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Generate a series of INPUT files sweeping ecutwfc (PW basis only)."""
+    """Generate a series of INPUT files sweeping ecutwfc.
+
+    - PW: ecutwfc is the plane-wave basis cutoff — the classic convergence sweep.
+    - LCAO: ecutwfc is the real-space FFT grid cutoff, NOT a basis size. It must
+      be >= the orbital file's recorded energy cutoff (else the orbitals are
+      truncated on the grid). Sweeping tests grid-resolution convergence; the
+      sweep should start at the highest orbital cutoff, not below it.
+    """
     console = _get_console()
     console.print()
     console.print("[bold cyan]=== Ecutwfc Convergence Test ===[/bold cyan]")
     console.print()
 
-    # Basis type — LCAO makes no sense for this test
     basis = _prompt_choice(console, "Basis type", ["pw", "lcao"], "pw") if interactive else "pw"
     if basis == "lcao":
         console.print()
-        console.print("[yellow]For LCAO, ecutwfc should match the orbital file's cutoff (e.g. 100Ry).[/yellow]")
-        console.print("[yellow]Convergence testing is not meaningful without multiple orbital libraries.[/yellow]")
-        console.print("[dim]Use Kspacing Test for LCAO convergence testing instead.[/dim]")
+        console.print("[yellow]For LCAO, ecutwfc is the real-space FFT grid cutoff (not a basis size).[/yellow]")
+        console.print("[yellow]It must be >= the orbital file's recorded energy cutoff, or the orbitals are truncated on the grid.[/yellow]")
+        console.print("[dim]Sweeping ecutwfc tests grid-resolution convergence of the LCAO result.[/dim]")
+        console.print("[dim]For k-grid convergence use Kspacing Test (task 108).[/dim]")
         console.print()
-        return
 
     params = InputParams()
     params.suffix = "ABACUS"
@@ -1107,11 +1248,16 @@ def task_ecutwfc_test(args: list[str] | None = None, interactive: bool = True) -
             params = read_input("INPUT")
             console.print("  [dim]Loaded base INPUT[/dim]")
         except Exception:
-            _apply_template(params, TEMPLATE_PW_SCF)
-            console.print("  [dim]Using PW SCF defaults[/dim]")
+            _apply_template(params, TEMPLATE_LCAO_SCF if basis == "lcao" else TEMPLATE_PW_SCF)
+            console.print("  [dim]Using default INPUT[/dim]")
     else:
-        _apply_template(params, TEMPLATE_PW_SCF)
-        console.print("  [dim]Using PW SCF defaults[/dim]")
+        _apply_template(params, TEMPLATE_LCAO_SCF if basis == "lcao" else TEMPLATE_PW_SCF)
+        console.print("  [dim]Using default INPUT[/dim]")
+
+    # Honor the chosen basis (a loaded INPUT may carry a different one).
+    params.basis_type = basis
+    if basis == "lcao" and interactive:
+        _ask_lcao_solver(console, params)
 
     kpts = None
     if Path("STRU").exists():
@@ -1120,9 +1266,21 @@ def task_ecutwfc_test(args: list[str] | None = None, interactive: bool = True) -
         from abacuscopilot.io.kpt_file import auto_mp_kpts
         kpts = auto_mp_kpts(structure.lattice, kspacing=0.14)
 
-    e_start = float(_prompt(console, "Start ecutwfc (Ry)", "40"))
-    e_end = float(_prompt(console, "End ecutwfc (Ry)", "100"))
-    e_step = float(_prompt(console, "Step (Ry)", "10"))
+    if basis == "lcao":
+        orb_ecut = _max_orbital_ecut_from_stru()
+        if orb_ecut > 0:
+            console.print(f"  [dim]Highest orbital energy cutoff in STRU: {orb_ecut:.0f} Ry[/dim]")
+            def_start = f"{orb_ecut:.0f}"
+            def_end = f"{orb_ecut + 100:.0f}"
+        else:
+            def_start, def_end = "100", "200"
+        def_step = "20"
+    else:
+        def_start, def_end, def_step = "40", "100", "10"
+
+    e_start = float(_prompt(console, "Start ecutwfc (Ry)", def_start))
+    e_end = float(_prompt(console, "End ecutwfc (Ry)", def_end))
+    e_step = float(_prompt(console, "Step (Ry)", def_step))
     ecut_values = np.arange(e_start, e_end + 0.1, e_step)
 
     console.print(f"\n  {len(ecut_values)} directories: ecutwfc = {', '.join(f'{v:.0f}' for v in ecut_values)} Ry")

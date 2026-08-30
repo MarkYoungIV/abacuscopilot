@@ -232,7 +232,7 @@ def _find_md_dump(args: list[str] | None = None) -> str:
 # =============================================================================
 
 
-@task(1401, category="MD Analysis", name="MD Trajectory → PDB",
+@task(3101, category="MD Analysis", name="MD Trajectory → PDB",
       description="Convert ABACUS MD_dump trajectory to PDB format for VMD")
 def task_md_to_pdb(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert ABACUS MD_dump trajectory file to PDB format.
@@ -381,7 +381,7 @@ def write_md_dump(frames: list[dict], filepath: str | Path) -> None:
 # =============================================================================
 
 
-@task(1402, category="MD Analysis", name="Extract Frames",
+@task(3102, category="MD Analysis", name="Extract Frames",
       description="Extract every Nth frame from MD_dump to create a lighter trajectory")
 def task_extract_frames(args: list[str] | None = None, interactive: bool = True) -> None:
     """Extract frames at a regular stride, writing a smaller MD_dump."""
@@ -460,11 +460,88 @@ def _read_md_dt(md_path: str) -> float:
     raise FileNotFoundError(f"md_dt not found — no INPUT or running_md.log near {md_path}")
 
 
-def _plot_msd(data_file: str, species: str, dt_fs: float) -> None:
+def _read_md_dumpfreq(md_path: str) -> int:
+    """Read md_dumpfreq from INPUT — the trajectory output stride in steps.
+
+    MD_dump frames are written every *md_dumpfreq* MD steps, so the real
+    time between two consecutive trajectory frames is:
+
+        frame_dt (fs) = md_dt * md_dumpfreq
+    """
+    md_dir = Path(md_path).parent
+    for candidate in (md_dir / "INPUT", md_dir / "INPUT.info",
+                      md_dir.parent / "INPUT", md_dir / "running_md.log"):
+        if not candidate.exists():
+            continue
+        content = candidate.read_text()
+        m = re.search(r"md_dumpfreq\s+(\d+)", content)
+        if m:
+            return int(m.group(1))
+    # Try OUT.ABACUS/running_md.log
+    out_log = md_dir / "OUT.ABACUS" / "running_md.log"
+    if out_log.exists():
+        content = out_log.read_text()
+        m = re.search(r"md_dumpfreq\s+(\d+)", content)
+        if m:
+            return int(m.group(1))
+    return 1  # default: every step dumped
+
+
+def _resolve_frame_dt(md_path: str | Path, console, interactive: bool = True) -> float:
+    """Real time between consecutive trajectory frames, in fs.
+
+    For ABACUS-native MD it is md_dt × md_dumpfreq (read from INPUT /
+    running_md.log).  For trajectories converted from VASP XDATCAR there is no
+    ABACUS INPUT, so in interactive mode we ask the user for the frame spacing
+    (e.g. VASP POTIM); non-interactively we warn and assume 1.0 fs.
+    """
+    try:
+        md_dt = _read_md_dt(str(md_path))
+        dumpfreq = _read_md_dumpfreq(str(md_path))
+        frame_dt = md_dt * dumpfreq
+        console.print(f"  [dim]md_dt = {md_dt:.1f} fs, dumpfreq = {dumpfreq} → frame_dt = {frame_dt:.1f} fs[/dim]")
+        return frame_dt
+    except FileNotFoundError:
+        if interactive:
+            frame_dt = float(_prompt(
+                console,
+                "No ABACUS INPUT found — real time between trajectory frames (fs)",
+                "1.0",
+            ))
+            console.print(f"  [dim]frame_dt = {frame_dt:.1f} fs (manual)[/dim]")
+            return frame_dt
+        console.print("  [yellow]! No ABACUS INPUT found — assuming frame_dt = 1.0 fs.[/yellow]")
+        console.print("  [yellow]  If this trajectory was converted from VASP XDATCAR, the real frame")
+        console.print("  [yellow]  spacing may differ — re-run interactively to set it.[/yellow]")
+        return 1.0
+
+
+def _prompt_range(console, label: str, prompt_text: str) -> tuple[bool, tuple | None]:
+    """Ask for a 'min,max' range interactively.
+
+    Returns (False, None) when left empty (keep current), or (True, (lo, hi))
+    for a parsed range.  Re-asks on unparseable input.
+    """
+    while True:
+        val = _prompt(console, prompt_text, "")
+        if not val.strip():
+            return False, None
+        try:
+            lo, hi = (float(x) for x in val.replace(" ", "").split(","))
+            return True, (lo, hi)
+        except (ValueError, TypeError):
+            console.print(
+                f"  [yellow]! Could not parse {label} range — use 'min,max' (e.g. '0,12').[/yellow]"
+            )
+
+
+def _plot_msd(data_file: str, species: str, dt_fs: float,
+              console=None, interactive: bool = True) -> None:
     """Plot MSD curve(s).
 
-    Reads the MSD data file (lag + 1..N MSD columns), produces a
-    publication-quality plot with one curve per column.
+    Interactive: after each plot asks "Adjust plot ranges?"; choosing Yes lets
+    the user set the X and Y axis ranges (empty keeps the current value) and
+    redraws immediately.  Choosing No keeps the plot and returns.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -479,46 +556,139 @@ def _plot_msd(data_file: str, species: str, dt_fs: float) -> None:
     time_frames = data[:, 0]
     n_curves = data.shape[1] - 1
 
-    # Colours for multiple curves
-    colors = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e"]
+    # --- Colour map ---
+    _COLORS: dict[str, str] = {
+        "total": "#cb5c55",  # warm coral
+        "x":     "#0060a6",  # deep blue
+        "y":     "#969fb5",  # muted purple-grey
+        "z":     "#4b8fc1",  # medium blue
+    }
+    _FALLBACK = ["#cb5c55", "#0060a6", "#969fb5", "#4b8fc1"]
 
     time_ps = time_frames * dt_fs / 1000.0
 
-    fig, ax = plt.subplots(figsize=(8, 6))  # 4:3 aspect ratio
-
     comp_names = {1: ["total"], 3: ["x", "y", "z"], 4: ["total", "x", "y", "z"]}
     names = comp_names.get(n_curves, [str(i) for i in range(n_curves)])
-    for ic in range(n_curves):
-        msd_vals = data[:, ic + 1]
-        c = colors[ic % len(colors)]
-        ax.plot(time_ps, msd_vals, "-", color=c, linewidth=1.2, label=names[ic])
 
-    ax.set_xlabel("Time (ps)")
-    ax.set_ylabel("MSD (Å²)")
-    ax.set_title(f"Mean Square Displacement — {species}")
-    ax.legend()
-    ax.spines["top"].set_visible(True)
-    ax.spines["right"].set_visible(True)
-    for spine in ax.spines.values():
-        spine.set_linewidth(0.5)
-    ax.tick_params(axis="both", direction="out")
+    ylim = None
+    xlim = None
+    while True:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        for ic in range(n_curves):
+            msd_vals = data[:, ic + 1]
+            label = names[ic]
+            c = _COLORS.get(label, _FALLBACK[ic % len(_FALLBACK)])
+            ax.plot(time_ps, msd_vals, "-", color=c, linewidth=1.2, label=label)
 
-    fig.tight_layout(pad=1.2)
-    save_name = f"MSD_{species}.png"
-    fig.savefig(save_name, dpi=300, bbox_inches="tight")
-    plt.close(fig)
+        # --- Labels (journal style: no in-figure title) ---
+        ax.set_xlabel("Time (ps)")
+        ax.set_ylabel("MSD (Å²)")
+        ax.legend(frameon=False, handlelength=2.0, handletextpad=0.6)
+
+        # --- Spine styling ---
+        ax.spines["top"].set_visible(True)
+        ax.spines["right"].set_visible(True)
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.5)
+        ax.tick_params(axis="both", direction="out")
+
+        if xlim is not None:
+            ax.set_xlim(*xlim)
+        if ylim is not None:
+            ax.set_ylim(*ylim)
+
+        fig.tight_layout(pad=1.2)
+        save_name = f"MSD_{species}.png"
+        fig.savefig(save_name, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        if console is not None:
+            console.print(f"  [green]✓ MSD plot: {save_name}[/green]")
+
+        if not interactive:
+            break
+
+        # Explicit gate after each plot: keep it, or adjust X/Y ranges.
+        adjust = _prompt_choice(
+            console,
+            "Adjust plot ranges?",
+            ["No — keep this plot", "Yes — adjust X/Y ranges"],
+            "No — keep this plot",
+        )
+        if adjust.startswith("No"):
+            break
+
+        # Ask X and Y; empty keeps the current value.  Loop back to redraw.
+        ch, val = _prompt_range(console, "Y", "Y-axis range (e.g. '0,12', empty=keep): ")
+        if ch:
+            ylim = val
+        ch, val = _prompt_range(console, "X", "X-axis range (e.g. '0,50', empty=keep): ")
+        if ch:
+            xlim = val
+
+
+def _compute_msd_fft(
+    traj: np.ndarray,
+    max_lag: int,
+    axes: dict[str, list[int]],
+) -> dict[str, np.ndarray]:
+    """MSD via FFT autocorrelation — O(N log N) instead of the naive O(N²).
+
+    Uses the identity
+        MSD(τ) = [ S_r(τ) + S_f(N−τ) − 2·C(τ) ] / (N−τ) / n_atoms
+    where S_r/S_f are cumulative sums of |r|² (O(N)) and C(τ) is the
+    dot-product autocorrelation Σ_t r(t+τ)·r(t), computed with the FFT
+    (Wiener–Khinchin) in O(N log N).  Same result as the naive pair loop
+    (verified to ~1e-13), returns the per-atom mean MSD.
+
+    Args:
+        traj: (n_frames, n_atoms, 3) coordinates in Å.
+        max_lag: Number of lags to compute (≤ n_frames − 1).
+        axes: {label: [component indices]}, e.g. {"xyz": [0, 1, 2]}.
+
+    Returns:
+        {label: msd[0..max_lag]}.
+    """
+    n_frames, n_atoms, _ = traj.shape
+    n_fft = 1 << (2 * n_frames - 1).bit_length()  # ≥ 2N → linear autocorr
+
+    results: dict[str, np.ndarray] = {}
+    for label, comps in axes.items():
+        # Dot-product autocorrelation summed over atoms & components, via FFT.
+        x = traj[:, :, comps].reshape(n_frames, -1)  # (N, n_atoms*ncomp)
+        X = np.fft.rfft(x, n=n_fft, axis=0)
+        C = np.fft.irfft((X.real ** 2 + X.imag ** 2).sum(axis=1), n=n_fft)[:n_frames]
+
+        # Cumulative sums of |r|² over time (per atom).
+        sum2 = (traj[:, :, comps] ** 2).sum(axis=2)                 # (N, n_atoms)
+        S_f = np.zeros((n_frames + 1, n_atoms))
+        np.cumsum(sum2, axis=0, out=S_f[1:])                        # S_f[k] = Σ_{t<k}
+        S_r = np.flip(np.cumsum(np.flip(sum2, axis=0), axis=0), axis=0)  # S_r[k] = Σ_{t≥k}
+
+        msd = np.zeros(max_lag + 1)
+        for lag in range(1, max_lag + 1):
+            num = S_r[lag].sum() + S_f[n_frames - lag].sum() - 2.0 * C[lag]
+            msd[lag] = num / (n_atoms * (n_frames - lag))
+        results[label] = msd
+
+    return results
 
 
 def compute_msd(
     frames: list[dict],
     atom_indices: list[int],
     directions: str = "xyz",
+    *,
+    unwrap: bool = True,
 ) -> dict[str, np.ndarray]:
     """Compute mean square displacement (MSD) for selected atoms.
 
     MSD_d(t) = <|r_d(t + τ) − r_d(τ)|²>
 
-    where *d* is one of x, y, z or the total magnitude.
+    where *d* is one of x, y, z or the total magnitude, and <...> is the mean
+    over starting times *and* over the selected atoms (per-atom mean MSD).
+
+    Uses the FFT autocorrelation (O(N log N)) — same numbers as the naive
+    pair loop but orders of magnitude faster on long trajectories.
 
     Args:
         frames: List of frame dicts from ``parse_md_dump``.
@@ -527,6 +697,10 @@ def compute_msd(
             ``"x"`` / ``"y"`` / ``"z"`` — single component,
             ``"xyz"`` — total (sum over all 3),
             ``"all"`` — x, y, z separately + total.
+        unwrap: If True (default), apply minimum-image PBC unwrapping
+            via ``_unwrap_trajectory`` before computing MSD.  This prevents
+            artificial jumps when atoms cross periodic boundaries.
+            Set to False only for debugging / non-periodic systems.
 
     Returns:
         Dict mapping label → 1-D MSD array.  Also includes a ``"lag"`` key
@@ -538,6 +712,15 @@ def compute_msd(
     # Build trajectory array: (n_frames, n_atoms, 3) — vectorized extraction
     traj = np.array([[frame["atoms"][i]["xyz"] for i in atom_indices]
                       for frame in frames])
+
+    # ------------------------------------------------------------------
+    # PBC unwrapping — remove artificial jumps across periodic boundaries
+    # before computing displacements.  Without this, an atom crossing
+    # from x≈L to x≈0 registers a jump of ~−L, inflating MSD.
+    # ------------------------------------------------------------------
+    if unwrap:
+        unwrapped = _unwrap_trajectory(frames, atom_indices)  # (n_atoms, 3, n_frames)
+        traj = unwrapped.transpose(2, 0, 1)                   # → (n_frames, n_atoms, 3)
 
     max_lag = n_frames - 1
     result = {"lag": np.arange(max_lag + 1, dtype=float)}
@@ -552,23 +735,11 @@ def compute_msd(
     else:  # "xyz" (default)
         axes = {"xyz": [0, 1, 2]}
 
-    # Rich progress bar
-    from rich.progress import Progress
-    total_lags = max_lag * len(axes)
-
-    with Progress() as progress:
-        task = progress.add_task("[cyan]Computing MSD...", total=total_lags)
-
-        for label, comps in axes.items():
-            msd = np.zeros(max_lag + 1)
-            # Vectorized: for each lag, compute all τ offsets at once
-            for lag in range(1, max_lag + 1):
-                # (n_frames-lag, n_atoms, len(comps)) — all τ in one shot
-                delta = traj[lag:, :, comps] - traj[:-lag, :, comps]
-                msd[lag] = np.mean(np.sum(delta * delta, axis=(1, 2)))
-                progress.update(task, advance=1)
-            result[label] = msd
-
+    # FFT-based MSD — O(N log N) instead of O(N²). Same result as the naive
+    # pair loop (verified to ~1e-13), returns the per-atom mean MSD.
+    console = _get_console()
+    console.print("  [dim]Using FFT autocorrelation (O(N log N))...[/dim]")
+    result.update(_compute_msd_fft(traj, max_lag, axes))
     return result
 
 
@@ -577,7 +748,7 @@ def compute_msd(
 # =============================================================================
 
 
-@task(1403, category="MD Analysis", name="MSD",
+@task(3103, category="MD Analysis", name="MSD",
       description="Compute Mean Square Displacement from MD_dump trajectory")
 def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None:
     """Calculate mean square displacement (MSD) for selected atomic species.
@@ -706,6 +877,7 @@ def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None
     # Write output
     out_file = f"MSD_{species}.dat"
     header = f"# MSD for {species} — frames {start}→{end} step {step}\n"
+    header += "# per-atom mean MSD (Å²); D = slope/(2·d·frame_dt) with d = dims\n"
     header += "# lag(frames)  " + "  ".join(f"MSD_{lab}(A^2)" for lab in col_labels)
     np.savetxt(out_file, np.column_stack(cols),
                fmt="%8d  " + "  ".join("%.8f" for _ in col_labels),
@@ -719,21 +891,8 @@ def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None
             console.print(f"  MSD_{lab}(10) = {arr[10]:.4f} Å²,  MSD_{lab}(50) = {arr[50]:.4f} Å²")
 
     # Auto-plot and compute diffusion coefficient
-    try:
-        dt = _read_md_dt(md_path)
-        console.print(f"  [dim]md_dt = {dt:.1f} fs (from {Path(md_path).parent}/INPUT)[/dim]")
-    except Exception:
-        console.print("  [yellow]! INPUT not found next to MD_dump[/yellow]")
-        if interactive:
-            dt_in = _prompt(console, "  Enter md_dt (fs) manually", "1.0")
-        else:
-            dt_in = "1.0"
-        try:
-            dt = float(dt_in)
-        except ValueError:
-            dt = 1.0
-        console.print(f"  [dim]md_dt = {dt:.1f} fs (manual)[/dim]")
-    _plot_msd(out_file, species, dt)
+    frame_dt = _resolve_frame_dt(md_path, console, interactive)
+    _plot_msd(out_file, species, frame_dt, console=console, interactive=interactive)
     console.print(f"  [green]✓ MSD plot saved to MSD_{species}.png[/green]")
     for lab in col_labels:
         arr = result[lab]
@@ -743,7 +902,8 @@ def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None
             fit_end = int(n * 0.8)
             slope, _ = np.polyfit(lag[fit_start:fit_end], arr[fit_start:fit_end], 1)
             # Convert to Å²/fs then to cm²/s
-            diff_cm2_s = abs(slope) / (6.0 * dt) * 1e-1 if lab == "total" else abs(slope) / (2.0 * dt) * 1e-1
+            # D_total = slope / (2d * frame_dt), d=3 → 1/(6*frame_dt); per-direction → 1/(2*frame_dt)
+            diff_cm2_s = abs(slope) / (6.0 * frame_dt) * 1e-1 if lab == "total" else abs(slope) / (2.0 * frame_dt) * 1e-1
             console.print(f"  D_{lab}({species}) = {diff_cm2_s:.4e} cm²/s")
     console.print()
 
@@ -951,7 +1111,7 @@ def _plot_rdf_cn_combined(
 # =============================================================================
 
 
-@task(1404, category="MD Analysis", name="RDF",
+@task(3104, category="MD Analysis", name="RDF",
       description="Compute Radial Distribution Function from MD_dump trajectory")
 def task_md_rdf(args: list[str] | None = None, interactive: bool = True) -> None:
     """Calculate partial radial distribution function g(r)."""
@@ -1112,7 +1272,7 @@ def write_poscar(
     if lv is None:
         raise ValueError("Frame has no lattice vectors")
 
-    # Actual cell in Å
+    # MD_dump already stores lattice_constant in Angstrom, so this is Å.
     cell = lc * np.array(lv)
 
     # Gather species in order
@@ -1134,8 +1294,8 @@ def write_poscar(
         f.write("  " + "  ".join(species_order) + "\n")
         f.write("  " + "  ".join(str(len(species_atoms[s])) for s in species_order) + "\n")
         f.write("Direct\n")
-        # Convert Cartesian → fractional
-        cell_inv = np.linalg.inv(lv.T)
+        # Convert Cartesian (Å) → fractional (cell is in Å, so units match)
+        cell_inv = np.linalg.inv(cell.T)
         for s in species_order:
             for a in species_atoms[s]:
                 frac = a["xyz"] @ cell_inv
@@ -1163,7 +1323,7 @@ def compute_probability_density(
     if lv is None:
         raise ValueError("No lattice vectors in trajectory")
 
-    # Actual cell in Å = lattice_constant × lattice_vectors
+    # MD_dump stores lattice_constant in Angstrom → cell is in Å
     cell = lc * np.array(lv)
 
     nx, ny, nz = grid_size
@@ -1216,14 +1376,14 @@ def write_chgcar(
         f.write("\n")
         f.write(f"  {nx}  {ny}  {nz}\n")
 
-        # Write density: x outer, y middle, z inner (VASP CHGCAR convention)
+        # VASP CHGCAR convention: x fastest (innermost), z slowest (outermost)
+        #   write(((density[x,y,z], x=1,nx), y=1,ny), z=1,nz)
         count = 0
-        for ix in range(nx):
+        for iz in range(nz):
             for iy in range(ny):
-                for iz in range(nz):
-                    # Scale by volume so VESTA shows meaningful numbers
+                for ix in range(nx):
                     val = density[ix, iy, iz] / vol * 1000.0
-                    f.write(f"  {val:17.10E}")
+                    f.write(f"  {val:21.14E}")
                     count += 1
                     if count % 5 == 0:
                         f.write("\n")
@@ -1236,7 +1396,7 @@ def write_chgcar(
 # =============================================================================
 
 
-@task(1405, category="MD Analysis", name="Probability Density",
+@task(3105, category="MD Analysis", name="Probability Density",
       description="Compute atomic probability density from MD trajectory, export as CHGCAR + POSCAR")
 def task_probability_density(args: list[str] | None = None, interactive: bool = True) -> None:
     """Compute 3-D probability density for a species and export CHGCAR + POSCAR."""
@@ -1440,7 +1600,13 @@ def compute_van_hove(
 ) -> dict:
     """Compute van Hove correlation functions (Gs, Gd) and NGP.
 
-    MSD is intentionally excluded — use task 1403 for proper ensemble-averaged MSD.
+    MSD is intentionally excluded — use task 3103 for proper ensemble-averaged MSD.
+
+    Directional self-part Gs is included: P(|Δx|,t), P(|Δy|,t), P(|Δz|,t),
+    i.e. 1-D histograms of the unwrapped displacement components. These are
+    normalized by the atom count only (no 4πr² shell factor) so they are
+    probability distributions per bin, matching the reference directional
+    van Hove script.
 
     Args:
         frames: List of frame dicts.
@@ -1451,7 +1617,8 @@ def compute_van_hove(
         frame_stride: Only compute every N-th lag to save time.
 
     Returns:
-        Dict with keys: r, time_lags, gs_matrix, gd_matrix, ngp.
+        Dict with keys: r, time_lags, gs_matrix, gsx_matrix, gsy_matrix,
+        gsz_matrix, gd_matrix, ngp.
     """
     # Find atom indices
     a_idx = sorted(i for i, a in enumerate(frames[0]["atoms"])
@@ -1513,14 +1680,23 @@ def compute_van_hove(
     lag_indices = list(range(0, n_frames, frame_stride))
     n_lags = len(lag_indices)
     gs_matrix = np.zeros((n_r, n_lags), dtype=np.float64)
+    # Directional self-part: P(|Δx|,t), P(|Δy|,t), P(|Δz|,t)
+    gsx_matrix = np.zeros((n_r, n_lags), dtype=np.float64)
+    gsy_matrix = np.zeros((n_r, n_lags), dtype=np.float64)
+    gsz_matrix = np.zeros((n_r, n_lags), dtype=np.float64)
     shell_vol = 4.0 * np.pi * r_centers ** 2 * dr
 
-    print(f"  Computing Gs(r,t) at {n_lags} time lags...")
+    print(f"  Computing Gs(r,t) + directional Gs(x/y/z) at {n_lags} time lags...")
     for li, lag in enumerate(lag_indices):
         dr_vec = coords_unwrapped[:, :, lag] - r0_unwrapped  # (n_a, 3)
         dr_mag = np.linalg.norm(dr_vec, axis=1)             # (n_a,)
         hist, _ = np.histogram(dr_mag, bins=r_edges)
         gs_matrix[:, li] = hist / (n_a * shell_vol)
+        # Directional: 1-D histograms of |Δx|, |Δy|, |Δz|, normalized by
+        # atom count only (no 4πr² shell factor) — probability per bin.
+        for axis, out in enumerate((gsx_matrix, gsy_matrix, gsz_matrix)):
+            hist_axis, _ = np.histogram(np.abs(dr_vec[:, axis]), bins=r_edges)
+            out[:, li] = hist_axis / n_a
 
     # --- Gd(r,t): distinct-part ---
     # Pre-compute species_b trajectory for all frames: (n_b, 3, n_frames)
@@ -1550,6 +1726,9 @@ def compute_van_hove(
         "time_lags": np.array(lag_indices, dtype=int),
         "time_frames": np.arange(n_frames),
         "gs_matrix": gs_matrix,
+        "gsx_matrix": gsx_matrix,
+        "gsy_matrix": gsy_matrix,
+        "gsz_matrix": gsz_matrix,
         "gd_matrix": gd_matrix,
         "ngp": ngp,
         "species_a": species_a,
@@ -1603,10 +1782,10 @@ def _plot_gs_heatmap(r, gs_matrix, lags_ps, sa, prefix, vmax):
                    aspect="auto", origin="lower", cmap="turbo",
                    vmin=0, vmax=vmax)
     ax.set_xlabel("Time lag (ps)")
-    ax.set_ylabel("r (Å)")
-    ax.set_title(f"4πr²·G_s(r,t) — {sa}")
+    ax.set_ylabel(r"$r$ (Å)")
+    ax.set_title(rf"$4\pi r^2 \cdot G_s(r,t)$ — {sa}")
     cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label("4πr²·G_s(r,t)")
+    cbar.set_label(r"$4\pi r^2 \cdot G_s(r,t)$")
     ax.spines["top"].set_visible(True)
     ax.spines["right"].set_visible(True)
     for spine in ax.spines.values():
@@ -1614,6 +1793,41 @@ def _plot_gs_heatmap(r, gs_matrix, lags_ps, sa, prefix, vmax):
     ax.tick_params(axis="both", direction="out")
     fig.tight_layout(pad=1.2)
     fig.savefig(f"{prefix}_Gs_heatmap.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_gs_directional_heatmap(r, gs_axis_matrix, lags_ps, sa, prefix, axis, vmax):
+    """Plot a directional self-part van Hove heatmap P(|d_axis|,t).
+
+    axis: 0 → x, 1 → y, 2 → z. Plots the per-bin probability distribution
+    directly (no 4πr² shell factor), matching the reference script.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from abacuscopilot.plotting.style import load_style_from_config
+    load_style_from_config()
+
+    axis_label = {0: "Δx", 1: "Δy", 2: "Δz"}[axis]
+    out_tag = {0: "X", 1: "Y", 2: "Z"}[axis]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    im = ax.imshow(gs_axis_matrix, extent=[lags_ps[0], lags_ps[-1], r[0], r[-1]],
+                   aspect="auto", origin="lower", cmap="turbo",
+                   vmin=0, vmax=vmax)
+    ax.set_xlabel("Time lag (ps)")
+    ax.set_ylabel(f"|{axis_label}| (Å)")
+    ax.set_title(f"P(|{axis_label}|,t) — {sa}")
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label(f"P(|{axis_label}|,t)")
+    ax.spines["top"].set_visible(True)
+    ax.spines["right"].set_visible(True)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.5)
+    ax.tick_params(axis="both", direction="out")
+    fig.tight_layout(pad=1.2)
+    fig.savefig(f"{prefix}_Gs_{out_tag}_heatmap.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -1631,10 +1845,10 @@ def _plot_gd_heatmap(r, gd_matrix, lags_ps, sa, sb, prefix, vmax):
                    aspect="auto", origin="lower", cmap="turbo",
                    vmin=0, vmax=vmax)
     ax.set_xlabel("Time lag (ps)")
-    ax.set_ylabel("r (Å)")
-    ax.set_title(f"G_d(r,t) — {sa}–{sb}")
+    ax.set_ylabel(r"$r$ (Å)")
+    ax.set_title(rf"$G_d(r,t)$ — {sa}–{sb}")
     cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label("G_d(r,t)")
+    cbar.set_label(r"$G_d(r,t)$")
     ax.spines["top"].set_visible(True)
     ax.spines["right"].set_visible(True)
     for spine in ax.spines.values():
@@ -1645,10 +1859,13 @@ def _plot_gd_heatmap(r, gd_matrix, lags_ps, sa, sb, prefix, vmax):
     plt.close(fig)
 
 
-def _plot_gs_slices(r, windows, labels, species, prefix, smooth=0):
+def _plot_gs_slices(r, windows, tick_labels, species, prefix, smooth=0):
     """Plot r^2*Gs(r) curves for multiple time windows with a colorbar.
 
     Args:
+        tick_labels: two formatted time strings — the first window's start
+            time and the last window's end time (ps), shown at the two ends
+            of the colorbar.
         smooth: moving-average window size (0 = no smoothing).
     """
     import matplotlib
@@ -1676,16 +1893,13 @@ def _plot_gs_slices(r, windows, labels, species, prefix, smooth=0):
 
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=Normalize(vmin=0, vmax=n_curves - 1))
     cbar = fig.colorbar(sm, ax=ax)
-    cbar.set_label("Window index")
+    cbar.set_label("Time (ps)")
     cbar.set_ticks([0, n_curves - 1])
-    cbar.set_ticklabels([labels[0], labels[-1]])
+    cbar.set_ticklabels(tick_labels)
 
-    ax.set_xlabel("r (Å)")
-    ax.set_ylabel("r²·G_s(r)")
-    title = f"Self-part van Hove — {species}"
-    if smooth > 1:
-        title += f" (smooth={smooth})"
-    ax.set_title(title)
+    ax.set_xlabel(r"$r$ (Å)")
+    ax.set_ylabel(r"$r^2 \cdot G_s(r)$")
+    ax.set_title(f"Self-part van Hove — {species}")
     ax.spines["top"].set_visible(True)
     ax.spines["right"].set_visible(True)
     for spine in ax.spines.values():
@@ -1699,14 +1913,62 @@ def _plot_gs_slices(r, windows, labels, species, prefix, smooth=0):
 
 
 # =============================================================================
+# van Hove cache helpers (task 3106)
+# =============================================================================
+
+# Keys a cached van Hove .npz must contain to be reusable.  Files saved by
+# older versions (before directional-Gs / metadata were added) are rejected so
+# they are silently recomputed instead of producing empty directional plots.
+_VH_CACHE_REQUIRED = {"r", "time_lags", "gs", "gsx", "gsy", "gsz", "gd", "ngp"}
+
+
+def _load_van_hove_cache(npz_path: Path) -> dict | None:
+    """Load a previously saved van Hove .npz cache into a ``compute_van_hove``-style dict.
+
+    Returns None if the file is unreadable or predates the directional-Gs
+    matrices, in which case the caller should recompute from the trajectory.
+    """
+    try:
+        data = np.load(npz_path)
+    except Exception:
+        return None
+
+    if not _VH_CACHE_REQUIRED.issubset(data.files):
+        return None
+
+    species_a = (str(data["species_a"].item())
+                 if "species_a" in data else npz_path.stem.split("_", 1)[1])
+    species_b = (str(data["species_b"].item())
+                 if "species_b" in data else species_a)
+
+    meta_keys = {"r_max", "dr", "frame_stride", "start_frame", "end_frame",
+                 "frame_step", "frame_dt"}
+    return {
+        "r": data["r"],
+        "time_lags": np.asarray(data["time_lags"], dtype=int),
+        "time_frames": (data["time_frames"] if "time_frames" in data
+                        else np.arange(len(data["ngp"]))),
+        "gs_matrix": data["gs"],
+        "gsx_matrix": data["gsx"],
+        "gsy_matrix": data["gsy"],
+        "gsz_matrix": data["gsz"],
+        "gd_matrix": data["gd"],
+        "ngp": data["ngp"],
+        "species_a": species_a,
+        "species_b": species_b,
+        "meta": ({k: data[k] for k in meta_keys} if meta_keys.issubset(data.files) else None),
+    }
+
+
+# =============================================================================
 # Task 786: van Hove
 # =============================================================================
 
 
-@task(1406, category="MD Analysis", name="van Hove",
-      description="Compute van Hove correlation functions Gs(r,t) and Gd(r,t) from MD trajectory")
+@task(3106, category="MD Analysis", name="van Hove",
+      description="Compute van Hove functions Gs(r,t), directional Gs(x/y/z), Gd(r,t) and NGP from MD trajectory")
 def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Calculate self-part and distinct-part van Hove correlation functions."""
+    """Calculate self-part, directional self-part and distinct-part van Hove functions."""
     console = _get_console()
 
     console.print()
@@ -1723,86 +1985,135 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
         console.print(f"[red]File not found: {md_path}[/red]")
         return
 
-    console.print(f"  [dim]Reading: {md_path}[/dim]")
-    try:
-        frames = parse_md_dump(md_path)
-    except Exception as e:
-        console.print(f"[red]Failed to parse MD_dump: {e}[/red]")
-        return
-
-    n_frames = len(frames)
-    species_order = []
-    for a in frames[0]["atoms"]:
-        if a["label"] not in species_order:
-            species_order.append(a["label"])
-    species_counts = {s: sum(1 for a in frames[0]["atoms"] if a["label"] == s)
-                      for s in species_order}
-
-    console.print(f"  Frames: {n_frames}, Atoms: {len(frames[0]['atoms'])}")
-    console.print(f"  Species: {', '.join(f'{s}({species_counts[s]})' for s in species_order)}")
-    console.print()
-
-    # --- Choose species ---
+    # --- Cache reuse: skip the slow trajectory read when a valid .npz exists ---
+    result = None
+    prefix = None
     if interactive:
-        species_choices = [f"{s} ({species_counts[s]} atoms)" for s in species_order]
-        cent = _prompt_choice(console, "Select species", species_choices,
-                              species_choices[0])
-        species_a = cent.split()[0]
+        reusable = []
+        for c in sorted(Path.cwd().glob("vanHove_*.npz")):
+            r = _load_van_hove_cache(c)
+            if r is not None:
+                reusable.append((c, r))
+            else:
+                console.print(f"  [dim]Ignoring outdated cache {c.name} (will recompute).[/dim]")
 
-        r_max = float(_prompt(console, "Max distance r_max (Å)", "8.0"))
-        dr = float(_prompt(console, "Bin width dr (Å)", "0.05"))
-        f_stride = int(_prompt(console, "Time-lag stride (1=all frames)", "10"))
-    else:
-        species_a = species_order[0]
-        r_max, dr, f_stride = 8.0, 0.05, 10
+        if reusable:
+            console.print("  [dim]Found cached van Hove results:[/dim]")
+            for c, r in reusable:
+                m = r["meta"]
+                if m:
+                    console.print(f"    [dim]{c.name} — {r['species_a']}, r_max={float(m['r_max']):.2f}, "
+                                  f"dr={float(m['dr']):.2f}, stride={int(m['frame_stride'])}, "
+                                  f"frames={int(m['start_frame'])}→{int(m['end_frame'])} "
+                                  f"step {int(m['frame_step'])}[/dim]")
+                else:
+                    console.print(f"    [dim]{c.name} — {r['species_a']} (old format)[/dim]")
+            reuse_map = {f"Reuse {c.name}": (c, r) for c, r in reusable}
+            choices = list(reuse_map) + ["No — recompute"]
+            reuse_choice = _prompt_choice(console, "Reuse cached data (skip reading trajectory)?",
+                                          choices, choices[0])
+            if reuse_choice in reuse_map:
+                cache_path, result = reuse_map[reuse_choice]
+                prefix = cache_path.stem
+                console.print(f"  [green]✓ Loaded cached result for {result['species_a']} "
+                              f"from {cache_path.name}[/green]")
+                _meta = result.get("meta") or {}
+                if _meta and "frame_dt" in _meta:
+                    frame_dt = float(_meta["frame_dt"])
+                    console.print(f"  [dim]frame_dt = {frame_dt:.1f} fs (from cache)[/dim]")
+                else:
+                    frame_dt = _resolve_frame_dt(md_path, console, interactive)
 
-    # --- Frame range ---
-    last_frame = n_frames - 1
-    if interactive:
-        start = int(_prompt(console, "Start frame", "0"))
-        end = int(_prompt(console, "End frame", str(last_frame)))
-        step = int(_prompt(console, "Frame interval", "1"))
-    else:
-        start, end, step = 0, last_frame, 1
+    if result is None:
+        console.print(f"  [dim]Reading: {md_path}[/dim]")
+        try:
+            frames = parse_md_dump(md_path)
+        except Exception as e:
+            console.print(f"[red]Failed to parse MD_dump: {e}[/red]")
+            return
 
-    start = max(0, start)
-    end = min(last_frame, end)
-    step = max(1, step)
-    if end <= start:
-        console.print("[red]End frame must be greater than start.[/red]")
-        return
+        n_frames = len(frames)
+        species_order = []
+        for a in frames[0]["atoms"]:
+            if a["label"] not in species_order:
+                species_order.append(a["label"])
+        species_counts = {s: sum(1 for a in frames[0]["atoms"] if a["label"] == s)
+                          for s in species_order}
 
-    selected = frames[start:end:step]
-    console.print(f"\n  Frames: {start}→{end} step {step} = {len(selected)}")
-    console.print(f"  Computing van Hove for {species_a}...")
-    console.print(f"  r_max={r_max} Å, dr={dr} Å, time stride={f_stride}")
+        console.print(f"  Frames: {n_frames}, Atoms: {len(frames[0]['atoms'])}")
+        console.print(f"  Species: {', '.join(f'{s}({species_counts[s]})' for s in species_order)}")
+        console.print()
 
-    result = compute_van_hove(
-        selected, species_a,
-        r_max=r_max, dr=dr, frame_stride=f_stride,
-    )
+        # --- Choose species ---
+        if interactive:
+            species_choices = [f"{s} ({species_counts[s]} atoms)" for s in species_order]
+            cent = _prompt_choice(console, "Select species", species_choices,
+                                  species_choices[0])
+            species_a = cent.split()[0]
 
-    # Save data
-    tag = species_a
-    prefix = f"vanHove_{tag}"
-    np.savez(f"{prefix}.npz",
-             r=result["r"], time_lags=result["time_lags"],
-             gs=result["gs_matrix"],
-             gd=result["gd_matrix"], ngp=result["ngp"])
-    console.print(f"  [green]✓ Data saved to {prefix}.npz[/green]")
+            r_max = float(_prompt(console, "Max distance r_max (Å)", "8.0"))
+            dr = float(_prompt(console, "Bin width dr (Å)", "0.05"))
+            f_stride = int(_prompt(console, "Time-lag stride (1=all frames)", "10"))
+        else:
+            species_a = species_order[0]
+            r_max, dr, f_stride = 8.0, 0.05, 10
 
-    np.savetxt(f"{prefix}_NGP.dat",
-               np.column_stack([result["time_frames"], result["ngp"]]),
-               fmt="%d  %.8f", header="# frame  NGP")
+        # --- Frame range ---
+        last_frame = n_frames - 1
+        if interactive:
+            start = int(_prompt(console, "Start frame", "0"))
+            end = int(_prompt(console, "End frame", str(last_frame)))
+            step = int(_prompt(console, "Frame interval", "1"))
+        else:
+            start, end, step = 0, last_frame, 1
 
-    # Read md_dt for time axis
-    try:
-        dt_fs = _read_md_dt(md_path)
-    except Exception:
-        dt_fs = 1.0
+        start = max(0, start)
+        end = min(last_frame, end)
+        step = max(1, step)
+        if end <= start:
+            console.print("[red]End frame must be greater than start.[/red]")
+            return
+
+        selected = frames[start:end:step]
+        console.print(f"\n  Frames: {start}→{end} step {step} = {len(selected)}")
+
+        # Real time between frames — needed for every time axis; ask BEFORE the
+        # (slow) computation, not after.
+        frame_dt = _resolve_frame_dt(md_path, console, interactive)
+
+        console.print(f"  Computing van Hove for {species_a}...")
+        console.print(f"  r_max={r_max} Å, dr={dr} Å, time stride={f_stride}")
+
+        result = compute_van_hove(
+            selected, species_a,
+            r_max=r_max, dr=dr, frame_stride=f_stride,
+        )
+
+        # Save data (incl. parameters so the .npz can be reused as a cache later)
+        prefix = f"vanHove_{species_a}"
+        np.savez(f"{prefix}.npz",
+                 r=result["r"], time_lags=result["time_lags"],
+                 time_frames=result["time_frames"],
+                 gs=result["gs_matrix"],
+                 gsx=result["gsx_matrix"],
+                 gsy=result["gsy_matrix"],
+                 gsz=result["gsz_matrix"],
+                 gd=result["gd_matrix"], ngp=result["ngp"],
+                 species_a=result["species_a"], species_b=result["species_b"],
+                 r_max=r_max, dr=dr, frame_stride=f_stride,
+                 start_frame=start, end_frame=end, frame_step=step,
+                 frame_dt=frame_dt)
+        console.print(f"  [green]✓ Data saved to {prefix}.npz[/green]")
+
+        np.savetxt(f"{prefix}_NGP.dat",
+                   np.column_stack([result["time_frames"], result["ngp"]]),
+                   fmt="%d  %.8f", header="# frame  NGP")
+
+    # species_a must be defined for the shared plotting section (fresh or cached)
+    species_a = result["species_a"]
 
     # --- NGP plot (always made) ---
-    _plot_ngp_only(result, prefix, dt_fs)
+    _plot_ngp_only(result, prefix, frame_dt)
     console.print(f"  [green]✓ NGP plot: {prefix}_NGP.png")
 
     # NGP peak info
@@ -1812,7 +2123,7 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
     # --- Gs heatmap — interactive color range ---
     gs_shell = 4.0 * np.pi * result["r"][:, np.newaxis] ** 2 * result["gs_matrix"]
     gs_pos = gs_shell[gs_shell > 0]
-    lags_ps = result["time_lags"] * dt_fs / 1000.0
+    lags_ps = result["time_lags"] * frame_dt / 1000.0
 
     if interactive:
         while True:
@@ -1833,6 +2144,39 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
         _plot_gs_heatmap(result["r"], result["gs_matrix"], lags_ps,
                          result["species_a"], prefix, float(np.max(gs_pos)) / 40.0)
         console.print(f"  [green]✓ Gs heatmap → {prefix}_Gs_heatmap.png[/green]")
+
+    # --- Directional Gs (x/y/z) heatmaps — P(|Δx|,t), P(|Δy|,t), P(|Δz|,t) ---
+    gs_dir_matrices = (result["gsx_matrix"], result["gsy_matrix"], result["gsz_matrix"])
+    gs_dir_axes = "XYZ"
+
+    if interactive:
+        console.print()
+        do_dir = _prompt_choice(console, "Plot directional Gs (x/y/z) heatmaps?",
+                                ["Yes", "No"], "Yes")
+        if "Yes" in do_dir:
+            dir_max = max(float(np.max(m[m > 0])) for m in gs_dir_matrices)
+            while True:
+                console.print(f"  [dim]Directional Gs range: [0, {dir_max:.4e}][/dim]")
+                vmax_in = _prompt(console, "  Color max for directional Gs (0=auto)", "0")
+                try:
+                    vmax_dir = float(vmax_in) if float(vmax_in) > 0 else dir_max / 40.0
+                except ValueError:
+                    vmax_dir = dir_max / 40.0
+                for axis, m in enumerate(gs_dir_matrices):
+                    _plot_gs_directional_heatmap(result["r"], m, lags_ps,
+                                                 result["species_a"], prefix, axis, vmax_dir)
+                    console.print(f"  [green]✓ Directional Gs → "
+                                  f"{prefix}_Gs_{gs_dir_axes[axis]}_heatmap.png[/green]")
+                redo = _prompt_choice(console, "Redo directional Gs?", ["No", "Yes"], "No")
+                if "No" in redo:
+                    break
+    else:
+        dir_max = max(float(np.max(m[m > 0])) for m in gs_dir_matrices)
+        for axis, m in enumerate(gs_dir_matrices):
+            _plot_gs_directional_heatmap(result["r"], m, lags_ps,
+                                         result["species_a"], prefix, axis, dir_max / 40.0)
+        console.print("  [green]✓ Directional Gs heatmaps → "
+                      f"{prefix}_Gs_X/Y/Z_heatmap.png[/green]")
 
     # --- Gd heatmap — interactive color range ---
     gd_pos = result["gd_matrix"][result["gd_matrix"] > 0]
@@ -1888,8 +2232,26 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
                 # Evenly spaced window starts across [t_start, t_end-interval]
                 total_span = t_end - t_start
                 n_slices = min(n_slices, total_span // interval)
+
+                def _fmt_ps(v: float) -> str:
+                    """Round to a 'nice' 1-2-5 value and format compactly.
+
+                    Display-friendly for non-experts: 199.8 -> '200', 19.98 -> '20',
+                    0.5 -> '0.5'. The colorbar is only a qualitative guide.
+                    """
+                    if v <= 0:
+                        v = 0.0
+                    else:
+                        base = 10.0 ** np.floor(np.log10(v))
+                        for nice in (1, 2, 5, 10):
+                            if v <= nice * base:
+                                v = nice * base
+                                break
+                    return f"{v:.3f}".rstrip("0").rstrip(".")
+
                 windows = []
-                win_labels = []
+                win_starts = []  # formatted start time (ps) of each window
+                win_ends = []    # formatted end time (ps) of each window
                 for i in range(n_slices):
                     w0 = t_start + i * (total_span // n_slices)
                     w1 = w0 + interval
@@ -1902,17 +2264,23 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
                     gs_avg = np.mean(result["gs_matrix"][:, idx0:idx1 + 1], axis=1)
                     r2_gs = r ** 2 * gs_avg
                     windows.append(r2_gs)
-                    win_labels.append(f"{w0}–{w1}")
+                    # Time in ps = frame × frame_dt(fs) / 1000
+                    win_starts.append(_fmt_ps(w0 * frame_dt / 1000.0))
+                    win_ends.append(_fmt_ps(w1 * frame_dt / 1000.0))
 
                 if not windows:
                     console.print("[red]No valid windows (interval too small?)[/red]")
                 else:
                     windows = np.array(windows)  # (n_windows, n_r)
-                    _plot_gs_slices(r, windows, win_labels, species_a, prefix)
+                    # Colorbar ticks: first window's start, last window's end
+                    tick_labels = [win_starts[0], win_ends[-1]]
+                    _plot_gs_slices(r, windows, tick_labels, species_a, prefix)
                     console.print(f"  [green]✓ Plot: {prefix}_Gs_slices.png[/green]")
-                    # --- Smoothing ---
+                    # --- Smoothing (re-prompt after the first pass) ---
+                    smoothed = False
                     while True:
-                        want = _prompt_choice(console, "Apply smoothing?", ["No", "Yes"], "No")
+                        q_smooth = "Re-apply smoothing?" if smoothed else "Apply smoothing?"
+                        want = _prompt_choice(console, q_smooth, ["No", "Yes"], "No")
                         if "No" in want:
                             break
                         sw_in = _prompt(console, "  Smoothing window (odd number, 3–21)", "5")
@@ -1922,17 +2290,18 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
                                 break
                         except ValueError:
                             break
-                        _plot_gs_slices(r, windows, win_labels, species_a, prefix, smooth=sw)
+                        _plot_gs_slices(r, windows, tick_labels, species_a, prefix, smooth=sw)
                         console.print(f"  [green]✓ Plot: {prefix}_Gs_slices.png (smooth={sw})[/green]")
+                        smoothed = True
 
     console.print()
 
 
 # =============================================================================
-# Task 1407: LAMMPS dump → ABACUS MD_dump
+# Task 3107: LAMMPS dump → ABACUS MD_dump
 # =============================================================================
 
-@task(1407, category="MD Analysis", name="LAMMPS→MD_dump",
+@task(3107, category="MD Analysis", name="LAMMPS→MD_dump",
       description="Convert LAMMPS trajectory dump to ABACUS MD_dump format")
 def task_lammps_to_md_dump(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert a LAMMPS dump trajectory to ABACUS MD_dump format.
@@ -2121,7 +2490,7 @@ def _write_abacus_md_frame(
 
 
 # =============================================================================
-# Task 1408: XDATCAR → ABACUS MD_dump
+# Task 3108: XDATCAR → ABACUS MD_dump
 # =============================================================================
 
 def _parse_xdatcar_header(filepath: Path) -> dict:
@@ -2160,7 +2529,7 @@ def _parse_xdatcar_header(filepath: Path) -> dict:
     }
 
 
-@task(1408, category="MD Analysis", name="XDATCAR→MD_dump",
+@task(3108, category="MD Analysis", name="XDATCAR→MD_dump",
       description="Convert VASP XDATCAR trajectory to ABACUS MD_dump format")
 def task_xdatcar_to_md_dump(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert VASP XDATCAR to ABACUS MD_dump format.
@@ -2364,10 +2733,10 @@ def _write_md_frame_nvt(fout, step, cell, lines, start, natoms, hdr, labels):
 
 
 # =============================================================================
-# Task 1409: Energy & Temperature vs Time
+# Task 3109: Energy & Temperature vs Time
 # =============================================================================
 
-@task(1409, category="MD Analysis", name="E-T vs Time",
+@task(3109, category="MD Analysis", name="E-T vs Time",
       description="Extract energy and temperature vs time from running_md.log, plot and save")
 def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = True) -> None:
     """Read MD step summaries from running_md.log, output energy & temperature

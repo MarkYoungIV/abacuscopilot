@@ -13,24 +13,39 @@ from typing import Any
 import yaml
 
 
-def _auto_detect_lib(subdir_name: str) -> str:
-    """Auto-detect a library directory inside the package root.
+def _detect_library_dirs(ext: str) -> list[str]:
+    """Auto-detect library directories inside the package root.
 
-    Finds the subdirectory containing actual .upf / .orb files
-    (recursively), or returns '' if none found.
+    Looks for top-level library folders under ``PP-Orb/`` (preferred) or the
+    legacy ``Pseudopotential/`` / ``Orbitals/`` directories, and returns those
+    roots that contain at least one *{ext} file (searched recursively).
+
+    A folder is a library root if it directly or indirectly holds the actual
+    files, e.g.:
+      PP-Orb/SG15-Version1p0_Pseudopotential/           (has .upf below)
+      PP-Orb/SG15-Version1p0__StandardOrbitals-Version2p0/  (has .orb)
+      PP-Orb/lanthanides-f--core.icmod1/                (has .UPF *and* .orb)
+
+    Returns a list of absolute paths (possibly empty).
     """
-    try:
-        pkg_root = Path(__file__).resolve().parent.parent
-        lib_dir = pkg_root / subdir_name
-        if lib_dir.is_dir():
-            ext = ".upf" if subdir_name == "Pseudopotential" else ".orb"
-            for d in sorted(lib_dir.rglob("*"), reverse=True):
-                if d.is_dir() and not d.name.startswith("."):
-                    if list(d.glob(f"*{ext}")):
-                        return str(d.resolve())
-    except Exception:
-        pass
-    return ""
+    pkg_root = Path(__file__).resolve().parent.parent
+    roots: list[Path] = []
+    pp_orb = pkg_root / "PP-Orb"
+    if pp_orb.is_dir():
+        roots = [d for d in sorted(pp_orb.iterdir())
+                 if d.is_dir() and not d.name.startswith(".")]
+    else:
+        for name in ("Pseudopotential", "Orbitals"):
+            d = pkg_root / name
+            if d.is_dir():
+                roots.append(d)
+
+    found: list[str] = []
+    for root in roots:
+        if any(f.is_file() and f.name.lower().endswith(ext)
+               for f in root.rglob("*")):
+            found.append(str(root.resolve()))
+    return found
 
 
 DEFAULT_CONFIG = {
@@ -67,13 +82,30 @@ DEFAULT_CONFIG = {
         "slurm_env_file": "",    # shell script to source in SLURM jobs (CUDA, compiler, etc.)
         "sub_script": "",        # Slurm sbatch template — copied alongside INPUT (101-110)
         "sub_script_dp": "",     # Slurm sbatch template for ABACUS-DP (113)
-        "deepmd_python": "",     # Python binary with deepmd-kit (for 1511 batch force calc)
+        "deepmd_python": "",     # Python binary with deepmd-kit (for Deep Potential batch force calculation)
     },
     "libraries": {
-        "pseudo_library": _auto_detect_lib("Pseudopotential"),
-        "orbital_library": _auto_detect_lib("Orbitals"),
+        "pseudo_library": _detect_library_dirs(".upf"),
+        "orbital_library": _detect_library_dirs(".orb"),
     },
 }
+
+
+def _valid_library_dirs(value: Any, ext: str) -> list[str]:
+    """Return the subset of *value* (str or list) that are real library dirs.
+
+    A dir is valid if it exists and contains at least one *{ext} file
+    (recursively).  Resolves ``~`` and symlinks.
+    """
+    dirs = [value] if isinstance(value, str) and value else list(value or [])
+    valid: list[str] = []
+    for d in dirs:
+        p = Path(d).expanduser()
+        if p.is_dir() and any(
+            f.is_file() and f.name.lower().endswith(ext) for f in p.rglob("*")
+        ):
+            valid.append(str(p.resolve()))
+    return valid
 
 
 def _get_config_dir() -> Path:
@@ -119,7 +151,16 @@ def load_config() -> dict[str, Any]:
         user_config = yaml.safe_load(f) or {}
 
     # Deep merge with defaults for any missing keys
-    return _deep_merge(DEFAULT_CONFIG, user_config)
+    merged = _deep_merge(DEFAULT_CONFIG, user_config)
+
+    # Sanitize library paths: drop stale/empty dirs (e.g. the old
+    # Pseudopotential/Orbitals locations after a reorg), fall back to the
+    # auto-detected defaults.  Result values are always lists of valid dirs.
+    libs = merged.setdefault("libraries", {})
+    for key, ext in (("pseudo_library", ".upf"), ("orbital_library", ".orb")):
+        valid = _valid_library_dirs(libs.get(key, ""), ext)
+        libs[key] = valid if valid else DEFAULT_CONFIG["libraries"].get(key, [])
+    return merged
 
 
 def save_config(config: dict[str, Any]) -> None:

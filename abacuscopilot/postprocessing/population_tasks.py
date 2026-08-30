@@ -1,9 +1,9 @@
 """Population analysis tasks for ABACUS output.
 
-Task IDs 761-769
+Task IDs 1301-1401
 
-Mulliken and Lowdin population analysis, bond order analysis,
-and charge decomposition from ABACUS LCAO output.
+Mulliken and Hirshfeld population analysis, bond order analysis, and charge
+decomposition from ABACUS LCAO output.
 """
 
 from __future__ import annotations
@@ -117,16 +117,55 @@ def parse_mulliken_from_log(filepath: str | Path) -> dict[str, Any] | None:
     return None
 
 
-def parse_lowdin_from_log(filepath: str | Path) -> dict[str, Any] | None:
-    """Extract Lowdin population analysis from ABACUS output.
+def parse_mulliken_from_file(filepath: str | Path) -> dict[str, Any] | None:
+    """Parse ABACUS's ``mulliken.txt`` file (produced by ``out_mul 1``).
 
-    Similar format to Mulliken but with "Lowdin" header.
+    ABACUS v3.10+ writes the Mulliken populations to a separate
+    ``OUT.ABACUS/mulliken.txt`` file (not inline in the running log) with per
+    atom blocks::
+
+        0   Zeta of C   Spin 1
+        ...
+        Total Charge on atom:  C  4.0506
+
+    Returns dict with 'charges' (atom_label → population) in atom order.
+    """
+    filepath = Path(filepath)
+    if not filepath.exists():
+        return None
+    charges: dict[str, float] = {}
+    cur_idx: int | None = None
+    for line in filepath.read_text(errors="ignore").splitlines():
+        m = re.match(r"^\s*(\d+)\s+Zeta of\s+(\w+)", line)
+        if m:
+            cur_idx = int(m.group(1))
+            continue
+        m = re.match(r"^\s*Total Charge on atom:\s*(\w+)\s+(-?\d+\.?\d*)", line)
+        if m and cur_idx is not None:
+            charges[f"{m.group(1)}{cur_idx + 1}"] = float(m.group(2))
+    if not charges:
+        return None
+    return {"charges": charges, "total_charge": sum(charges.values()),
+            "method": "Mulliken"}
+
+
+def parse_hirshfeld_from_log(filepath: str | Path) -> dict[str, Any] | None:
+    """Extract Hirshfeld charges from ABACUS output.
+
+    Requires the calculation to have run with ``out_hirshfeld 1`` in INPUT.
+    ABACUS prints a "Hirshfeld charges" section in the running log (one charge
+    per atom), e.g.::
+
+        Hirshfeld charges of Atom 1 (Li)   =  0.876
+        Hirshfeld charges of Atom 2 (Cl)   = -0.292
+        ...
 
     Args:
         filepath: Path to the running log file.
 
     Returns:
-        Dict with 'charges', 'total_charge', or None if not found.
+        Dict with 'charges' (dict[atom_label -> charge]), 'total_charge',
+        or None if not found.
     """
     filepath = Path(filepath)
     if not filepath.exists():
@@ -134,62 +173,104 @@ def parse_lowdin_from_log(filepath: str | Path) -> dict[str, Any] | None:
 
     content = filepath.read_text(errors="ignore")
 
-    lowdin_patterns = [
-        r"L[oö]wdin\s+population.*?\n(.*?)(?:\n\s*\n|\n\s*(?:Mulliken|Hirshfeld|END))",
-        r"LOWDIN\s+CHARGES.*?\n(.*?)(?:\n\s*\n|\n\s*(?:MULLIKEN|HIRSHFELD))",
+    patterns = [
+        # Section table like Mulliken/Lowdin
+        r"Hirshfeld\s+charges.*?\n(.*?)(?:\n\s*\n|\n\s*(?:Mulliken|Lowdin|END)|\Z)",
+        r"HIRSHFELD\s+CHARGES.*?\n(.*?)(?:\n\s*\n|\n\s*(?:MULLIKEN|LOWDIN)|\Z)",
+        # Per-atom lines: "Hirshfeld charges of Atom N (El) = value"
+        r"(?:Hirshfeld|hirshfeld)\s+charges?\s+of\s+Atom\s+\d+\s*\((\w+)\)\s*=\s*(-?\d+\.?\d*)",
     ]
 
-    for pattern in lowdin_patterns:
+    # 1) per-atom lines first (more specific — the table regex would otherwise
+    #    swallow "Hirshfeld charges of Atom N (El) = v" as a bogus table)
+    found = re.findall(patterns[2], content, re.IGNORECASE)
+    if found:
+        charges = {el: float(v) for el, v in found}
+        return {"charges": charges,
+                "total_charge": sum(charges.values()),
+                "method": "Hirshfeld"}
+
+    # 2) table-style section
+    for pattern in patterns[:2]:
         m = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
         if m:
             section = m.group(1).strip()
-            lines = section.split("\n")
             charges = {}
-            for line in lines:
+            for line in section.split("\n"):
                 parts = line.split()
                 if len(parts) >= 2:
-                    label = parts[0]
                     try:
-                        charge = float(parts[1])
+                        charge = float(parts[-1])
+                        label = parts[0]
                         charges[label] = charge
                     except ValueError:
                         continue
-
             if charges:
-                total = sum(charges.values())
-                return {
-                    "charges": charges,
-                    "total_charge": total,
-                    "method": "Lowdin",
-                }
+                return {"charges": charges,
+                        "total_charge": sum(charges.values()),
+                        "method": "Hirshfeld"}
 
     return None
 
 
 def _display_population_table(console, data: dict[str, Any]) -> None:
-    """Display population analysis results as a rich table."""
+    """Display population analysis results as a rich table.
+
+    For Mulliken/Lowdin the raw value is the electron POPULATION on the atom;
+    the Net Charge column reports Z_val − population, i.e. how many electrons
+    the atom gained (negative) or lost (positive) relative to neutral.  For
+    Hirshfeld the raw value is already the (net) charge.
+    """
     from rich.table import Table
 
-    table = Table(title=f"{data['method']} Population Analysis")
+    method = data.get("method", "")
+    is_population = method.lower() in ("mulliken", "lowdin")
+    is_hirshfeld = method.lower() == "hirshfeld"
+
+    # Valence electrons per element (from the STRU's UPF when available).
+    structure = None
+    if Path("STRU").exists():
+        try:
+            from abacuscopilot.io.stru_file import read_stru
+            structure = read_stru("STRU")
+        except Exception:
+            structure = None
+
+    def _net(label: str, value: float) -> float:
+        if is_hirshfeld:
+            return value
+        m = re.match(r"([A-Za-z]+)", label)
+        el = m.group(1) if m else label
+        if structure is not None:
+            from abacuscopilot.postprocessing.charge_tasks import _zval_for
+            zval = _zval_for(el, structure)
+        else:
+            from abacuscopilot.postprocessing.charge_tasks import _DEFAULT_ZVAL
+            zval = float(_DEFAULT_ZVAL.get(el, 0.0))
+        return zval - value  # positive = lost e⁻, negative = gained e⁻
+
+    table = Table(title=f"{method} Population Analysis")
     table.add_column("Atom", style="cyan")
-    table.add_column("Charge (e)", justify="right")
+    table.add_column("Population (e)" if is_population else "Charge (e)", justify="right")
     table.add_column("Net Charge (e)", justify="right")
 
     charges = data["charges"]
-    for label, charge in charges.items():
-        # Net charge = valence - Mulliken charge (approximate based on label)
-        # For now, just show the raw charge
-        table.add_row(label, f"{charge:.6f}", "—")
+    net_total = 0.0
+    for label, value in charges.items():
+        net = _net(label, value)
+        net_total += net
+        table.add_row(label, f"{value:.6f}", f"{net:+.6f}")
 
     table.add_section()
-    table.add_row(
-        "[bold]Total[/bold]",
-        f"[bold]{data['total_charge']:.6f}[/bold]",
-        "",
-    )
+    table.add_row("[bold]Total[/bold]",
+                  f"[bold]{data['total_charge']:.6f}[/bold]",
+                  f"[bold]{net_total:+.6f}[/bold]")
 
     console.print()
     console.print(table)
+    if is_population:
+        console.print("  [dim]Net Charge (e) = valence − population: + means the atom lost electrons "
+                      "(cation-like), − means it gained (anion-like).[/dim]")
 
 
 # =============================================================================
@@ -207,31 +288,31 @@ def task_mulliken(args: list[str] | None = None, interactive: bool = True) -> No
     console.print("[bold cyan]=== Mulliken Population Analysis ===[/bold cyan]")
     console.print()
 
-    # Find population file
-    log_path = None
+    # Find the population file — ABACUS v3.10+ writes out_mul data to a
+    # separate mulliken.txt; older versions printed it inline in the log.
+    src = None
     if args:
         for arg in args:
             p = Path(arg)
             if p.exists():
-                log_path = p
+                src = p
                 break
-
-    if log_path is None:
+    data = None
+    if src is None:
+        src = _find_population_file()
+    if src is not None:
+        data = parse_mulliken_from_file(src)
+        console.print(f"  [dim]Reading: {src}[/dim]")
+    if data is None:
         log_path = _find_running_log()
-
-    if log_path is None:
-        console.print("[red]No ABACUS running log found.[/red]")
-        console.print("[dim]Run an ABACUS LCAO SCF calculation first.[/dim]")
-        return
-
-    console.print(f"  [dim]Reading: {log_path}[/dim]")
-
-    data = parse_mulliken_from_log(log_path)
+        if log_path:
+            console.print(f"  [dim]Reading: {log_path}[/dim]")
+            data = parse_mulliken_from_log(log_path)
 
     if data is None:
-        console.print("[yellow]Mulliken population data not found in the log.[/yellow]")
-        console.print("[dim]ABACUS LCAO mode with Mulliken output enabled is required.[/dim]")
-        console.print("[dim]Check that your ABACUS version supports Mulliken analysis.[/dim]")
+        console.print("[yellow]Mulliken population data not found.[/yellow]")
+        console.print("[dim]ABACUS LCAO mode with out_mul 1 (Mulliken output) is required.[/dim]")
+        console.print("[dim]Looked for OUT.ABACUS/mulliken.txt and the running log.[/dim]")
         return
 
     _display_population_table(console, data)
@@ -239,54 +320,7 @@ def task_mulliken(args: list[str] | None = None, interactive: bool = True) -> No
 
 
 # =============================================================================
-# Task 762: Lowdin population analysis
-# =============================================================================
-
-
-@task(1302, category="Population", name="Lowdin Analysis",
-      description="Parse Lowdin population charges from ABACUS output")
-def task_lowdin(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Display Lowdin population charges from ABACUS LCAO output."""
-    console = _get_console()
-
-    console.print()
-    console.print("[bold cyan]=== Lowdin Population Analysis ===[/bold cyan]")
-    console.print()
-
-    log_path = None
-    if args:
-        for arg in args:
-            p = Path(arg)
-            if p.exists():
-                log_path = p
-                break
-
-    if log_path is None:
-        log_path = _find_running_log()
-
-    if log_path is None:
-        console.print("[red]No ABACUS running log found.[/red]")
-        return
-
-    console.print(f"  [dim]Reading: {log_path}[/dim]")
-
-    # Try Lowdin first, fall back to Mulliken
-    data = parse_lowdin_from_log(log_path)
-    if data is None:
-        data = parse_mulliken_from_log(log_path)
-        if data:
-            console.print("[yellow]Lowdin data not found. Displaying Mulliken instead.[/yellow]")
-
-    if data is None:
-        console.print("[yellow]No population analysis data found in the log.[/yellow]")
-        return
-
-    _display_population_table(console, data)
-    console.print()
-
-
-# =============================================================================
-# Task 763: Bond order analysis
+# Task 1401: Bond order analysis
 # =============================================================================
 
 
@@ -358,10 +392,16 @@ def _parse_bond_orders(filepath: str | Path) -> dict[str, Any] | None:
     return None
 
 
-@task(1303, category="Population", name="Bond Order",
-      description="Extract bond populations / bond orders from ABACUS output")
+@task(1401, category="Bond Order", name="Mulliken Bond Order",
+      description="Mulliken bond order / overlap population from ABACUS LCAO output (out_mul 1)")
 def task_bond_order(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Display bond populations from ABACUS LCAO output."""
+    """Display Mulliken bond orders (overlap populations) from ABACUS LCAO output.
+
+    Note: this is the Mulliken-type bond order (overlap population), derived
+    from the off-diagonal (PS) terms ABACUS prints with ``out_mul 1``.  It is
+    the simplest, most basis-dependent bond-order type — not the Mayer/Wiberg
+    bond orders used in most modern analyses.
+    """
     console = _get_console()
 
     console.print()

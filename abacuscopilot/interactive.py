@@ -42,6 +42,7 @@ _CATEGORY_LABELS: dict[str, str] = {
     "System":              "System & Configuration",
     "Batch":               "Batch Job Submission",
     "Population":          "Population Analysis",
+    "Bond Order":          "Bond Order",
     "MD Analysis":         "MD Trajectory Analysis",
     "Lattice Dynamics":    "Lattice Dynamics",
     "Reaction Dynamics":   "Reaction Dynamics",
@@ -55,6 +56,7 @@ _STRUCTURAL_CATEGORIES = [
 _ELECTRONIC_CATEGORIES = [
     "SCF Analysis", "Band Structure", "DOS/PDOS",
     "Charge Density", "Work Function", "Mechanics", "Population",
+    "Bond Order",
 ]
 
 _DYNAMICS_CATEGORIES = [
@@ -65,9 +67,14 @@ _MISC_CATEGORIES = [
     "System",
 ]
 
-# Categories whose menu numbers are fixed (not sequential)
+# Categories whose menu numbers are fixed (not sequential).
+# Dynamics utilities are pushed to 31-33 so the 15-30 block stays free for
+# future modules (e.g. new electronic/dynamics analyses).
 _FIXED_MENU_NUMBERS: dict[str, int] = {
     "System": 99,
+    "MD Analysis": 31,
+    "Lattice Dynamics": 32,
+    "Reaction Dynamics": 33,
 }
 
 _ALL_KNOWN_CATEGORIES = (
@@ -216,6 +223,16 @@ def _show_category_submenu(console, category_key: str, tasks: list) -> None:
     console.print(" " + _section_header(label))
     console.print()
 
+    if not tasks:
+        console.print(
+            " [yellow]此模块待开发 (under development) — coming soon[/yellow]"
+        )
+        console.print()
+        console.print(" [dim]0)[/dim]  Quit")
+        console.print(" [dim]9)[/dim]  Back")
+        console.print()
+        return
+
     for t in tasks:
         desc = f" -- {t.description}" if t.description else ""
         console.print(f" [green]{t.task_id:>4d})[/green]  {t.name}{desc}")
@@ -247,7 +264,7 @@ def _show_help(console) -> None:
     console.print("  [cyan]version[/cyan]     Show version")
     console.print()
     console.print("[bold]Direct task entry:[/bold]")
-    console.print("  Type a task ID (e.g. [green]301[/green], [green]711[/green]) from any menu level to run it directly.")
+    console.print("  Type a task ID (e.g. [green]301[/green], [green]701[/green]) from any menu level to run it directly.")
     console.print()
 
 

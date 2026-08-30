@@ -1,6 +1,6 @@
 """Reaction pathway tasks for abacuscopilot.
 
-Task IDs 1601-1699
+Task IDs 3301-3306
 
 NEB (Nudged Elastic Band) path generation between initial and final structures.
 Supports linear interpolation and IDPP (Image-Dependent Pair Potential) methods.
@@ -139,10 +139,10 @@ def _idpp_interpolate(atoms_init, atoms_final, n_images: int):
 
 
 # =============================================================================
-# Task 1601: NEB Path (Linear)
+# Task 3301: NEB Path (Linear)
 # =============================================================================
 
-@task(1601, category="Reaction Dynamics", name="NEB Path (Linear)",
+@task(3301, category="Reaction Dynamics", name="NEB Path (Linear)",
       description="Generate NEB path images by linear interpolation of coordinates")
 def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> None:
     """Generate intermediate NEB images by linear interpolation."""
@@ -196,7 +196,7 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
 
     images = _linear_interpolate(atoms_init, atoms_final, n_images)
 
-    # 00/01/... directories are not used by downstream NEB tasks (1603/1604
+    # 00/01/... directories are not used by downstream NEB tasks (3303/3304
     # read path_*frames.traj instead).  They exist as a visual aid for
     # developers who want to inspect individual images manually.
     write_dirs = False
@@ -230,15 +230,15 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
     console.print("[green]✓ Chain view: trj.STRU + trj.vasp (all frames in one structure)[/green]")
     console.print(f"[green]✓ Trajectory: {traj_path} (open with task 206)[/green]")
     console.print("  [dim]Copy INPUT and KPT to each subdirectory before running NEB[/dim]")
-    console.print("  [dim]Or use task 1603 to generate atst-tools config[/dim]")
+    console.print("  [dim]Or use task 3303 to generate atst-tools config[/dim]")
     console.print()
 
 
 # =============================================================================
-# Task 1602: NEB Path (IDPP)
+# Task 3302: NEB Path (IDPP)
 # =============================================================================
 
-@task(1602, category="Reaction Dynamics", name="NEB Path (IDPP)",
+@task(3302, category="Reaction Dynamics", name="NEB Path (IDPP)",
       description="Generate NEB path images with IDPP pairwise-distance optimization")
 def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> None:
     """Generate NEB images using IDPP (Image-Dependent Pair Potential).
@@ -296,7 +296,7 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
 
     images = _idpp_interpolate(atoms_init, atoms_final, n_images)
 
-    # 00/01/... directories are not used by downstream NEB tasks (1603/1604
+    # 00/01/... directories are not used by downstream NEB tasks (3303/3304
     # read path_*frames.traj instead).  They exist as a visual aid for
     # developers who want to inspect individual images manually.
     write_dirs = False
@@ -329,15 +329,15 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
     console.print("[green]✓ Chain view: trj.STRU + trj.vasp (all frames in one structure)[/green]")
     console.print(f"[green]✓ Trajectory: {traj_path} (open with task 206)[/green]")
     console.print("  [dim]Copy INPUT and KPT to each subdirectory before running NEB[/dim]")
-    console.print("  [dim]Or use task 1603 to generate atst-tools config[/dim]")
+    console.print("  [dim]Or use task 3303 to generate atst-tools config[/dim]")
     console.print()
 
 
 # =============================================================================
-# Task 1603: atst-tools NEB YAML generator
+# Task 3303: atst-tools NEB YAML generator
 # =============================================================================
 
-@task(1603, category="Reaction Dynamics", name="atst-tools NEB Config",
+@task(3303, category="Reaction Dynamics", name="atst-tools NEB Config",
       description="Generate atst-tools neb.yaml from NEB image directories")
 def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True) -> None:
     """Generate an atst-tools compatible YAML configuration for NEB."""
@@ -353,13 +353,13 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     first_dir = image_dirs[0] if image_dirs else None
 
     # If no 00/01/... directories, fall back to the path_*frames.traj that
-    # 1601/1602 always produce (the image dirs are optional since v0.1.8).
+    # 3301/3302 always produce (the image dirs are optional since v0.1.8).
     from_traj = False
     if n_images < 3:
         traj_files = sorted(Path(".").glob("path_*frames.traj"))
         if not traj_files:
             console.print("[red]No NEB image directories or path_*frames.traj found.[/red]")
-            console.print("[dim]Run task 1601 or 1602 first to generate NEB paths.[/dim]")
+            console.print("[dim]Run task 3301 or 3302 first to generate NEB paths.[/dim]")
             return
         from ase.io import read as ase_read
         images = ase_read(str(traj_files[0]), index=":")
@@ -639,7 +639,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     console.print("    1. Review neb.yaml and edit as needed")
     console.print("    2. atst run neb.yaml")
     console.print("  [dim]atst-tools is installed automatically as a core dependency[/dim]")
-    console.print("  [dim]Or use task 1604 for a self-contained ASE script (no atst-tools needed)[/dim]")
+    console.print("  [dim]Or use task 3304 for a self-contained ASE script (no atst-tools needed)[/dim]")
     console.print()
 
     # Copy the Slurm sbatch template and adapt it for atst-tools NEB
@@ -683,10 +683,10 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
 
 
 # =============================================================================
-# Task 1604: ASE NEB standalone script
+# Task 3304: ASE NEB standalone script
 # =============================================================================
 
-@task(1604, category="Reaction Dynamics", name="ASE NEB Script",
+@task(3304, category="Reaction Dynamics", name="ASE NEB Script",
       description="Generate a self-contained Python script for ASE+abacuslite NEB")
 def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True) -> None:
     """Generate a standalone Python script that runs NEB via ASE + abacuslite.
@@ -792,7 +792,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     is_lcao = is_lcao_basis(basis_type)
 
     # Build PP/orb maps — resolve real filenames from library (标准规范).
-    # Same logic as 1603: current dir first, then library, then bare fallback.
+    # Same logic as 3303: current dir first, then library, then bare fallback.
     from abacuscopilot.preprocessing.system_tasks import _find_file_for_element
     pp_map = {}
     orb_map = {}
@@ -940,7 +940,7 @@ opt.run(fmax=0.05, steps=200)
     python_bin = _sys1604.executable
 
     script = f'''#!/usr/bin/env python3
-"""ASE NEB script for ABACUS — generated by AbacusCopilot task 1604.
+"""ASE NEB script for ABACUS — generated by AbacusCopilot task 3304.
 
 Dependencies: ase, abacuslite (from ABACUS source: interfaces/ASE_interface/)
 Usage:
@@ -1130,11 +1130,11 @@ export CUDA_VISIBLE_DEVICES=0
 
 
 # =============================================================================
-# Task 1605: NEB result analysis
+# Task 3305: NEB result analysis
 # =============================================================================
 
-@task(1605, category="Reaction Dynamics", name="atst-tools NEB Analysis",
-      description="Analyze atst-tools NEB results (from task 1603): barrier, saddle, convergence")
+@task(3305, category="Reaction Dynamics", name="atst-tools NEB Analysis",
+      description="Analyze atst-tools NEB results (from task 3303): barrier, saddle, convergence")
 def task_atst_neb_analysis(args: list[str] | None = None, interactive: bool = True) -> None:
     """Analyze atst-tools NEB trajectory and plot the energy barrier profile."""
     console = _get_console()
@@ -1329,13 +1329,13 @@ def task_atst_neb_analysis(args: list[str] | None = None, interactive: bool = Tr
 
 
 # =============================================================================
-# Task 1606: ASE NEB Analysis
+# Task 3306: ASE NEB Analysis
 # =============================================================================
 
-@task(1606, category="Reaction Dynamics", name="ASE NEB Analysis",
-      description="Analyze ASE NEB results (from task 1604): convergence, barrier, forces")
+@task(3306, category="Reaction Dynamics", name="ASE NEB Analysis",
+      description="Analyze ASE NEB results (from task 3304): convergence, barrier, forces")
 def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Analyze ASE NEB results generated by task 1604 (ASE NEB Script).
+    """Analyze ASE NEB results generated by task 3304 (ASE NEB Script).
 
     Auto-detects neb_run.py + neb_stage2.traj, reads the final converged NEB
     chain, reports the energy barrier with cubic-spline interpolation, and
@@ -1347,12 +1347,12 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
     console.print("[bold cyan]=== ASE NEB Result Analysis ===[/bold cyan]")
     console.print()
 
-    # --- Auto-detect 1604 output ---
+    # --- Auto-detect 3304 output ---
     if not Path("neb_run.py").exists():
-        console.print("[red]No neb_run.py found — not a task 1604 output directory.[/red]")
-        console.print("[dim]Run task 1604 first, then run this analysis in the same directory.[/dim]")
+        console.print("[red]No neb_run.py found — not a task 3304 output directory.[/red]")
+        console.print("[dim]Run task 3304 first, then run this analysis in the same directory.[/dim]")
         return
-    console.print("  [dim]Detected task 1604 output[/dim]")
+    console.print("  [dim]Detected task 3304 output[/dim]")
 
     # Find trajectory: prefer two-stage, fall back to single
     traj_path = None

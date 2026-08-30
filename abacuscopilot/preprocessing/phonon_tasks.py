@@ -260,7 +260,7 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
     if local_sub.exists():
         local_sub.unlink()
 
-    # Save setup info for task 1501
+    # Save setup info for task 3201
     import json as _json
     _setup_info = {
         "dim": dim_s,
@@ -283,7 +283,7 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
     console.print()
     console.print(f"[green]✓ Phonon setup complete: {len(stru_files)} displacement directories[/green]")
     console.print(f"  Basis: {basis}, ks_solver: {params.ks_solver}")
-    console.print("  Run all disp-*/ tasks, then: [bold]abacuscopilot -task 1501[/bold]")
+    console.print("  Run all disp-*/ tasks, then: [bold]abacuscopilot -task 3201[/bold]")
     console.print("  [dim]STRU-* and phonopy_disp.yaml kept for phonopy post-processing.[/dim]")
     console.print()
 
@@ -302,7 +302,7 @@ def task_phonoabacus(args: list[str] | None = None, interactive: bool = True,
 
     Unlike task 112 (DFT), this uses ``esolver_type dp`` — forces are
     computed by a Deep Potential model, not DFT.  No pseudopotentials
-    or orbitals are needed.  The post-processing chain (1501-1504) is
+    or orbitals are needed.  The post-processing chain (3201-3204) is
     identical.
     """
     import shutil as _shutil3
@@ -472,5 +472,5 @@ def task_phonoabacus(args: list[str] | None = None, interactive: bool = True,
     console.print()
     console.print(f"[green]✓ PhonoABACUS setup complete: {len(stru_files)} displacement directories[/green]")
     console.print(f"  Model: {pot_file}, calculation: scf (DP)")
-    console.print("  Run all disp-*/ tasks, then: [bold]abacuscopilot -task 1501[/bold]")
+    console.print("  Run all disp-*/ tasks, then: [bold]abacuscopilot -task 3201[/bold]")
     console.print()

@@ -1,6 +1,6 @@
 """Phonon post-processing tasks for ABACUS + Phonopy workflow.
 
-Task 1501: Extract forces, compute phonon bands, and plot.
+Task 3201: Extract forces, compute phonon bands, and plot.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ def _run_phonopy_init(args: list[str], cwd: str | Path = ".", timeout: int = 120
     )
 
 
-@task(1501, category="Lattice Dynamics", name="Phonon Analysis",
+@task(3201, category="Lattice Dynamics", name="Phonon Analysis",
       description="Extract FORCE_SETS, compute phonon bands, and plot dispersion",
       cli_args=[
           {"name": "--dim", "type": str, "default": "2 2 2",
@@ -688,7 +688,7 @@ def _plot_phonon_combined(console, tdos_path: Path, pdos_path: Path,
     console.print(f"  [green]✓ {out_png}[/green] (combined view)")
 
 
-@task(1502, category="Lattice Dynamics", name="Phonon DOS",
+@task(3202, category="Lattice Dynamics", name="Phonon DOS",
       description="Compute total phonon DOS from FORCE_SETS",
       cli_args=[
           {"name": "--mesh", "type": str, "default": "8 8 8",
@@ -711,7 +711,7 @@ def task_phonon_dos(args: list[str] | None = None, interactive: bool = True,
 
     if not Path("FORCE_SETS").exists():
         console.print("[red]FORCE_SETS not found.[/red]")
-        console.print("[dim]Run 'abacuscopilot -task 1501' first to extract forces.[/dim]")
+        console.print("[dim]Run 'abacuscopilot -task 3201' first to extract forces.[/dim]")
         return
 
     fmin_plot = getattr(parsed_args, "fmin", None) if parsed_args else None
@@ -831,7 +831,7 @@ def task_phonon_dos(args: list[str] | None = None, interactive: bool = True,
     console.print()
 
 
-@task(1503, category="Lattice Dynamics", name="Phonon PDOS",
+@task(3203, category="Lattice Dynamics", name="Phonon PDOS",
       description="Compute projected phonon DOS (atom-resolved) from FORCE_SETS",
       cli_args=[
           {"name": "--mesh", "type": str, "default": "8 8 8",
@@ -854,7 +854,7 @@ def task_phonon_pdos(args: list[str] | None = None, interactive: bool = True,
 
     if not Path("FORCE_SETS").exists():
         console.print("[red]FORCE_SETS not found.[/red]")
-        console.print("[dim]Run 'abacuscopilot -task 1501' first to extract forces.[/dim]")
+        console.print("[dim]Run 'abacuscopilot -task 3201' first to extract forces.[/dim]")
         return
 
     fmin_plot = getattr(parsed_args, "fmin", None) if parsed_args else None
@@ -1034,7 +1034,7 @@ def task_phonon_pdos(args: list[str] | None = None, interactive: bool = True,
     console.print()
 
 
-@task(1504, category="Lattice Dynamics", name="Phonon Combined",
+@task(3204, category="Lattice Dynamics", name="Phonon Combined",
       description="Combined phonon band + DOS + PDOS figure (side-by-side)",
       cli_args=[
           {"name": "--fmin", "type": float, "default": None,
@@ -1057,11 +1057,11 @@ def task_phonon_combined(args: list[str] | None = None, interactive: bool = True
 
     if not band_yaml.exists():
         console.print("[red]band.yaml not found.[/red]")
-        console.print("[dim]Run 'abacuscopilot -task 1501' first.[/dim]")
+        console.print("[dim]Run 'abacuscopilot -task 3201' first.[/dim]")
         return
     if not tdos_dat.exists() and not pdos_dat.exists():
         console.print("[red]Neither total_dos.dat nor partial_dos.dat found.[/red]")
-        console.print("[dim]Run 'abacuscopilot -task 1502' or '-task 1503' first.[/dim]")
+        console.print("[dim]Run 'abacuscopilot -task 3202' or '-task 3203' first.[/dim]")
         return
 
     fmin_plot = getattr(parsed_args, "fmin", None) if parsed_args else None
@@ -1091,7 +1091,7 @@ def task_phonon_combined(args: list[str] | None = None, interactive: bool = True
 # MLP-SSCHA: temperature-dependent phonons via machine-learned potential
 # =============================================================================
 
-@task(1505, category="Lattice Dynamics", name="MLP-SSCHA Setup",
+@task(3205, category="Lattice Dynamics", name="MLP-SSCHA Setup",
       description="Generate random displacements for MLP training (SSCHA workflow)",
       cli_args=[
           {"name": "--dim", "type": str, "default": "2 2 2",
@@ -1359,11 +1359,11 @@ def task_mlp_sscha_setup(args=None, interactive=True, parsed_args=None):
     # Keep UPF/ORB in parent dir — all disp dirs reference them via ../pseudo_dir
     console.print()
     console.print(f"[green]✓ MLP-SSCHA setup complete: {len(stru_files)} structures[/green]")
-    console.print("  Run ABACUS in all disp-*/ dirs, then: [bold]abacuscopilot -task 1506[/bold]")
+    console.print("  Run ABACUS in all disp-*/ dirs, then: [bold]abacuscopilot -task 3206[/bold]")
     console.print()
 
 
-@task(1506, category="Lattice Dynamics", name="MLP Training",
+@task(3206, category="Lattice Dynamics", name="MLP Training",
       description="Extract forces from disp dirs and train MLP (pypolymlp) for SSCHA",
       cli_args=[
           {"name": "--ntrain", "type": int, "default": 100,
@@ -1390,7 +1390,7 @@ def task_mlp_training(args=None, interactive=True, parsed_args=None):
     disp_dirs = sorted(Path(".").glob("disp-*"))
     if not disp_dirs:
         console.print("[red]No disp-*/ directories found.[/red]")
-        console.print("[dim]Run 'abacuscopilot -task 1505' first.[/dim]")
+        console.print("[dim]Run 'abacuscopilot -task 3205' first.[/dim]")
         return
 
     log_paths = []
@@ -1504,11 +1504,11 @@ def task_mlp_training(args=None, interactive=True, parsed_args=None):
 
     console.print()
     console.print("[green]✓ MLP training complete[/green]")
-    console.print("  [dim]Next: abacuscopilot -task 1507 (SSCHA)[/dim]")
+    console.print("  [dim]Next: abacuscopilot -task 3207 (SSCHA)[/dim]")
     console.print()
 
 
-@task(1507, category="Lattice Dynamics", name="SSCHA Run",
+@task(3207, category="Lattice Dynamics", name="SSCHA Run",
       description="Run SSCHA iterations for temperature-dependent force constants",
       cli_args=[
           {"name": "--temperature", "type": float, "default": 300,
@@ -1521,7 +1521,7 @@ def task_mlp_training(args=None, interactive=True, parsed_args=None):
 def task_sscha_run(args=None, interactive=True, parsed_args=None):
     """Run SSCHA self-consistent iterations for temperature-dependent phonons.
 
-    Requires ``polymlp.yaml`` and ``phonopy_params.yaml.xz`` from task 1506.
+    Requires ``polymlp.yaml`` and ``phonopy_params.yaml.xz`` from task 3206.
     Outputs ``phonopy_sscha_fc_N.yaml.xz`` for each iteration.
     """
     console = _get_console()
@@ -1536,7 +1536,7 @@ def task_sscha_run(args=None, interactive=True, parsed_args=None):
         params_file = Path("phonopy_params.yaml")
     if not params_file.exists():
         console.print("[red]phonopy_params.yaml[.xz] not found.[/red]")
-        console.print("[dim]Run 'abacuscopilot -task 1506' first.[/dim]")
+        console.print("[dim]Run 'abacuscopilot -task 3206' first.[/dim]")
         return
     if not Path("polymlp.yaml").exists():
         console.print("[red]polymlp.yaml not found.[/red]")
@@ -1609,11 +1609,11 @@ def task_sscha_run(args=None, interactive=True, parsed_args=None):
 
     console.print()
     console.print("[green]✓ SSCHA complete[/green]")
-    console.print("  Next: [bold]abacuscopilot -task 1508[/bold] (plot convergence)")
+    console.print("  Next: [bold]abacuscopilot -task 3208[/bold] (plot convergence)")
     console.print()
 
 
-@task(1508, category="Lattice Dynamics", name="SSCHA Plot",
+@task(3208, category="Lattice Dynamics", name="SSCHA Plot",
       description="Plot SSCHA convergence: band structures across iterations",
       cli_args=[
           {"name": "--fmin", "type": float, "default": None,
@@ -1636,7 +1636,7 @@ def task_sscha_plot(args=None, interactive=True, parsed_args=None):
     fc_files = sorted(Path(".").glob("phonopy_sscha_fc_*.yaml.xz"))
     if not fc_files:
         console.print("[red]No phonopy_sscha_fc_*.yaml.xz files found.[/red]")
-        console.print("[dim]Run 'abacuscopilot -task 1507' first.[/dim]")
+        console.print("[dim]Run 'abacuscopilot -task 3207' first.[/dim]")
         return
 
     console.print(f"  Found {len(fc_files)} SSCHA iteration files")

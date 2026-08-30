@@ -1,6 +1,6 @@
 """SCF convergence analysis tasks for ABACUS output.
 
-Task IDs 711-719
+Task IDs 701-709
 
 Analyzes SCF convergence from OUT.ABACUS/running_*.log files,
 extracts energy convergence history, and diagnoses convergence issues.
@@ -148,10 +148,10 @@ def _find_latest_scf_log() -> Path | None:
 
 
 # =============================================================================
-# Task 711: SCF convergence check
+# Task 701: SCF convergence check
 # =============================================================================
 
-@task(711, category="SCF Analysis", name="SCF Convergence",
+@task(701, category="SCF Analysis", name="SCF Convergence",
       description="Check and visualize SCF convergence from OUT.ABACUS",
       cli_args=[
           {"name": "--log", "type": str, "default": None, "help": "Path to SCF log file"},
@@ -301,7 +301,7 @@ def _plot_convergence(data: dict, console) -> None:
 
 
 # =============================================================================
-# Task 712: Compare SCF convergence
+# Task 702: Compare SCF convergence
 # =============================================================================
 
 def _extract_wall_time(log_path: Path) -> float | None:
@@ -362,7 +362,7 @@ def _format_wall_time(seconds: float) -> str:
         return f"{h}h{m:02d}m"
 
 
-@task(712, category="SCF Analysis", name="SCF Compare",
+@task(702, category="SCF Analysis", name="SCF Compare",
       description="Compare SCF convergence between multiple calculations")
 def task_scf_compare(args: list[str] | None = None, interactive: bool = True) -> None:
     """Compare SCF convergence across multiple runs.
@@ -487,12 +487,12 @@ def task_scf_compare(args: list[str] | None = None, interactive: bool = True) ->
 
 
 # =============================================================================
-# Task 713: Per-ionic-step summary table for relax, MD, and SCF runs
+# Task 703: Per-ionic-step summary table for relax, MD, and SCF runs
 # =============================================================================
 
 
 # ---------------------------------------------------------------------------
-# Task 713 helpers — per-ionic-step summary
+# Task 703 helpers — per-ionic-step summary
 # =============================================================================
 
 
@@ -905,7 +905,7 @@ def _parse_ionic_steps(out_dir: Path) -> dict:
     return result
 
 
-@task(713, category="SCF Analysis", name="Ion Steps",
+@task(703, category="SCF Analysis", name="Ion Steps",
       description="Per-ion-step summary: SCF iters, convergence, energy, forces")
 def task_sys_status(args: list[str] | None = None, interactive: bool = True) -> None:
     """Show a per-ionic-step summary table — ideal for monitoring relax/MD runs."""

@@ -87,29 +87,89 @@ if [[ "${IS_UPGRADE}" == "1" ]] && pip show abacuscopilot >/dev/null 2>&1; then
     pip uninstall -y abacuscopilot >/dev/null 2>&1 || true
 fi
 
-# 3c. Editable install — tiered mirror fallback:
+# 3c. Editable install — tiered mirror fallback + offline fallback:
 #      1. Alibaba Cloud (fast, rarely blocked)
 #      2. Tsinghua (may be blocked on some networks)
 #      3. Default PyPI (global backstop)
+#      4. Offline (no PyPI access): PEP 517 build isolation hangs trying to
+#         download setuptools/wheel, so fall back to --no-build-isolation
+#         --no-deps. The conda env already ships setuptools/wheel and all
+#         runtime deps (fresh envs install them in the same setup run via pip).
 ALI_INDEX="https://mirrors.aliyun.com/pypi/simple/"
 PIP_INSTALL="pip install -e . --upgrade --timeout 15 --retries 2"
+PIP_OFFLINE="pip install -e . --no-build-isolation --no-deps --upgrade"
 
-if ${PIP_INSTALL} -i "${ALI_INDEX}" 2>/dev/null; then
-    :
-elif ${PIP_INSTALL} -i "${PIP_INDEX}" 2>/dev/null; then
-    echo -e "        ${YELLOW}Alibaba unreachable — used Tsinghua mirror${NC}"
+# Bounded connectivity probe — avoids a long hang when packets are dropped.
+if curl -sI --max-time 6 -o /dev/null "${ALI_INDEX}" 2>/dev/null; then
+    if ${PIP_INSTALL} -i "${ALI_INDEX}" 2>/dev/null; then
+        :
+    elif ${PIP_INSTALL} -i "${PIP_INDEX}" 2>/dev/null; then
+        echo -e "        ${YELLOW}Alibaba unreachable — used Tsinghua mirror${NC}"
+    else
+        echo -e "        ${YELLOW}Both mirrors unreachable — falling back to default PyPI${NC}"
+        if ! ${PIP_INSTALL}; then
+            echo -e "        ${RED}Error: pip install failed on all mirrors.${NC}"
+            echo -e "        Trying offline install (--no-build-isolation --no-deps)..."
+            if ! ${PIP_OFFLINE}; then
+                echo -e "  ${RED}Error: pip install failed (online and offline).${NC}"
+                echo -e "  Try re-running:"
+                echo -e "    conda activate ${ENV_NAME} && pip install -e . --upgrade"
+                exit 1
+            fi
+        fi
+    fi
 else
-    echo -e "        ${YELLOW}Both mirrors unreachable — falling back to default PyPI${NC}"
-    if ! ${PIP_INSTALL}; then
-        echo -e "  ${RED}Error: pip install failed on all mirrors.${NC}"
-        echo -e "  Try re-running:"
-        echo -e "    conda activate ${ENV_NAME} && pip install -e . --upgrade"
+    echo -e "        ${YELLOW}No PyPI network access — offline install (--no-build-isolation --no-deps)${NC}"
+    if ! ${PIP_OFFLINE}; then
+        echo -e "  ${RED}Error: offline pip install failed.${NC}"
+        echo -e "  Check that the conda env has setuptools/wheel and all runtime deps."
         exit 1
     fi
 fi
 echo -e "        ${GREEN}✓${NC} numpy, scipy, matplotlib, rich, pyyaml, ase, seekpath installed"
 echo -e "        ${GREEN}✓${NC} atst-tools + NEB support installed"
 echo -e "        ${GREEN}✓${NC} abacuscopilot command registered"
+
+# 3d. Build the bundled Bader program (needed by Bader Charge, task 1304;
+#     currently hidden pending validation).
+#     Prefer compiling with gfortran (matches the target arch); if gfortran is
+#     missing or the compile fails, download the prebuilt binary for the
+#     platform (Linux x86-64 / macOS) from the Henkelman site.
+if [ -d "$SCRIPT_DIR/scripts/bader/bader" ]; then
+    _BADER_X="$SCRIPT_DIR/scripts/bader/bader.x"
+    echo -e "        Building Bader charge program..."
+    if command -v gfortran >/dev/null 2>&1; then
+        if ( cd "$SCRIPT_DIR/scripts/bader/bader" && make -f makefile.osx_gfortran 2>/dev/null ) || \
+           ( cd "$SCRIPT_DIR/scripts/bader/bader" && make -f makefile.osx_gfortran LINK="" 2>/dev/null ); then
+            cp -f "$SCRIPT_DIR/scripts/bader/bader/bader" "$_BADER_X"
+            chmod +x "$_BADER_X"
+        fi
+    fi
+    # Wrong-arch or missing binary (e.g. a shipped macOS arm64 binary on a
+    # Linux box, or no gfortran) → download the prebuilt for this platform.
+    if [ ! -x "$_BADER_X" ] || ! $_BADER_X 2>&1 | grep -q "BADER"; then
+        case "$(uname -s)" in
+            Linux)  _BADER_PKG="bader_lnx_64.tar.gz" ;;
+            Darwin) _BADER_PKG="bader_osx_gfortran.tar.gz" ;;
+            *)      _BADER_PKG="" ;;
+        esac
+        if [ -n "$_BADER_PKG" ]; then
+            echo -e "        Downloading prebuilt Bader ($_BADER_PKG)..."
+            _BADER_URL="https://theory.cm.utexas.edu/henkelman/code/bader/download/$_BADER_PKG"
+            _tmpd="$(mktemp -d)"
+            if curl -fsSL --max-time 120 -o "$_tmpd/$_BADER_PKG" "$_BADER_URL" \
+               && ( cd "$_tmpd" && tar xzf "$_BADER_PKG" ) \
+               && cp -f "$_tmpd/bader" "$_BADER_X" && chmod +x "$_BADER_X"; then
+                echo -e "        ${GREEN}✓${NC} Bader program ready (scripts/bader/bader.x)"
+            else
+                echo -e "        ${YELLOW}! Could not build/download Bader — Bader Charge (1304) will be unavailable.${NC}"
+            fi
+            rm -rf "$_tmpd"
+        fi
+    else
+        echo -e "        ${GREEN}✓${NC} Bader program ready (scripts/bader/bader.x)"
+    fi
+fi
 
 # --- 4. Generate default config ---
 echo ""
@@ -120,6 +180,26 @@ if [ ! -f "$HOME/.abacuscopilot/config.yaml" ]; then
     echo -e "        ${GREEN}✓${NC} Pseudo/orbital paths auto-detected from package"
 else
     echo -e "        ${GREEN}✓${NC} Config already exists (not overwritten)"
+fi
+
+# --- 4b. Library availability ---
+# Pseudopotential/orbital libraries (PP-Orb/) are NOT bundled in the git repo
+# (large + third-party redistribution licensing). A fresh clone has none, while
+# the full release tarball ships them. Hint the user instead of failing silently.
+if [ ! -d "$SCRIPT_DIR/PP-Orb" ] || [ -z "$(ls -A "$SCRIPT_DIR/PP-Orb" 2>/dev/null)" ]; then
+    echo ""
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}  Pseudopotential/orbital libraries (PP-Orb/) not found.${NC}"
+    echo -e "  ${YELLOW}  They are NOT bundled in the git repo. Options:${NC}"
+    echo -e "  ${YELLOW}    1. Download the full release tarball (abacuscopilot_v*.tar.gz)${NC}"
+    echo -e "  ${YELLOW}       from the GitHub Releases page — it contains PP-Orb/ — and${NC}"
+    echo -e "  ${YELLOW}       re-run ./setup.sh from that extracted directory; or${NC}"
+    echo -e "  ${YELLOW}    2. Place your SG15 / lanthanide UPF + orbital files under${NC}"
+    echo -e "  ${YELLOW}       PP-Orb/ yourself.${NC}"
+    echo -e "  ${YELLOW}  AbacusCopilot still installs and runs without them, but warns${NC}"
+    echo -e "  ${YELLOW}  when generating INPUT/STRU for elements it cannot resolve.${NC}"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
 fi
 
 # --- 5. Verify installed version ---
@@ -134,7 +214,7 @@ echo ""
 echo -e "  To start:  ${BOLD}conda activate ${ENV_NAME} && abacuscopilot${NC}"
 echo ""
 echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "  ${YELLOW}  MLP-SSCHA (tasks 1505-1508) requires extra packages:${NC}"
+echo -e "  ${YELLOW}  MLP-SSCHA (tasks 3205-3208) requires extra packages:${NC}"
 echo -e "  ${YELLOW}    pypolymlp  symfc  dpdata${NC}"
 echo -e "  ${YELLOW}  Recommended install (with Tsinghua mirror):${NC}"
 echo -e "  ${YELLOW}    conda install pypolymlp symfc -c conda-forge${NC}"

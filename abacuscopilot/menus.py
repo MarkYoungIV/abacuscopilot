@@ -43,7 +43,7 @@ WELCOME_BANNER = """\
 ╭────────────────────────────────────────────────────╮
 │                                                    │
 │            A B A C U S - C O P I L O T             │
-│    A pre- & post-processing toolkit for ABACUS     │
+│    A pre- & post-processing copilot for ABACUS     │
 │                                                    │
 ╰────────────────────────────────────────────────────╯"""
 
@@ -90,6 +90,7 @@ def build_main_menu() -> Menu:
         "Charge Density",
         "Mechanics",
         "Population",
+        "Bond Order",
         "Work Function",
         "User Extensions",
     ]
@@ -108,6 +109,7 @@ def build_main_menu() -> Menu:
         "Charge Density": "Charge Density Analysis",
         "Mechanics": "Mechanical Properties",
         "Population": "Population Analysis",
+        "Bond Order": "Bond Order",
         "Work Function": "Work Function",
         "User Extensions": "User Extensions",
     }

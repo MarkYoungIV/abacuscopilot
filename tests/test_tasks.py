@@ -82,7 +82,7 @@ class TestTaskRegistry:
         task_ids = list(registry._tasks.keys())
         assert 101 in task_ids  # SCF INPUT
         assert 301 in task_ids  # Auto KPT
-        assert 711 in task_ids  # SCF convergence
+        assert 701 in task_ids  # SCF convergence
         assert 801 in task_ids  # Plot bands
         assert 901 in task_ids  # Plot DOS
 

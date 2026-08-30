@@ -1,6 +1,7 @@
 """Work function analysis tasks for ABACUS output.
 
-Task IDs 771-779
+Task IDs 1101-1102 (currently HIDDEN — functionality not yet verified;
+tasks 1101/1102 are disabled until validated, see the @task comments below).
 
 Reads electrostatic potential from OUT.ABACUS, computes 1D planar
 average along the vacuum direction, and extracts the work function.
@@ -20,7 +21,6 @@ from typing import Any
 import numpy as np
 
 from abacuscopilot.console_utils import _get_console
-from abacuscopilot.tasks import task
 
 # =============================================================================
 # Potential file finder
@@ -158,15 +158,18 @@ def extract_work_function(
 
 
 # =============================================================================
-# Task 771: 1D planar average potential + work function
+# Task 1101: 1D planar average potential + work function
+#
+# HIDDEN (2026-08-31): functionality not yet verified — availability pending.
+# Re-enable by un-commenting the @task decorator below.
 # =============================================================================
 
 
-@task(1101, category="Work Function", name="Work Function",
-      description="Compute 1D planar-averaged electrostatic potential and extract work function",
-      cli_args=[
-          {"name": "--file", "type": str, "default": None, "help": "Path to electrostatic potential cube file"},
-      ])
+# @task(1101, category="Work Function", name="Work Function",
+#       description="Compute 1D planar-averaged electrostatic potential and extract work function",
+#       cli_args=[
+#           {"name": "--file", "type": str, "default": None, "help": "Path to electrostatic potential cube file"},
+#       ])
 def task_work_function(args: list[str] | None = None, interactive: bool = True,
                        parsed_args=None) -> None:
     """Compute work function from electrostatic potential.
@@ -292,12 +295,15 @@ def task_work_function(args: list[str] | None = None, interactive: bool = True,
 
 
 # =============================================================================
-# Task 772: Macroscopic average (double average for semiconductor slabs)
+# Task 1102: Macroscopic average (double average for semiconductor slabs)
+#
+# HIDDEN (2026-08-31): functionality not yet verified — availability pending.
+# Re-enable by un-commenting the @task decorator below.
 # =============================================================================
 
 
-@task(1102, category="Work Function", name="Macroscopic Avg",
-      description="Compute macroscopic-averaged potential (double filter) for better vacuum level")
+# @task(1102, category="Work Function", name="Macroscopic Avg",
+#       description="Compute macroscopic-averaged potential (double filter) for better vacuum level")
 def task_macro_avg_potential(args: list[str] | None = None, interactive: bool = True) -> None:
     """Compute macroscopic-averaged electrostatic potential.
 

@@ -8,6 +8,7 @@ and environment checking.
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -32,19 +33,213 @@ def _prompt(console, question: str, default: Any = None) -> str:
 # =============================================================================
 
 
-def _find_file_for_element(library_dir: str, element: str, suffix: str) -> str | None:
-    """Find a file in library_dir whose name starts with '{Element}_' and ends with suffix.
+# Canonical DZP basis used as the default when a library ships several
+# orbitals per element (e.g. the APNS lanthanide bundles offer 2s1p1d /
+# 4s2p2d1f / 6s3p3d2f at rcut 6-10 au).  Kept in sync with the SG15 default.
+_DEFAULT_ORB_BASIS = "4s2p2d1f"
+_DEFAULT_ORB_RCUT = 7
 
-    Returns the filename (not full path) if found, or None.
+
+def _candidate_rank(name: str, suffix: str) -> tuple:
+    """Deterministic preference key for library files of one element.
+
+    Used only when several files match an element; the smallest key wins.
+    Prefers the canonical DZP orbital at 7 au (matches the SG15 convention),
+    then falls back to rcut closest to 7 au, then alphabetical.
     """
-    lib = Path(library_dir)
-    if not lib.is_dir():
-        return None
-    prefix = f"{element}_"
-    for f in sorted(lib.iterdir()):
-        if f.is_file() and f.name.startswith(prefix) and f.name.endswith(suffix):
-            return f.name
-    return None
+    base = name.lower()
+    rank = [0, 0]
+    if _DEFAULT_ORB_BASIS not in base:
+        rank[0] = 1
+    if suffix == ".orb":
+        m = re.search(r"(\d+)au", base)
+        rcut = int(m.group(1)) if m else None
+        rank[1] = abs(rcut - _DEFAULT_ORB_RCUT) if rcut is not None else 99
+    return tuple(rank) + (name,)
+
+
+def _as_dir_list(value: Any) -> list[str]:
+    """Normalize a config library value (str or list) to a list of strings."""
+    if not value:
+        return []
+    return [value] if isinstance(value, str) else list(value)
+
+
+def _find_file_in_libraries(library_dirs, element: str, suffix: str) -> Path | None:
+    """Locate the best file for *element* among the library dirs.
+
+    *library_dirs* may be a single path string or a list of paths.  Each dir
+    is searched recursively (the APNS lanthanide bundles nest files under
+    element/basis subfolders).  Filenames are matched case-insensitively on a
+    prefix of ``{Element}`` followed by ``_`` or ``.`` (optionally with a
+    charge state such as ``Sm3+_f--core-icmod1.PD04.PBE.UPF``) and the given
+    suffix (also case-insensitive).  Returns the best-matching Path or None.
+    """
+    pattern = re.compile(rf"^{re.escape(element)}(?:\d+\+)?[_.]", re.IGNORECASE)
+    best_path: Path | None = None
+    best_key: tuple | None = None
+    for d in _as_dir_list(library_dirs):
+        root = Path(d)
+        if not root.is_dir():
+            continue
+        for f in sorted(root.rglob("*")):
+            if not f.is_file():
+                continue
+            if not pattern.match(f.name):
+                continue
+            if not f.name.lower().endswith(suffix):
+                continue
+            key = _candidate_rank(f.name, suffix)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_path = f
+    return best_path
+
+
+def _find_file_for_element(library_dir: Any, element: str, suffix: str) -> str | None:
+    """Return the best-matching filename (not path) for *element*, or None.
+
+    Thin wrapper over :func:`_find_file_in_libraries` kept for callers that
+    only need the file name.
+    """
+    p = _find_file_in_libraries(library_dir, element, suffix)
+    return p.name if p else None
+
+
+# =============================================================================
+# Large-core (f-electron-pseudized) lanthanide awareness
+# =============================================================================
+
+# Filename markers of the APNS lanthanide bundle: f-electrons in the core,
+# icmod1 model-core-charge correction (e.g. 'Sm3+_f--core-icmod1.PD04.PBE.UPF').
+_F_CORE_MARKERS = ("f--core", "icmod1")
+
+# Orbital energy cutoffs above this (Ry) are atypical for the 100 Ry SG15
+# orbitals and trigger the ecutwfc warning (APNS lanthanides use 300 Ry).
+_F_CORE_ECUT_ALERT = 100.0
+
+
+def _f_core_info_from_structure(structure) -> dict:
+    """Identify large-core f-electron-pseudized species from resolved files.
+
+    A species is flagged when its resolved pseudopotential filename carries an
+    f-core marker (e.g. ``Sm3+_f--core-icmod1.PD04.PBE.UPF``).  Orbital energy
+    cutoffs (Ry) are parsed from the resolved orbital filenames.
+
+    Returns:
+        dict with ``f_core_species`` [(species, pp_name), ...], ``ecut_entries``
+        [(species, orb_name, ecut), ...] and ``max_orb_ecut`` (float, 0 if none).
+    """
+    f_core_species: list[tuple[str, str]] = []
+    ecut_entries: list[tuple[str, str, float]] = []
+    for sp in structure.species_order:
+        pp = structure.pseudo_files.get(sp, "")
+        if pp and any(m in pp.lower() for m in _F_CORE_MARKERS):
+            f_core_species.append((sp, pp))
+        orb = structure.orbital_files.get(sp, "")
+        m = re.search(r"(\d+(?:\.\d+)?)ry", orb.lower()) if orb else None
+        if m:
+            ecut_entries.append((sp, orb, float(m.group(1))))
+    max_ecut = max((e[2] for e in ecut_entries), default=0.0)
+    return {"f_core_species": f_core_species, "ecut_entries": ecut_entries,
+            "max_orb_ecut": max_ecut}
+
+
+def analyze_f_core(structure_or_species, libraries: dict | None = None) -> dict:
+    """Like :func:`_f_core_info_from_structure`, but resolves filenames from libraries.
+
+    Useful before the STRU is written, or for structures/species that don't yet
+    carry resolved pseudo/orbital filenames.  Accepts a :class:`Structure` or a
+    plain iterable of element symbols (e.g. from reading an existing STRU).
+
+    Args:
+        structure_or_species: A Structure, or an iterable of element symbols.
+        libraries: Config ``libraries`` dict (auto-loaded if None).
+    """
+    if libraries is None:
+        from abacuscopilot.config import load_config
+        libraries = load_config().get("libraries", {})
+    species = (structure_or_species.species_order
+               if hasattr(structure_or_species, "species_order")
+               else list(structure_or_species))
+    pseudo_lib = libraries.get("pseudo_library", "")
+    orb_lib = libraries.get("orbital_library", "")
+
+    f_core_species: list[tuple[str, str]] = []
+    ecut_entries: list[tuple[str, str, float]] = []
+    for sp in species:
+        pp = _find_file_for_element(pseudo_lib, sp, ".upf")
+        if pp and any(m in pp.lower() for m in _F_CORE_MARKERS):
+            f_core_species.append((sp, pp))
+        orb = _find_file_for_element(orb_lib, sp, ".orb")
+        m = re.search(r"(\d+(?:\.\d+)?)ry", orb.lower()) if orb else None
+        if m:
+            ecut_entries.append((sp, orb, float(m.group(1))))
+    max_ecut = max((e[2] for e in ecut_entries), default=0.0)
+    return {"f_core_species": f_core_species, "ecut_entries": ecut_entries,
+            "max_orb_ecut": max_ecut}
+
+
+def warn_f_core(console, info: dict) -> None:
+    """Print a prominent notice about large-core (f-electron-pseudized) species.
+
+    Covers what these PPs are, what they are suited for, what they are NOT
+    suited for, and that they do not apply to unaries.
+    """
+    if not info.get("f_core_species"):
+        return
+    console.print()
+    console.print("[bold yellow]⚠ 大核赝势提醒 (large-core / f-electron-pseudized PP)[/bold yellow]")
+    for sp, pp in info["f_core_species"]:
+        console.print(f"  [yellow]{sp}[/yellow]  →  {pp}")
+    console.print("  [yellow]• f 电子赝化进芯、按 +3 价生成的大核赝势。[/yellow]")
+    console.print("  [yellow]• 适合:结构优化 / MD / 离子输运等占据态性质;Li3MCl6 型卤化物(+3 金属)是官方目标体系。[/yellow]")
+    console.print("  [yellow]• 不适合:需要 f 电子参与的计算(磁性、光谱、含 f 的非占据态)。[/yellow]")
+    console.print("  [yellow]• 不适用于单质 / 金属体系(通常无法收敛)。[/yellow]")
+    max_ecut = info.get("max_orb_ecut", 0.0)
+    if max_ecut > _F_CORE_ECUT_ALERT:
+        console.print(
+            f"  [yellow]• 根据官方说明,本体系轨道能量截断最高 {max_ecut:.0f} Ry,ecutwfc 需 ≥ {max_ecut:.0f} Ry;"
+            f"但此值可能过于保守,强烈推荐做截断能收敛测试(任务 107 生成 / 任务 109 分析)。[/yellow]"
+        )
+
+
+def adjust_ecutwfc_for_f_core(console, params, info: dict,
+                              interactive: bool = True) -> bool:
+    """Offer to raise *params.ecutwfc* to the f-core orbital cutoff (e.g. 300 Ry).
+
+    The APNS lanthanide NAOs carry a 300 Ry energy cutoff; leaving the default
+    100 Ry would silently truncate them.  In interactive mode, prompts the user;
+    if they confirm, sets ``ecutwfc`` to the highest orbital cutoff in the
+    system.  In non-interactive mode, raises it automatically (running a task
+    via CLI is taken as intent).
+
+    Returns True if *params.ecutwfc* was changed.
+    """
+    if not info.get("f_core_species"):
+        return False
+    max_ecut = info.get("max_orb_ecut", 0.0)
+    current = params.ecutwfc or 0
+    if max_ecut <= current:
+        return False
+    if not interactive:
+        params.ecutwfc = int(round(max_ecut))
+        return True
+    species_str = ", ".join(sp for sp, _ in info["f_core_species"])
+    set_label = f"Set ecutwfc = {int(round(max_ecut))} Ry"
+    answer = _prompt_choice(
+        console,
+        f"体系含 f 电子进芯大核赝势({species_str}),"
+        f"其 NAO 轨道截断最高 {max_ecut:.0f} Ry"
+        f"(当前 ecutwfc = {current:.0f} Ry)。建议先跑收敛测试(107/109)"
+        f"确认低截断是否够用。统一提高截断能?",
+        [set_label, "Keep current"],
+        set_label,
+    )
+    if answer.startswith("Set"):
+        params.ecutwfc = int(round(max_ecut))
+        return True
+    return False
 
 
 def read_species_from_stru(stru_path: str | Path = "STRU") -> list[str]:
@@ -125,8 +320,8 @@ def resolve_basis_type(structure=None, interactive: bool = True,
 def prepare_calculation_files(
     species: list[str],
     basis_type: str,
-    pseudo_library: str,
-    orbital_library: str = "",
+    pseudo_library: Any,
+    orbital_library: Any = "",
     target_dir: str | Path = ".",
     dry_run: bool = False,
 ) -> dict:
@@ -135,8 +330,10 @@ def prepare_calculation_files(
     Args:
         species: List of element symbols (e.g., ['Si', 'O']).
         basis_type: 'pw', 'lcao', or 'lcao_in_pw'.
-        pseudo_library: Directory containing .upf pseudopotential files.
-        orbital_library: Directory containing .orb numerical orbital files.
+        pseudo_library: Directory, or list of directories (searched in order),
+            containing .upf pseudopotential files.
+        orbital_library: Directory, or list of directories, containing .orb
+            numerical orbital files.
         target_dir: Where to copy files (default: current directory).
         dry_run: If True, only report what would be done without copying.
 
@@ -146,154 +343,42 @@ def prepare_calculation_files(
     target = Path(target_dir)
     result = {"pseudo_files": [], "orbital_files": [], "errors": []}
 
-    if not pseudo_library or not Path(pseudo_library).is_dir():
+    pseudo_dirs = _as_dir_list(pseudo_library)
+    if not pseudo_dirs or not any(Path(d).is_dir() for d in pseudo_dirs):
         if not dry_run:
-            result["errors"].append(f"Pseudopotential library not found: {pseudo_library}")
+            result["errors"].append(
+                f"Pseudopotential library not found: {pseudo_library}")
         return result
 
     is_lcao = is_lcao_basis(basis_type)
 
     for elem in species:
         # --- Pseudopotential ---
-        pp_file = _find_file_for_element(pseudo_library, elem, ".upf")
-        if pp_file:
-            src = Path(pseudo_library) / pp_file
-            dst = target / pp_file
+        pp_path = _find_file_in_libraries(pseudo_dirs, elem, ".upf")
+        if pp_path:
+            dst = target / pp_path.name
             if not dry_run:
-                if not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime:
-                    shutil.copy2(src, dst)
-            result["pseudo_files"].append(pp_file)
+                if not dst.exists() or pp_path.stat().st_mtime > dst.stat().st_mtime:
+                    shutil.copy2(pp_path, dst)
+            result["pseudo_files"].append(pp_path.name)
         else:
             msg = f"No pseudopotential found for {elem}"
             result["errors"].append(msg)
 
         # --- Orbital (LCAO only) ---
-        if is_lcao and orbital_library:
-            orb_file = _find_file_for_element(orbital_library, elem, ".orb")
-            if orb_file:
-                src = Path(orbital_library) / orb_file
-                dst = target / orb_file
+        if is_lcao and _as_dir_list(orbital_library):
+            orb_path = _find_file_in_libraries(orbital_library, elem, ".orb")
+            if orb_path:
+                dst = target / orb_path.name
                 if not dry_run:
-                    if not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime:
-                        shutil.copy2(src, dst)
-                result["orbital_files"].append(orb_file)
+                    if not dst.exists() or orb_path.stat().st_mtime > dst.stat().st_mtime:
+                        shutil.copy2(orb_path, dst)
+                result["orbital_files"].append(orb_path.name)
             else:
                 msg = f"No orbital found for {elem}"
                 result["errors"].append(msg)
 
     return result
-
-
-# =============================================================================
-# Task 010: Prepare Calculation Files
-# =============================================================================
-
-@task(9907, category="System", name="Prepare Files",
-      description="Auto-copy pseudopotential & orbital files from library to current directory")
-def task_prepare_files(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Copy pseudopotential (and orbital if LCAO) files for the current structure.
-
-    Reads species from STRU file, then copies matching pseudopotential/orbital
-    files from the configured library directories to the current directory.
-    """
-    console = _get_console()
-    config = load_config()
-
-    console.print()
-    console.print("[bold cyan]=== Prepare Calculation Files ===[/bold cyan]")
-    console.print()
-
-    # Determine species
-    species = read_species_from_stru("STRU")
-
-    if not species:
-        # Try reading from a CIF if available
-        cif_files = list(Path(".").glob("*.cif"))
-        if cif_files and interactive:
-            console.print("[yellow]No STRU file found.[/yellow]")
-            try:
-                from ase.io import read as ase_read
-                atoms = ase_read(str(cif_files[0]))
-                species = list(set(atoms.get_chemical_symbols()))
-                console.print(f"  Read {len(species)} species from {cif_files[0].name}")
-            except ImportError:
-                pass
-            except Exception as e:
-                console.print(f"[red]Failed to read CIF: {e}[/red]")
-                return
-
-    if not species:
-        console.print("[red]No STRU or CIF file found. Cannot determine species.[/red]")
-        console.print("[dim]Run this task after generating STRU (task 201).[/dim]")
-        return
-
-    console.print(f"[bold]Elements:[/bold] {', '.join(species)}")
-    console.print()
-
-    # Determine basis type from existing INPUT file
-    basis_type = "lcao"
-    input_path = Path("INPUT")
-    if input_path.exists():
-        from abacuscopilot.io.input_file import read_input
-        try:
-            params = read_input(input_path)
-            basis_type = params.basis_type
-            console.print(f"  Basis type (from INPUT): [green]{basis_type}[/green]")
-        except Exception:
-            console.print(f"  Basis type: [dim]{basis_type}[/dim] (default)")
-    elif interactive:
-        from .input_tasks import _prompt_choice as _pc
-        basis_type = _pc(console, "Basis type", ["lcao", "pw"], "lcao")
-    console.print()
-
-    # Get library paths
-    libraries = config.get("libraries", {})
-    pseudo_lib = libraries.get("pseudo_library", "")
-    orbital_lib = libraries.get("orbital_library", "")
-
-    if not pseudo_lib:
-        console.print("[yellow]Pseudopotential library path not configured.[/yellow]")
-        console.print("[dim]Run System Setup (task 1501) to configure paths, or set them in ~/.abacuscopilot/config.yaml[/dim]")
-        return
-
-    # Confirm
-    console.print(f"  Pseudopotential library: [dim]{pseudo_lib}[/dim]")
-    if basis_type.startswith("lcao"):
-        console.print(f"  Orbital library:         [dim]{orbital_lib}[/dim]")
-    console.print()
-
-    # Dry run first
-    result = prepare_calculation_files(
-        species, basis_type, pseudo_lib, orbital_lib, ".", dry_run=True
-    )
-
-    if result["pseudo_files"]:
-        console.print("[bold]Pseudopotential files to copy:[/bold]")
-        for f in result["pseudo_files"]:
-            console.print(f"  [green]✓[/green] {f}")
-    if result["orbital_files"]:
-        console.print("[bold]Orbital files to copy:[/bold]")
-        for f in result["orbital_files"]:
-            console.print(f"  [green]✓[/green] {f}")
-    if result["errors"]:
-        console.print("[bold red]Missing:[/bold red]")
-        for e in result["errors"]:
-            console.print(f"  [red]✗[/red] {e}")
-
-    if not result["pseudo_files"] and not result["orbital_files"]:
-        console.print("[red]No matching files found![/red]")
-        console.print("[dim]Check that pseudo_library and orbital_library paths are correct.[/dim]")
-        return
-
-    # Execute
-    console.print()
-    result = prepare_calculation_files(
-        species, basis_type, pseudo_lib, orbital_lib, ".", dry_run=False
-    )
-
-    copied = len(result["pseudo_files"]) + len(result["orbital_files"])
-    console.print(f"[bold green]✓ {copied} file(s) copied to current directory.[/bold green]")
-    console.print()
 
 
 # =============================================================================
@@ -392,7 +477,7 @@ def task_system_setup(args: list[str] | None = None, interactive: bool = True) -
     console.print("[bold green]✓ Configuration saved to ~/.abacuscopilot/config.yaml[/bold green]")
     console.print()
     console.print("[dim]You can edit this file manually at any time.[/dim]")
-    console.print("[dim]Run this wizard again with: abacuscopilot -task 1501[/dim]")
+    console.print("[dim]Run this wizard again with: abacuscopilot -task 9901[/dim]")
     console.print()
 
 
@@ -411,8 +496,15 @@ def task_show_config(args: list[str] | None = None, interactive: bool = True) ->
     console.print("[bold cyan]=== Current Configuration ===[/bold cyan]")
     console.print()
 
-    # Pseudo-lib directory already shown above
-
+    # Library directories (auto-detected)
+    libs = config.get("libraries", {})
+    console.print("[bold]PP/Orbital Libraries:[/bold]")
+    console.print("  Pseudopotential:")
+    for d in _as_dir_list(libs.get("pseudo_library", "")):
+        console.print(f"    [dim]{d}[/dim]")
+    console.print("  Orbital:")
+    for d in _as_dir_list(libs.get("orbital_library", "")):
+        console.print(f"    [dim]{d}[/dim]")
     console.print()
 
     # Defaults
@@ -700,7 +792,7 @@ def _find_md_log() -> Path | None:
     return None
 
 
-@task(714, category="SCF Analysis", name="MD Monitor",
+@task(704, category="SCF Analysis", name="MD Monitor",
       description="Live monitor of MD simulation: step, energy, temperature")
 def task_md_monitor(args: list[str] | None = None, interactive: bool = True) -> None:
     """Continuously display MD simulation progress from running_md.log.
