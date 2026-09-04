@@ -71,28 +71,46 @@ def parse_scf_log(filepath: str | Path) -> dict[str, Any]:
     # Convergence markers differ between ABACUS builds:
     #   CPU build: "charge density convergence is achieved"
     #   GPU build: "#SCF IS CONVERGED#"
-    # (NOTE: the old pattern "converge[nc]ed" was a typo — it matched
-    #  "convergned"/"convergced", never the real word "converged", so GPU
-    #  logs were wrongly reported as not converged.)
-    converged_re = re.compile(
-        r"converged|convergence\s+is\s+achieved|SCF\s+is\s+converged|SCF\s+done|reach",
+    # Positive AND negative forms are matched, and the LAST statement wins, so
+    # a failure in the most recent ionic step overrides an earlier success. A
+    # bare "converged" must NOT be used — it also matches "Relaxation is NOT
+    # converged yet!", falsely reporting a failed SCF as converged.
+    pos_cvg_re = re.compile(
+        r"#SCF IS CONVERGED#|SCF\s+is\s+converged|SCF\s+done|"
+        r"(?:charge density|SCF|electronic)?\s*convergence\s+is\s+achieved",
+        re.IGNORECASE,
+    )
+    neg_cvg_re = re.compile(
+        r"#SCF IS NOT CONVERGED#|SCF\s+is\s+not\s+converged|SCF\s+not\s+converged|"
+        r"convergence\s+has\s+not\s+been\s+achieved|fail(?:ed)?\s+to\s+converge",
         re.IGNORECASE,
     )
 
     with open(filepath, errors="ignore") as f:
         content = f.read()
 
-    # Extract energies — try formats in priority order, never mix units
-    raw_matches = _eks_re.findall(content)       # E_KohnSham → Ry
+    # A relax / MD log holds one SCF block per ionic step. This task is about
+    # the CURRENT (last) electronic SCF, so restrict energy/convergence analysis
+    # to the last block; the atom count (printed once near the top) uses the
+    # full file below.
+    step_start_re = re.compile(
+        r"STEP OF RELAXATION\s*:?\s*\d+|#ION MOVE#|MD STEP\s*:?\s*\d+",
+        re.IGNORECASE,
+    )
+    starts = [m.start() for m in step_start_re.finditer(content)]
+    block = content[starts[-1] :] if starts else content
+
+    # Extract energies from the last SCF block — priority order, never mix units
+    raw_matches = _eks_re.findall(block)  # E_KohnSham → Ry
     if raw_matches:
         is_ev = False
     else:
-        raw_matches = _cu_re.findall(content)     # CU\d+ → eV
+        raw_matches = _cu_re.findall(block)  # CU\d+ → eV
         if raw_matches:
             is_ev = True
         else:
-            raw_matches = _generic_re.findall(content)  # fallback
-            is_ev = bool(re.search(r"final\s+etot\s+is", content, re.IGNORECASE))
+            raw_matches = _generic_re.findall(block)  # fallback
+            is_ev = bool(re.search(r"final\s+etot\s+is", block, re.IGNORECASE))
 
     if raw_matches:
         result["energies"] = [float(m) for m in raw_matches]
@@ -100,23 +118,24 @@ def parse_scf_log(filepath: str | Path) -> dict[str, Any]:
         result["final_energy_is_ev"] = is_ev  # flag for downstream display
         result["nsteps"] = len(result["energies"])
 
-    # Extract drho
-    drhos = [float(m) for m in drho_re.findall(content)]
+    # Extract drho (last SCF block)
+    drhos = [float(m) for m in drho_re.findall(block)]
     if drhos:
         result["drho"] = drhos
 
     # Compute ediffs from energies
     energ = result["energies"]
     if len(energ) > 1:
-        result["ediffs"] = [
-            abs(energ[i] - energ[i - 1]) for i in range(1, len(energ))
-        ]
+        result["ediffs"] = [abs(energ[i] - energ[i - 1]) for i in range(1, len(energ))]
 
-    # Check convergence
-    if converged_re.search(content):
-        result["converged"] = True
+    # Check convergence — last SCF-convergence statement wins
+    cvg = sorted(
+        [(m.start(), True) for m in pos_cvg_re.finditer(block)]
+        + [(m.start(), False) for m in neg_cvg_re.finditer(block)]
+    )
+    result["converged"] = bool(cvg) and cvg[-1][1]
 
-    # Atom count — authoritative, straight from ABACUS
+    # Atom count — authoritative, straight from ABACUS (full file)
     natom_re = re.compile(r"TOTAL\s+ATOM\s+NUMBER\s*[=:]\s*(\d+)", re.IGNORECASE)
     natom_match = natom_re.search(content)
     if natom_match:
@@ -130,7 +149,7 @@ def _find_latest_scf_log() -> Path | None:
     candidates = []
 
     for pattern in [
-        "running_*.log",             # current dir (already inside OUT.*)
+        "running_*.log",  # current dir (already inside OUT.*)
         "OUT.ABACUS/running_scf.log",
         "OUT.ABACUS/running*.log",
         "OUT.*/running_scf.log",
@@ -151,13 +170,19 @@ def _find_latest_scf_log() -> Path | None:
 # Task 701: SCF convergence check
 # =============================================================================
 
-@task(701, category="SCF Analysis", name="SCF Convergence",
-      description="Check and visualize SCF convergence from OUT.ABACUS",
-      cli_args=[
-          {"name": "--log", "type": str, "default": None, "help": "Path to SCF log file"},
-      ])
-def task_scf_convergence(args: list[str] | None = None, interactive: bool = True,
-                         parsed_args=None) -> None:
+
+@task(
+    701,
+    category="SCF Analysis",
+    name="SCF Convergence",
+    description="Check and visualize SCF convergence from OUT.ABACUS",
+    cli_args=[
+        {"name": "--log", "type": str, "default": None, "help": "Path to SCF log file"},
+    ],
+)
+def task_scf_convergence(
+    args: list[str] | None = None, interactive: bool = True, parsed_args=None
+) -> None:
     """Analyze SCF convergence from ABACUS output."""
     console = _get_console()
 
@@ -188,7 +213,9 @@ def task_scf_convergence(args: list[str] | None = None, interactive: bool = True
                 for f in sorted(d.glob("running*")):
                     console.print(f"    - {f.name}")
         else:
-            console.print("[red]No OUT.* directories found. Run an ABACUS SCF calculation first.[/red]")
+            console.print(
+                "[red]No OUT.* directories found. Run an ABACUS SCF calculation first.[/red]"
+            )
         return
 
     console.print(f"  [dim]Reading: {log_path}[/dim]")
@@ -216,8 +243,12 @@ def task_scf_convergence(args: list[str] | None = None, interactive: bool = True
 
     console.print()
     console.print(f"  [bold]SCF steps:[/bold] {nsteps}")
-    console.print(f"  [bold]Final energy:[/bold] {final_energy_ry:.8f} Ry  =  {final_energy_ha:.8f} Ha  =  {final_energy_ev:.6f} eV")
-    console.print(f"  [bold]Converged:[/bold] {'[green]Yes[/green]' if converged else '[red]No[/red]'}")
+    console.print(
+        f"  [bold]Final energy:[/bold] {final_energy_ry:.8f} Ry  =  {final_energy_ha:.8f} Ha  =  {final_energy_ev:.6f} eV"
+    )
+    console.print(
+        f"  [bold]Converged:[/bold] {'[green]Yes[/green]' if converged else '[red]No[/red]'}"
+    )
 
     if data["ediffs"]:
         if is_ev:
@@ -242,9 +273,8 @@ def task_scf_convergence(args: list[str] | None = None, interactive: bool = True
     # Optionally plot (only for multi-step SCF, not NSCF)
     if nsteps > 1 and interactive:
         from rich.prompt import Prompt
-        do_plot = Prompt.ask(
-            "\n  Plot convergence?", choices=["y", "n"], default="y"
-        )
+
+        do_plot = Prompt.ask("\n  Plot convergence?", choices=["y", "n"], default="y")
         if do_plot == "y":
             _plot_convergence(data, console)
 
@@ -257,6 +287,7 @@ def _plot_convergence(data: dict, console) -> None:
 
     from abacuscopilot.core.constants import RY_TO_EV
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     is_ev = data.get("final_energy_is_ev", False)
@@ -304,6 +335,7 @@ def _plot_convergence(data: dict, console) -> None:
 # Task 702: Compare SCF convergence
 # =============================================================================
 
+
 def _extract_wall_time(log_path: Path) -> float | None:
     """Extract wall time in seconds from an ABACUS log file.
 
@@ -321,7 +353,8 @@ def _extract_wall_time(log_path: Path) -> float | None:
         re.IGNORECASE,
     )
     _re_per_step = re.compile(
-        r"DONE\s*:\s*INIT\s+SCF\s+Time\s*:\s*(\d+\.?\d*)", re.IGNORECASE,
+        r"DONE\s*:\s*INIT\s+SCF\s+Time\s*:\s*(\d+\.?\d*)",
+        re.IGNORECASE,
     )
 
     try:
@@ -362,8 +395,12 @@ def _format_wall_time(seconds: float) -> str:
         return f"{h}h{m:02d}m"
 
 
-@task(702, category="SCF Analysis", name="SCF Compare",
-      description="Compare SCF convergence between multiple calculations")
+@task(
+    702,
+    category="SCF Analysis",
+    name="SCF Compare",
+    description="Compare SCF convergence between multiple calculations",
+)
 def task_scf_compare(args: list[str] | None = None, interactive: bool = True) -> None:
     """Compare SCF convergence across multiple runs.
 
@@ -535,7 +572,11 @@ def _parse_calculation_status(out_dir: Path) -> dict:
     }
 
     # Find the main log file
-    log_files = sorted(out_dir.glob("running_*.log")) + sorted(out_dir.glob("output*")) + sorted(out_dir.glob("*.log"))
+    log_files = (
+        sorted(out_dir.glob("running_*.log"))
+        + sorted(out_dir.glob("output*"))
+        + sorted(out_dir.glob("*.log"))
+    )
     if not log_files:
         result["errors"].append("No log file found")
         return result
@@ -583,6 +624,7 @@ def _parse_calculation_status(out_dir: Path) -> dict:
             # Patterns with "eV" suffix are already in eV; convert to Ry for storage
             if "eV" in pat:
                 from abacuscopilot.core.constants import RY_TO_EV
+
                 result["final_energy_ry"] = e_val / RY_TO_EV
             else:
                 result["final_energy_ry"] = e_val
@@ -647,9 +689,15 @@ _RE_STEP_RELAX = re.compile(r"STEP\s+OF\s+RELAXATION\s*:\s*(\d+)", re.IGNORECASE
 _RE_STEP_MD = re.compile(r"STEP\s+OF\s+MOLECULAR\s+DYNAMICS\s*:\s*(\d+)", re.IGNORECASE)
 _RE_ION_ELEC_LEGACY = re.compile(r"ION=\s*(\d+)\s+ELEC=\s*(\d+)")
 _RE_ION_ELEC_V3 = re.compile(r"#ION\s+MOVE#\s+(\d+)\s+#ELEC\s+ITER#\s+(\d+)")
-_RE_FINAL_ETOT = re.compile(r"final\s+etot\s+is\s+(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE)
-_RE_FINAL_ETOT_BANG = re.compile(r"!FINAL_ETOT_IS\s*(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE)
-_RE_TOTAL_ENERGY = re.compile(r"#TOTAL\s+ENERGY#\s*(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE)
+_RE_FINAL_ETOT = re.compile(
+    r"final\s+etot\s+is\s+(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE
+)
+_RE_FINAL_ETOT_BANG = re.compile(
+    r"!FINAL_ETOT_IS\s*(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE
+)
+_RE_TOTAL_ENERGY = re.compile(
+    r"#TOTAL\s+ENERGY#\s*(-?\d+\.?\d+(?:[eE][+-]?\d+)?)\s*eV", re.IGNORECASE
+)
 _RE_CONVERGED = re.compile(
     r"(?:charge\s+density\s+convergence\s+is\s+achieved|#SCF\s+IS\s+CONVERGED#"
     r"|converged|SCF\s+done|reach\s+convergence)",
@@ -657,10 +705,12 @@ _RE_CONVERGED = re.compile(
 )
 # Ionic (geometry) convergence — per-step relaxation verdict
 _RE_IONIC_CONVERGED = re.compile(
-    r"Relaxation\s+is\s+converged", re.IGNORECASE,
+    r"Relaxation\s+is\s+converged",
+    re.IGNORECASE,
 )
 _RE_IONIC_NOT_CONVERGED = re.compile(
-    r"Relaxation\s+is\s+not\s+converged", re.IGNORECASE,
+    r"Relaxation\s+is\s+not\s+converged",
+    re.IGNORECASE,
 )
 _RE_FORCE_HEADER = re.compile(r"TOTAL-FORCE\s+\(eV/Angstrom\)", re.IGNORECASE)
 _RE_FORCE_LINE = re.compile(
@@ -764,7 +814,11 @@ def _parse_ionic_steps(out_dir: Path) -> dict:
                     ion_n = int(elec_match.group(1))
                     elec_n = int(elec_match.group(2))
                     # Detect ionic step boundary: #ION MOVE# increment
-                    if cur_step is not None and cur_step.get("elec", 0) > 0 and ion_n > cur_step.get("ion", 0):
+                    if (
+                        cur_step is not None
+                        and cur_step.get("elec", 0) > 0
+                        and ion_n > cur_step.get("ion", 0)
+                    ):
                         _push_step(cur_step)
                         cur_step = {
                             "ion": ion_n,
@@ -811,7 +865,11 @@ def _parse_ionic_steps(out_dir: Path) -> dict:
                     continue
 
                 # --- Energy ---
-                etot_match = _RE_FINAL_ETOT.search(line) or _RE_FINAL_ETOT_BANG.search(line) or _RE_TOTAL_ENERGY.search(line)
+                etot_match = (
+                    _RE_FINAL_ETOT.search(line)
+                    or _RE_FINAL_ETOT_BANG.search(line)
+                    or _RE_TOTAL_ENERGY.search(line)
+                )
                 if etot_match and cur_step is not None:
                     try:
                         cur_step["energy_ev"] = float(etot_match.group(1))
@@ -905,8 +963,12 @@ def _parse_ionic_steps(out_dir: Path) -> dict:
     return result
 
 
-@task(703, category="SCF Analysis", name="Ion Steps",
-      description="Per-ion-step summary: SCF iters, convergence, energy, forces")
+@task(
+    703,
+    category="SCF Analysis",
+    name="Ion Steps",
+    description="Per-ion-step summary: SCF iters, convergence, energy, forces",
+)
 def task_sys_status(args: list[str] | None = None, interactive: bool = True) -> None:
     """Show a per-ionic-step summary table — ideal for monitoring relax/MD runs."""
     console = _get_console()
@@ -930,8 +992,11 @@ def task_sys_status(args: list[str] | None = None, interactive: bool = True) -> 
 
     # ---- Header line ----
     calc_labels = {
-        "scf": "SCF", "relax": "relax", "cell-relax": "cell-relax",
-        "md": "MD", "nscf": "NSCF",
+        "scf": "SCF",
+        "relax": "relax",
+        "cell-relax": "cell-relax",
+        "md": "MD",
+        "nscf": "NSCF",
     }
     calc_name = calc_labels.get(data["calc_type"], data["calc_type"])
     completed = data["completed"]
@@ -1031,14 +1096,16 @@ def task_sys_status(args: list[str] | None = None, interactive: bool = True) -> 
             failed_indices = [str(s["ion"]) for s in steps if not s["converged"]]
             footer_parts.append(
                 f"[dim]SCF: {n_scf_conv}/{n_total} converged"
-                + (f" (step{'s' if len(failed_indices) > 1 else ''} {','.join(failed_indices)} failed)" if failed_indices else "")
+                + (
+                    f" (step{'s' if len(failed_indices) > 1 else ''} {','.join(failed_indices)} failed)"
+                    if failed_indices
+                    else ""
+                )
                 + "[/dim]"
             )
     else:
         scf_icon = "[green]✓[/green]" if n_scf_conv == n_total else "[red]✗[/red]"
-        footer_parts = [
-            f"{scf_icon} [bold]SCF: {n_scf_conv}/{n_total} converged[/bold]"
-        ]
+        footer_parts = [f"{scf_icon} [bold]SCF: {n_scf_conv}/{n_total} converged[/bold]"]
     if data["natom"] > 0:
         footer_parts.append(f"{data['natom']} atoms")
     if is_relax:

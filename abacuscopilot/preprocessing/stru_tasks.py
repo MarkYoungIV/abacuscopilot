@@ -17,9 +17,13 @@ from abacuscopilot.core.models import Structure
 from abacuscopilot.tasks import task
 
 
-def _write_stru_bare(structure: Structure, is_lcao: bool = False,
-                     filepath: str = "STRU", is_dp: bool = False,
-                     suppress_f_core: bool = False) -> None:
+def _write_stru_bare(
+    structure: Structure,
+    is_lcao: bool = False,
+    filepath: str = "STRU",
+    is_dp: bool = False,
+    suppress_f_core: bool = False,
+) -> None:
     """Write STRU file, resolving pseudopotential/orbital filenames from library.
 
     Looks up the configured pseudo_library and orbital_library directories
@@ -78,8 +82,7 @@ def _write_stru_bare(structure: Structure, is_lcao: bool = False,
         for sp, kind, fallback, lib in missing:
             libs_shown = "; ".join(lib) if isinstance(lib, list) else (lib or "none configured")
             console.print(
-                f"  [red]{sp} {kind}[/red] → '{fallback}'"
-                f"  [dim](library: {libs_shown})[/dim]"
+                f"  [red]{sp} {kind}[/red] → '{fallback}'  [dim](library: {libs_shown})[/dim]"
             )
         console.print(
             "[yellow]Add the missing PP/orbital files to a library directory, or configure "
@@ -100,18 +103,19 @@ def _offer_3d_view(console, source_path: str = "STRU") -> None:
     """
     try:
         import ase
+
         del ase
     except ImportError:
         return
 
-    want = _prompt_choice(console, "Open in 3D viewer? (ase gui)",
-                          ["Yes", "No"], "Yes")
+    want = _prompt_choice(console, "Open in 3D viewer? (ase gui)", ["Yes", "No"], "Yes")
     if "No" in want:
         return
 
     # Prefer original POSCAR/CIF if present; otherwise convert STRU
     import shutil
     import tempfile
+
     tmpdir = None
     viewer_path = None
 
@@ -127,11 +131,13 @@ def _offer_3d_view(console, source_path: str = "STRU") -> None:
     if viewer_path is None:
         try:
             from abacuscopilot.io.stru_file import read_stru
+
             structure = read_stru(source_path)
             atoms = structure.to_ase()
             tmpdir = tempfile.mkdtemp(prefix="abacuscopilot_")
             viewer_path = f"{tmpdir}/POSCAR"
             from ase.io import write as ase_write
+
             ase_write(viewer_path, atoms, format="vasp")
         except Exception as e:
             console.print(f"  [yellow]! Cannot preview: {e}[/yellow]")
@@ -140,12 +146,14 @@ def _offer_3d_view(console, source_path: str = "STRU") -> None:
     console.print(f"  [dim]Launching ase gui {viewer_path} ...[/dim]")
     console.print("  [dim](close the 3D window to return to AbacusCopilot)[/dim]")
     import subprocess
+
     proc = subprocess.Popen(["ase", "gui", viewer_path])
     if tmpdir:
         import threading
+
         threading.Thread(
-            target=lambda: (proc.wait(), shutil.rmtree(tmpdir, ignore_errors=True)),
-            daemon=True).start()
+            target=lambda: (proc.wait(), shutil.rmtree(tmpdir, ignore_errors=True)), daemon=True
+        ).start()
 
 
 def _choose_coordinate_type(console, structure: Structure) -> Structure:
@@ -173,9 +181,7 @@ def _choose_coordinate_type(console, structure: Structure) -> Structure:
     return structure
 
 
-def _run_full_calculation_setup(
-    console, structure, cif_path: str | None = None
-) -> None:
+def _run_full_calculation_setup(console, structure, cif_path: str | None = None) -> None:
     """After STRU is written, proceed to INPUT generation + file preparation.
 
     This is the "configure full calculation" branch of STRU tasks.
@@ -199,14 +205,18 @@ def _run_full_calculation_setup(
     console.print()
 
     # Step 1: pick basis + calculation, apply INPUT template
-    basis, calc = _ask_basis_and_calc(console, [
-        ("cell-relax (atoms + cell)", "cell-relax"),
-        ("relax (atoms only)", "relax"),
-        ("SCF", "scf"),
-        ("Band (NSCF)", "nscf"),
-        ("DOS (NSCF)", "dos"),
-        ("MD", "md"),
-    ], default_calc_index=0)
+    basis, calc = _ask_basis_and_calc(
+        console,
+        [
+            ("cell-relax (atoms + cell)", "cell-relax"),
+            ("relax (atoms only)", "relax"),
+            ("SCF", "scf"),
+            ("Band (NSCF)", "nscf"),
+            ("DOS (NSCF)", "dos"),
+            ("MD", "md"),
+        ],
+        default_calc_index=0,
+    )
 
     params = InputParams()
     params.suffix = "ABACUS"
@@ -225,25 +235,29 @@ def _run_full_calculation_setup(
         adjust_ecutwfc_for_f_core,
         analyze_f_core,
     )
+
     info = analyze_f_core(structure)
     if info["f_core_species"] and "lcao" in (params.basis_type or ""):
         adjust_ecutwfc_for_f_core(console, params, info)
 
     # Override specific params for MD
     if calc == "md":
-        params.md_type = _prompt_choice(console, "MD ensemble",
-                                        ["nvt", "npt", "nve", "langevin", "fire", "msst"], "nvt")
+        params.md_type = _prompt_choice(
+            console, "MD ensemble", ["nvt", "npt", "nve", "langevin", "fire", "msst"], "nvt"
+        )
         params.md_nstep = int(_prompt(console, "Number of MD steps", 10000))
         params.md_dt = float(_prompt(console, "Time step (fs)", 1.0))
         params.md_tfirst = float(_prompt(console, "Initial temperature (K)", 300.0))
         params.md_tlast = float(_prompt(console, "Final temperature (K)", 300.0))
     elif calc == "dos":
-        dos_type = _prompt_choice(console, "DOS type",
-                                  ["Total DOS", "Projected DOS (PDOS)"], "Total DOS")
+        dos_type = _prompt_choice(
+            console, "DOS type", ["Total DOS", "Projected DOS (PDOS)"], "Total DOS"
+        )
         params.out_dos = 2 if "Projected" in dos_type else 1
 
     # Write INPUT
     from abacuscopilot.io.input_file import write_input
+
     write_input(params)
 
     console.print()
@@ -252,9 +266,11 @@ def _run_full_calculation_setup(
 
     # Step 2: fix STRU with resolved upf/orb filenames
     from abacuscopilot.io.stru_file import read_stru as _read_stru
+
     _stru = _read_stru("STRU")
-    _write_stru_bare(_stru, is_lcao=params.basis_type == "lcao", filepath="STRU",
-                     suppress_f_core=True)
+    _write_stru_bare(
+        _stru, is_lcao=params.basis_type == "lcao", filepath="STRU", suppress_f_core=True
+    )
 
     # Step 3: copy pseudopotential & orbital files
     config = load_config()
@@ -288,8 +304,13 @@ def _run_full_calculation_setup(
 # Task 201: CIF to STRU
 # =============================================================================
 
-@task(201, category="STRU", name="CIF to STRU",
-      description="Convert CIF (Crystallographic Information File) to ABACUS STRU format")
+
+@task(
+    201,
+    category="STRU",
+    name="CIF to STRU",
+    description="Convert CIF (Crystallographic Information File) to ABACUS STRU format",
+)
 def task_stru_from_cif(args: list[str] | None = None, interactive: bool = True) -> None:
     """Generate a STRU file from a CIF file.
 
@@ -358,6 +379,7 @@ def task_stru_from_cif(args: list[str] | None = None, interactive: bool = True) 
     else:
         from abacuscopilot.core.standards import is_lcao_basis
         from abacuscopilot.preprocessing.system_tasks import resolve_basis_type
+
         write_orb = is_lcao_basis(resolve_basis_type(structure, interactive))
 
     _write_stru_bare(structure, is_lcao=write_orb)
@@ -380,8 +402,78 @@ def task_stru_from_cif(args: list[str] | None = None, interactive: bool = True) 
 # Task 202: POSCAR to STRU (VASP format)
 # =============================================================================
 
-@task(202, category="STRU", name="POSCAR to STRU",
-      description="Convert VASP POSCAR/CONTCAR to ABACUS STRU format")
+
+def _clean_poscar_structure(path: str | Path) -> str | None:
+    """Extract only the structural block of a POSCAR/CONTCAR.
+
+    CONTCAR files carry a velocity block right after the atomic coordinates.
+    ASE's vasp reader parses that block, so a truncated/malformed velocity tail
+    (e.g. the final line cut mid-number like ``0.00000000E``) makes ASE fail
+    even though the structure itself is intact. Structure conversion never needs
+    velocities, so keep only the header + exactly ``sum(counts)`` coordinate
+    lines and drop everything after (blank line, velocity block, truncated tail).
+
+    Returns clean POSCAR text, or ``None`` if the file does not look like a
+    VASP structure (caller then falls back to ASE's own error message).
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        lines = f.read().splitlines()
+    if not lines:
+        return None
+
+    # Locate the coordinate-type header ('Direct' / 'Cartesian').
+    coord_idx = next(
+        (i for i, ln in enumerate(lines) if ln.strip().lower().startswith(("direct", "cartesian"))),
+        None,
+    )
+    if coord_idx is None:
+        return None
+
+    # Walk back past an optional 'Selective dynamics' flag to the counts line
+    # (the last line whose tokens are all integers). Tolerates VASP4 files that
+    # lack a species-symbols line.
+    counts: list[int] | None = None
+    for ln in reversed(lines[:coord_idx]):
+        toks = ln.split()
+        if toks and all(t.lstrip("+-").isdigit() for t in toks):
+            counts = [int(t) for t in toks]
+            break
+    if counts is None:
+        return None
+    n_atoms = sum(counts)
+
+    # Keep header + exactly n_atoms coordinate lines; drop the velocity/junk tail.
+    keep = lines[: coord_idx + 1 + n_atoms]
+    return "\n".join(keep) + "\n"
+
+
+def _ase_read_vasp_clean(path: str | Path):
+    """ASE-read a structure file, stripping VASP velocity/trailing blocks.
+
+    CONTCAR files carry a velocity block after the coordinates; ASE's vasp
+    reader parses it and crashes when that block is truncated/malformed even
+    though the structure is intact. Structure-only consumers never need
+    velocities, so clean the file down to its structural block first.
+
+    Non-VASP inputs (CIF, XYZ, ...) fall through to ASE's format autodetection.
+    Raises ImportError if ASE is not installed.
+    """
+    from io import StringIO
+
+    from ase.io import read as ase_read
+
+    clean = _clean_poscar_structure(path)
+    if clean is not None:
+        return ase_read(StringIO(clean), format="vasp")
+    return ase_read(path)
+
+
+@task(
+    202,
+    category="STRU",
+    name="POSCAR to STRU",
+    description="Convert VASP POSCAR/CONTCAR to ABACUS STRU format",
+)
 def task_stru_from_poscar(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert a VASP POSCAR file to ABACUS STRU format.
 
@@ -407,14 +499,14 @@ def task_stru_from_poscar(args: list[str] | None = None, interactive: bool = Tru
         return
 
     try:
-        from ase.io import read as ase_read
+        # CONTCAR files carry a velocity block after the coordinates; the cleaner
+        # strips it (plus any truncated tail) before ASE sees the file, since
+        # structure conversion never needs velocities.
+        atoms = _ase_read_vasp_clean(poscar_path)
+        console.print(f"  [dim]Loaded {len(atoms)} atoms from POSCAR[/dim]")
     except ImportError:
         console.print("[red]This task requires ASE. Install with: pip install ase[/red]")
         return
-
-    try:
-        atoms = ase_read(poscar_path, format="vasp")
-        console.print(f"  [dim]Loaded {len(atoms)} atoms from POSCAR[/dim]")
     except Exception as e:
         console.print(f"[red]Failed to read POSCAR: {e}[/red]")
         if Path(poscar_path).exists():
@@ -448,6 +540,7 @@ def task_stru_from_poscar(args: list[str] | None = None, interactive: bool = Tru
     else:
         from abacuscopilot.core.standards import is_lcao_basis
         from abacuscopilot.preprocessing.system_tasks import resolve_basis_type
+
         write_orb = is_lcao_basis(resolve_basis_type(structure, interactive))
 
     _write_stru_bare(structure, is_lcao=write_orb)
@@ -474,8 +567,12 @@ def _is_direct(coord_type: str) -> bool:
     return coord_type.lower().startswith("direct")
 
 
-@task(203, category="STRU", name="Coord Convert",
-      description="Convert STRU atomic positions between Direct (fractional) and Cartesian (Å)")
+@task(
+    203,
+    category="STRU",
+    name="Coord Convert",
+    description="Convert STRU atomic positions between Direct (fractional) and Cartesian (Å)",
+)
 def task_coord_convert(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert STRU coordinates between Direct and Cartesian_angstrom.
 
@@ -507,9 +604,12 @@ def task_coord_convert(args: list[str] | None = None, interactive: bool = True) 
 
     try:
         from abacuscopilot.io.stru_file import read_stru
+
         structure = read_stru(stru_path)
-        console.print(f"  [dim]Loaded {structure.num_atoms} atoms, "
-                      f"{structure.num_species} species from {stru_path}[/dim]")
+        console.print(
+            f"  [dim]Loaded {structure.num_atoms} atoms, "
+            f"{structure.num_species} species from {stru_path}[/dim]"
+        )
     except Exception as e:
         console.print(f"[red]Failed to read STRU: {e}[/red]")
         return
@@ -548,6 +648,7 @@ def task_coord_convert(args: list[str] | None = None, interactive: bool = True) 
             else:
                 # Cartesian_bohr / Cartesian_au → convert to Angstrom first
                 from abacuscopilot.core.constants import BOHR_TO_ANGSTROM
+
                 cart = atom.position * BOHR_TO_ANGSTROM
             atom.position = np.linalg.solve(cell.T, cart)
         structure.coordinate_type = "Direct"
@@ -568,9 +669,12 @@ def task_coord_convert(args: list[str] | None = None, interactive: bool = True) 
     from abacuscopilot.core.standards import is_lcao_basis
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
     from abacuscopilot.preprocessing.system_tasks import resolve_basis_type
-    _write_stru_bare(structure,
-                     is_lcao=is_lcao_basis(resolve_basis_type(structure, interactive)),
-                     filepath=out_path)
+
+    _write_stru_bare(
+        structure,
+        is_lcao=is_lcao_basis(resolve_basis_type(structure, interactive)),
+        filepath=out_path,
+    )
 
     console.print()
     console.print(f"[green]✓ Converted to {target} → {out_path}[/green]")
@@ -582,8 +686,13 @@ def task_coord_convert(args: list[str] | None = None, interactive: bool = True) 
 # Task 204: STRU to CIF
 # =============================================================================
 
-@task(204, category="STRU", name="STRU to CIF",
-      description="Convert ABACUS STRU file to CIF (Crystallographic Information File)")
+
+@task(
+    204,
+    category="STRU",
+    name="STRU to CIF",
+    description="Convert ABACUS STRU file to CIF (Crystallographic Information File)",
+)
 def task_stru_to_cif(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert a STRU file to CIF format."""
     console = _get_console()
@@ -606,14 +715,21 @@ def task_stru_to_cif(args: list[str] | None = None, interactive: bool = True) ->
 
     try:
         from abacuscopilot.io.stru_file import read_stru
+
         structure = read_stru(stru_path)
-        console.print(f"  [dim]Loaded {structure.num_atoms} atoms, "
-                      f"{structure.num_species} species from {stru_path}[/dim]")
+        console.print(
+            f"  [dim]Loaded {structure.num_atoms} atoms, "
+            f"{structure.num_species} species from {stru_path}[/dim]"
+        )
     except Exception as e:
         console.print(f"[red]Failed to read STRU: {e}[/red]")
         if Path(stru_path).suffix.lower() in (".cif", ".vasp", ".poscar"):
-            console.print(f"[dim]'{stru_path}' looks like a CIF/POSCAR file, not a STRU file.[/dim]")
-            console.print("[dim]To convert CIF → STRU, use task 201. To convert POSCAR → STRU, use task 202.[/dim]")
+            console.print(
+                f"[dim]'{stru_path}' looks like a CIF/POSCAR file, not a STRU file.[/dim]"
+            )
+            console.print(
+                "[dim]To convert CIF → STRU, use task 201. To convert POSCAR → STRU, use task 202.[/dim]"
+            )
         return
 
     # Convert via ASE
@@ -634,6 +750,7 @@ def task_stru_to_cif(args: list[str] | None = None, interactive: bool = True) ->
 
     try:
         from ase.io import write as ase_write
+
         ase_write(out, atoms, format="cif")
     except Exception as e:
         console.print(f"[red]Failed to write CIF: {e}[/red]")
@@ -649,8 +766,13 @@ def task_stru_to_cif(args: list[str] | None = None, interactive: bool = True) ->
 # Task 205: STRU to POSCAR
 # =============================================================================
 
-@task(205, category="STRU", name="STRU to POSCAR",
-      description="Convert ABACUS STRU file to VASP POSCAR format")
+
+@task(
+    205,
+    category="STRU",
+    name="STRU to POSCAR",
+    description="Convert ABACUS STRU file to VASP POSCAR format",
+)
 def task_stru_to_poscar(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert a STRU file to VASP POSCAR format."""
     console = _get_console()
@@ -673,9 +795,12 @@ def task_stru_to_poscar(args: list[str] | None = None, interactive: bool = True)
 
     try:
         from abacuscopilot.io.stru_file import read_stru
+
         structure = read_stru(stru_path)
-        console.print(f"  [dim]Loaded {structure.num_atoms} atoms, "
-                      f"{structure.num_species} species from {stru_path}[/dim]")
+        console.print(
+            f"  [dim]Loaded {structure.num_atoms} atoms, "
+            f"{structure.num_species} species from {stru_path}[/dim]"
+        )
     except Exception as e:
         console.print(f"[red]Failed to read STRU: {e}[/red]")
         return
@@ -696,6 +821,7 @@ def task_stru_to_poscar(args: list[str] | None = None, interactive: bool = True)
 
     try:
         from ase.io import write as ase_write
+
         ase_write(out, atoms, format="vasp", direct=True)
     except Exception as e:
         console.print(f"[red]Failed to write POSCAR: {e}[/red]")
@@ -704,7 +830,9 @@ def task_stru_to_poscar(args: list[str] | None = None, interactive: bool = True)
     console.print()
     console.print(f"[green]✓ POSCAR file written: {out}[/green]")
     console.print(f"  {len(atoms)} atoms, chemical formula: {atoms.get_chemical_formula()}")
-    console.print("  [dim]Tip: use 'abacuscopilot -task 302' to generate KPT for the band path[/dim]")
+    console.print(
+        "  [dim]Tip: use 'abacuscopilot -task 302' to generate KPT for the band path[/dim]"
+    )
     console.print()
 
 
@@ -712,8 +840,13 @@ def task_stru_to_poscar(args: list[str] | None = None, interactive: bool = True)
 # Task 206: STRU to PDB
 # =============================================================================
 
-@task(206, category="STRU", name="STRU to PDB",
-      description="Convert ABACUS STRU to PDB format for VMD/PyMOL visualization")
+
+@task(
+    206,
+    category="STRU",
+    name="STRU to PDB",
+    description="Convert ABACUS STRU to PDB format for VMD/PyMOL visualization",
+)
 def task_stru_to_pdb(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert STRU to PDB format."""
     console = _get_console()
@@ -739,6 +872,7 @@ def task_stru_to_pdb(args: list[str] | None = None, interactive: bool = True) ->
 
     try:
         from abacuscopilot.io.stru_file import read_stru
+
         structure = read_stru(stru_path)
         atoms = structure.to_ase()
     except Exception as e:
@@ -755,6 +889,7 @@ def task_stru_to_pdb(args: list[str] | None = None, interactive: bool = True) ->
 
     try:
         from ase.io import write as ase_write
+
         ase_write(str(out), atoms, format="proteindatabank")
     except Exception as e:
         console.print(f"[red]Failed to write PDB: {e}[/red]")
@@ -770,8 +905,13 @@ def task_stru_to_pdb(args: list[str] | None = None, interactive: bool = True) ->
 # Task 207: STRU 3D visualization
 # =============================================================================
 
-@task(210, category="STRU", name="View Structure",
-      description="Open STRU/CIF/POSCAR in ASE 3D viewer for visual inspection")
+
+@task(
+    210,
+    category="STRU",
+    name="View Structure",
+    description="Open STRU/CIF/POSCAR in ASE 3D viewer for visual inspection",
+)
 def task_view_structure(args: list[str] | None = None, interactive: bool = True) -> None:
     """Open a structure file in ASE's interactive 3D GUI viewer."""
     console = _get_console()
@@ -819,7 +959,9 @@ def task_view_structure(args: list[str] | None = None, interactive: bool = True)
                 viewer_path = str(cif[0])
 
     if viewer_path is None or not Path(viewer_path).exists():
-        console.print("[red]No structure file found (STRU/POSCAR/CONTCAR/*.cif/*.traj/MD_dump).[/red]")
+        console.print(
+            "[red]No structure file found (STRU/POSCAR/CONTCAR/*.cif/*.traj/MD_dump).[/red]"
+        )
         return
 
     console.print(f"  [dim]Opening: {viewer_path}[/dim]")
@@ -828,21 +970,26 @@ def task_view_structure(args: list[str] | None = None, interactive: bool = True)
     import tempfile
 
     from ase.io import write as ase_write
+
     tmpdir = None
     open_path = viewer_path
 
     # STRU needs conversion (ASE can't read ABACUS format natively)
-    is_stru = (Path(viewer_path).suffix == "" or "STRU" in str(viewer_path)) and \
-              Path(viewer_path).suffix not in (".traj", ".cif") and \
-              "MD_dump" not in str(viewer_path)
+    is_stru = (
+        (Path(viewer_path).suffix == "" or "STRU" in str(viewer_path))
+        and Path(viewer_path).suffix not in (".traj", ".cif")
+        and "MD_dump" not in str(viewer_path)
+    )
     if is_stru:
         try:
             from abacuscopilot.io.stru_file import read_stru
+
             structure = read_stru(viewer_path)
             atoms = structure.to_ase()
             tmpdir = tempfile.mkdtemp(prefix="abacuscopilot_")
             open_path = f"{tmpdir}/POSCAR"
             from ase.io import write as ase_write
+
             ase_write(open_path, atoms, format="vasp")
             console.print("  [dim](converted STRU -> POSCAR for ASE)[/dim]")
         except Exception as e:
@@ -853,6 +1000,7 @@ def task_view_structure(args: list[str] | None = None, interactive: bool = True)
     if "MD_dump" in str(viewer_path):
         try:
             from abacuscopilot.postprocessing.md_tasks import parse_md_dump
+
             frames = parse_md_dump(viewer_path)
             if not frames:
                 console.print("[red]MD_dump is empty or unreadable.[/red]")
@@ -880,6 +1028,7 @@ def task_view_structure(args: list[str] | None = None, interactive: bool = True)
     import shutil
     import subprocess
     import threading
+
     console.print(f"  [dim]Launching ase gui {open_path} ...[/dim]")
     proc = subprocess.Popen(["ase", "gui", open_path])
     if tmpdir:
@@ -894,8 +1043,13 @@ def task_view_structure(args: list[str] | None = None, interactive: bool = True)
 # Task 208: STRU to LAMMPS data file
 # =============================================================================
 
-@task(208, category="STRU", name="STRU to LAMMPS",
-      description="Convert STRU to a LAMMPS data file (graph.lmp)")
+
+@task(
+    208,
+    category="STRU",
+    name="STRU to LAMMPS",
+    description="Convert STRU to a LAMMPS data file (graph.lmp)",
+)
 def task_stru_to_lammps(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert STRU to LAMMPS data format.
 
@@ -927,18 +1081,21 @@ def task_stru_to_lammps(args: list[str] | None = None, interactive: bool = True)
 
     try:
         from abacuscopilot.io.stru_file import read_stru
+
         structure = read_stru(stru_path)
     except Exception as e:
         console.print(f"[red]Failed to read STRU: {e}[/red]")
         return
 
-    console.print(f"  [dim]Loaded {structure.num_atoms} atoms, "
-                  f"{structure.num_species} species from {stru_path}[/dim]")
+    console.print(
+        f"  [dim]Loaded {structure.num_atoms} atoms, "
+        f"{structure.num_species} species from {stru_path}[/dim]"
+    )
 
     # Convert to ASE for Cartesian Angstrom coordinates + cell
     atoms_ase = structure.to_ase()
-    pos_cart = atoms_ase.get_positions()       # Cartesian Angstrom
-    cell_ang = atoms_ase.get_cell()[:]          # 3×3 Angstrom
+    pos_cart = atoms_ase.get_positions()  # Cartesian Angstrom
+    cell_ang = atoms_ase.get_cell()[:]  # 3×3 Angstrom
 
     # Output filename
     if interactive:
@@ -994,8 +1151,9 @@ def task_stru_to_lammps(args: list[str] | None = None, interactive: bool = True)
     console.print()
     console.print(f"[green]✓ LAMMPS data file written: {out_path.name}[/green]")
     console.print(f"  {structure.num_atoms} atoms, {structure.num_species} atom types")
-    console.print(f"  Box: {xhi:.4f} × {yhi:.4f} × {zhi:.4f} Å"
-                  + (" (triclinic)" if is_triclinic else ""))
+    console.print(
+        f"  Box: {xhi:.4f} × {yhi:.4f} × {zhi:.4f} Å" + (" (triclinic)" if is_triclinic else "")
+    )
     console.print()
 
 
@@ -1003,8 +1161,13 @@ def task_stru_to_lammps(args: list[str] | None = None, interactive: bool = True)
 # Task 209: LAMMPS data file → STRU
 # =============================================================================
 
-@task(209, category="STRU", name="LAMMPS to STRU",
-      description="Convert a LAMMPS data file to ABACUS STRU format")
+
+@task(
+    209,
+    category="STRU",
+    name="LAMMPS to STRU",
+    description="Convert a LAMMPS data file to ABACUS STRU format",
+)
 def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert a LAMMPS data file to STRU.
 
@@ -1073,10 +1236,18 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
         elif low_norm.startswith("atoms"):
             section = "atoms"
             continue
-        elif low_norm.startswith(("velocities", "bonds", "angles",
-                                  "dihedrals", "impropers",
-                                  "pair coeffs", "bond coeffs",
-                                  "angle coeffs")):
+        elif low_norm.startswith(
+            (
+                "velocities",
+                "bonds",
+                "angles",
+                "dihedrals",
+                "impropers",
+                "pair coeffs",
+                "bond coeffs",
+                "angle coeffs",
+            )
+        ):
             section = None  # skip to end of file
             continue
 
@@ -1166,8 +1337,10 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
         b_auto = round(max(ys) - min(ys) + 2 * margin, 4)
         c_auto = round(max(zs) - min(zs) + 2 * margin, 4)
         console.print("  [yellow]No box info in file.[/yellow]")
-        console.print(f"  Auto-computed from atom positions: "
-                      f"a={a_auto:.2f}  b={b_auto:.2f}  c={c_auto:.2f} Å  (α=β=γ=90°)")
+        console.print(
+            f"  Auto-computed from atom positions: "
+            f"a={a_auto:.2f}  b={b_auto:.2f}  c={c_auto:.2f} Å  (α=β=γ=90°)"
+        )
 
         if interactive:
             choice = _prompt_choice(
@@ -1211,6 +1384,7 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
 
     # --- Match masses to elements ---
     from abacuscopilot.io.stru_file import _ATOMIC_MASSES
+
     # Build reverse lookup: element → mass (keep only most common isotope)
     elem_mass: dict[str, float] = {}
     for elem, mass in sorted(_ATOMIC_MASSES.items()):
@@ -1254,7 +1428,9 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
                 type_to_elem[tid] = candidates[0][1]  # best guess
         else:
             type_to_elem[tid] = candidates[0][1]  # non-interactive: best guess
-            console.print(f"  Type {tid} (mass {m:.4f}) → [yellow]{candidates[0][1]}[/yellow] (best guess)")
+            console.print(
+                f"  Type {tid} (mass {m:.4f}) → [yellow]{candidates[0][1]}[/yellow] (best guess)"
+            )
 
     # --- Build Structure ---
     species = [type_to_elem[tid] for tid in sorted(type_to_elem)]
@@ -1269,6 +1445,7 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
     # STRU stores lattice as: constant (Bohr) × vectors (unitless).
     # We set constant=1 Bohr so vectors carry the full cell in Bohr.
     from abacuscopilot.core.constants import ANGSTROM_TO_BOHR
+
     lattice.constant = 1.0
     lattice.vectors = cell_ang * ANGSTROM_TO_BOHR  # Angstrom → Bohr
 
@@ -1291,11 +1468,14 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
     # Write STRU
     out_path = "STRU_LAMMPS" if Path("STRU").exists() else "STRU"
     from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
+
     _write_stru_bare(struct, is_lcao=False, filepath=out_path)
 
     console.print()
     console.print(f"[green]✓ STRU written: {out_path}[/green]")
-    console.print(f"  {struct.num_atoms} atoms, {struct.num_species} species: {' '.join(species_order)}")
+    console.print(
+        f"  {struct.num_atoms} atoms, {struct.num_species} species: {' '.join(species_order)}"
+    )
     if Path("STRU").exists() and out_path != "STRU":
         console.print("  [dim]Original STRU is unchanged.[/dim]")
     console.print()
@@ -1306,17 +1486,19 @@ def task_lammps_to_stru(args: list[str] | None = None, interactive: bool = True)
 # =============================================================================
 
 
-def _cell_from_params(a: float, b: float, c: float,
-                      alpha: float, beta: float, gamma: float) -> np.ndarray:
+def _cell_from_params(
+    a: float, b: float, c: float, alpha: float, beta: float, gamma: float
+) -> np.ndarray:
     """Lattice vectors (rows a, b, c, in Å) from cell parameters + angles (°)."""
     import numpy as _np
+
     al, be, ga = _np.radians([alpha, beta, gamma])
     ax = a
     bx = b * _np.cos(ga)
     by = b * _np.sin(ga)
     cx = c * _np.cos(be)
-    cy = c * ( _np.cos(al) - _np.cos(be) * _np.cos(ga)) / _np.sin(ga)
-    cz = _np.sqrt(max(c ** 2 - cx ** 2 - cy ** 2, 0.0))
+    cy = c * (_np.cos(al) - _np.cos(be) * _np.cos(ga)) / _np.sin(ga)
+    cz = _np.sqrt(max(c**2 - cx**2 - cy**2, 0.0))
     return _np.array([[ax, 0.0, 0.0], [bx, by, 0.0], [cx, cy, cz]])
 
 
@@ -1327,6 +1509,7 @@ def _read_pdb(filepath: str | Path):
     Returns an ase.Atoms with a zero cell when no CRYST1 line is present.
     """
     from ase import Atoms
+
     symbols: list[str] = []
     positions: list[list[float]] = []
     cell = None
@@ -1335,15 +1518,21 @@ def _read_pdb(filepath: str | Path):
             rec = line[:6].strip()
             if rec == "CRYST1":
                 try:
-                    a = float(line[6:15]); b = float(line[15:24]); c = float(line[24:33])
-                    al = float(line[33:40]); be = float(line[40:47]); ga = float(line[47:54])
+                    a = float(line[6:15])
+                    b = float(line[15:24])
+                    c = float(line[24:33])
+                    al = float(line[33:40])
+                    be = float(line[40:47])
+                    ga = float(line[47:54])
                     cell = _cell_from_params(a, b, c, al, be, ga)
                 except (ValueError, IndexError):
                     cell = None
             elif rec in ("ATOM", "HETATM"):
                 try:
                     el = line[12:16].strip()
-                    x = float(line[30:38]); y = float(line[38:46]); z = float(line[46:54])
+                    x = float(line[30:38])
+                    y = float(line[38:46])
+                    z = float(line[46:54])
                 except (ValueError, IndexError):
                     continue
                 if not el:  # fall back to the atom-name column
@@ -1366,8 +1555,12 @@ def _center_molecule_in_box(atoms, side: float) -> None:
     atoms.set_cell([[side, 0, 0], [0, side, 0], [0, 0, side]])
 
 
-@task(207, category="STRU", name="PDB to STRU",
-      description="Convert PDB (Protein Data Bank) to ABACUS STRU format")
+@task(
+    207,
+    category="STRU",
+    name="PDB to STRU",
+    description="Convert PDB (Protein Data Bank) to ABACUS STRU format",
+)
 def task_stru_from_pdb(args: list[str] | None = None, interactive: bool = True) -> None:
     """Generate a STRU file from a PDB file (isolated molecule, e.g. water).
 
@@ -1421,8 +1614,10 @@ def task_stru_from_pdb(args: list[str] | None = None, interactive: bool = True) 
             except (ValueError, TypeError):
                 side = 15.0
         _center_molecule_in_box(atoms, side)
-        console.print(f"  [dim]Box: {side:.1f} Å cube, molecule centered at "
-                      f"({side / 2:.2f}, {side / 2:.2f}, {side / 2:.2f})[/dim]")
+        console.print(
+            f"  [dim]Box: {side:.1f} Å cube, molecule centered at "
+            f"({side / 2:.2f}, {side / 2:.2f}, {side / 2:.2f})[/dim]"
+        )
 
     structure = Structure.from_ase(atoms)
 
@@ -1451,6 +1646,7 @@ def task_stru_from_pdb(args: list[str] | None = None, interactive: bool = True) 
     else:
         from abacuscopilot.core.standards import is_lcao_basis
         from abacuscopilot.preprocessing.system_tasks import resolve_basis_type
+
         write_orb = is_lcao_basis(resolve_basis_type(structure, interactive))
 
     _write_stru_bare(structure, is_lcao=write_orb)

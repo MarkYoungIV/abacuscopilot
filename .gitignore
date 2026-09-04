@@ -37,3 +37,12 @@ scripts/bader/bader.x
 # Pre-commit cache
 .pre-commit-cache/
 server-profiles/
+
+# NEB / run artifacts (ASE trajectories, logs, backups) that should not be committed
+*.traj
+*.log
+*.pdb
+*.bak
+neb-*/
+00/
+01/

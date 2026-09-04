@@ -46,7 +46,11 @@ EXCLUDES=(
 )
 
 rm -f "$OUT"
-tar czf "$OUT" "${EXCLUDES[@]}" "$(basename "$ROOT")"
+# macOS bsdtar stores Apple extended attributes (com.apple.quarantine on
+# downloaded files etc.) as PAX headers that GNU tar on Linux servers prints
+# hundreds of "Ignoring unknown extended header keyword" warnings for on
+# extract. Both flags together are needed to strip them from the archive.
+tar czf "$OUT" --no-xattrs --no-mac-metadata "${EXCLUDES[@]}" "$(basename "$ROOT")"
 gzip -t "$OUT"
 
 echo "OK: $(ls -lh "$OUT" | awk '{print $5}') tarball written"

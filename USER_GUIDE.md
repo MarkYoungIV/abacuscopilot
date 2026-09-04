@@ -1,6 +1,6 @@
 # AbacusCopilot 使用指南
 
-> **版本**: v0.1.33 (2026-08-31)  
+> **版本**: v0.1.34 (2026-09-04)  
 > **开发者**: Xu Yang (xuyangmark@foxmail.com)、Rong-yu Zhang  
 > **简介**: AbacusCopilot 是 ABACUS DFT 软件的前后处理 CLI 工具包，灵感来源于 VASPKIT。
 
@@ -738,13 +738,13 @@ abacuscopilot -task 1301
 
 任务号 3101–3108。支持 ABACUS MD_dump、LAMMPS dump、VASP XDATCAR 三种格式。
 
-### 3101 — MD Trajectory → PDB
+### 3101 — Trajectory → PDB
 
 ```bash
 abacuscopilot -task 3101
 ```
 
-将 MD_dump 转为 VMD 可读的 PDB 格式。支持单帧/全部帧/范围导出。
+将 ABACUS MD_dump 或 ASE `.traj`（MD/NEB 链，如 `converged.traj`/`path_*.traj`）转为 VMD 可读的 PDB 格式。支持单帧/全部帧/范围导出。
 
 ### 3102 — Extract Frames
 

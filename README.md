@@ -109,7 +109,7 @@ Configures pseudopotential paths, orbital directories, ABACUS binary location, a
 | 1202 | EOS Fitting | Birch-Murnaghan equation of state |
 | 1301 | Mulliken Analysis | Mulliken population |
 | 1401 | Mulliken Bond Order | Mulliken bond order / overlap population (ABACUS out_mul 1) |
-| 3101 | MD Trajectory → PDB | MD_dump → PDB for VMD/PyMOL |
+| 3101 | Trajectory → PDB | MD_dump / ASE .traj → PDB for VMD/PyMOL |
 | 3102 | Extract Frames | Subsample MD trajectory |
 | 3103 | MSD | Mean square displacement + diffusion |
 | 3104 | RDF | Radial distribution function |

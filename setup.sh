@@ -19,7 +19,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_NAME="abacuscopilot"
 PY_VERSION="3.11"
-PIP_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"   # edit if you prefer another mirror
+# Public PyPI mirrors are configured in the MIRRORS list under section 3c.
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -87,48 +87,82 @@ if [[ "${IS_UPGRADE}" == "1" ]] && pip show abacuscopilot >/dev/null 2>&1; then
     pip uninstall -y abacuscopilot >/dev/null 2>&1 || true
 fi
 
-# 3c. Editable install — tiered mirror fallback + offline fallback:
-#      1. Alibaba Cloud (fast, rarely blocked)
-#      2. Tsinghua (may be blocked on some networks)
-#      3. Default PyPI (global backstop)
-#      4. Offline (no PyPI access): PEP 517 build isolation hangs trying to
-#         download setuptools/wheel, so fall back to --no-build-isolation
-#         --no-deps. The conda env already ships setuptools/wheel and all
-#         runtime deps (fresh envs install them in the same setup run via pip).
-ALI_INDEX="https://mirrors.aliyun.com/pypi/simple/"
+# 3c. Editable install — try, in order:
+#   1. User's own pip index (pip.conf / PIP_INDEX_URL) — internal-network
+#      machines (e.g. HPC compute nodes) usually have a mirror configured that
+#      no public list knows about, so honor it first.
+#   2. Public PyPI mirrors — probe + install with the first one that both
+#      responds and actually installs cleanly.
+#   3. Offline fallback (no PyPI access): PEP 517 build isolation hangs trying
+#      to download setuptools/wheel, so fall back to --no-build-isolation
+#      --no-deps. The conda env ships setuptools/wheel; runtime deps are then
+#      verified below and, if missing, fail loudly with guidance.
 PIP_INSTALL="pip install -e . --upgrade --timeout 15 --retries 2"
 PIP_OFFLINE="pip install -e . --no-build-isolation --no-deps --upgrade"
 
-# Bounded connectivity probe — avoids a long hang when packets are dropped.
-if curl -sI --max-time 6 -o /dev/null "${ALI_INDEX}" 2>/dev/null; then
-    if ${PIP_INSTALL} -i "${ALI_INDEX}" 2>/dev/null; then
-        :
-    elif ${PIP_INSTALL} -i "${PIP_INDEX}" 2>/dev/null; then
-        echo -e "        ${YELLOW}Alibaba unreachable — used Tsinghua mirror${NC}"
+# Public PyPI mirrors, ordered by reachability for China mainland.
+# Edit this list if you prefer different mirrors.
+MIRRORS=(
+    "https://mirrors.aliyun.com/pypi/simple/"
+    "https://pypi.tuna.tsinghua.edu.cn/simple"
+    "https://mirrors.ustc.edu.cn/pypi/simple/"
+    "https://mirrors.huaweicloud.com/repository/pypi/simple/"
+    "https://mirrors.cloud.tencent.com/pypi/simple/"
+    "https://pypi.org/simple"
+)
+
+DEPS_INSTALLED=0
+
+# 1. Honor the user's existing pip index first (covers institutional mirrors).
+USER_INDEX="${PIP_INDEX_URL:-}"
+[ -z "$USER_INDEX" ] && USER_INDEX="$(pip config get global.index-url 2>/dev/null | tr -d '[:space:]' || true)"
+[ "$USER_INDEX" = "None" ] && USER_INDEX=""
+if [ -n "$USER_INDEX" ] && curl -sI --max-time 6 -o /dev/null "$USER_INDEX" 2>/dev/null; then
+    echo -e "        Using configured pip index: ${CYAN}${USER_INDEX}${NC}"
+    if ${PIP_INSTALL} -i "$USER_INDEX" 2>/dev/null; then
+        echo -e "        ${GREEN}✓${NC} Installed from your configured index"
+        DEPS_INSTALLED=1
     else
-        echo -e "        ${YELLOW}Both mirrors unreachable — falling back to default PyPI${NC}"
-        if ! ${PIP_INSTALL}; then
-            echo -e "        ${RED}Error: pip install failed on all mirrors.${NC}"
-            echo -e "        Trying offline install (--no-build-isolation --no-deps)..."
-            if ! ${PIP_OFFLINE}; then
-                echo -e "  ${RED}Error: pip install failed (online and offline).${NC}"
-                echo -e "  Try re-running:"
-                echo -e "    conda activate ${ENV_NAME} && pip install -e . --upgrade"
-                exit 1
-            fi
-        fi
+        echo -e "        ${YELLOW}Install failed with your configured index — trying public mirrors${NC}"
     fi
-else
-    echo -e "        ${YELLOW}No PyPI network access — offline install (--no-build-isolation --no-deps)${NC}"
-    if ! ${PIP_OFFLINE}; then
-        echo -e "  ${RED}Error: offline pip install failed.${NC}"
-        echo -e "  Check that the conda env has setuptools/wheel and all runtime deps."
+fi
+
+# 2. Otherwise (or on failure above) probe + install with each public mirror.
+if [ "${DEPS_INSTALLED}" != "1" ]; then
+    for M in "${MIRRORS[@]}"; do
+        if curl -sI --max-time 6 -o /dev/null "$M" 2>/dev/null && ${PIP_INSTALL} -i "$M" 2>/dev/null; then
+            echo -e "        ${GREEN}✓${NC} Installed from mirror: ${CYAN}${M}${NC}"
+            DEPS_INSTALLED=1
+            break
+        fi
+        echo -e "        ${YELLOW}✗ ${M} unreachable or install failed${NC}"
+    done
+fi
+
+# 3. All online paths failed — offline install, then verify deps honestly.
+if [ "${DEPS_INSTALLED}" != "1" ]; then
+    echo -e "  ${YELLOW}No reachable PyPI mirror — trying offline install (--no-build-isolation --no-deps)${NC}"
+    if ${PIP_OFFLINE}; then
+        # --no-deps skips every runtime dependency; check and fail loudly rather
+        # than finishing with a broken install (this was silent before).
+        if python -c "import numpy, scipy, matplotlib, rich, yaml, ase, seekpath, phonopy" 2>/dev/null; then
+            DEPS_INSTALLED=1
+        else
+            echo -e "  ${RED}ERROR: installed without dependencies (offline mode).${NC}"
+            echo -e "  This server cannot reach any PyPI mirror. Install deps by:"
+            echo -e "    1) On a networked machine: pip download <deps> -d wheels/, copy over, then"
+            echo -e "       pip install wheels/*.whl && ${PIP_OFFLINE}"
+            echo -e "    2) Or via conda-forge: conda install -c conda-forge numpy scipy matplotlib ase phonopy"
+            exit 1
+        fi
+    else
+        echo -e "  ${RED}Error: pip install failed (online and offline).${NC}"
+        echo -e "  Try re-running:"
+        echo -e "    conda activate ${ENV_NAME} && pip install -e . --upgrade"
         exit 1
     fi
 fi
-echo -e "        ${GREEN}✓${NC} numpy, scipy, matplotlib, rich, pyyaml, ase, seekpath installed"
-echo -e "        ${GREEN}✓${NC} atst-tools + NEB support installed"
-echo -e "        ${GREEN}✓${NC} abacuscopilot command registered"
+echo -e "        ${GREEN}✓${NC} abacuscopilot + dependencies installed"
 
 # 3d. Build the bundled Bader program (needed by Bader Charge, task 1304;
 #     currently hidden pending validation).
@@ -203,8 +237,15 @@ if [ ! -d "$SCRIPT_DIR/PP-Orb" ] || [ -z "$(ls -A "$SCRIPT_DIR/PP-Orb" 2>/dev/nu
 fi
 
 # --- 5. Verify installed version ---
+# Fail loudly if the import breaks, instead of printing "version: unknown"
+# and "Setup complete!" over a broken install.
 echo ""
 echo -e "  [5/5] Verifying installation..."
+if ! python -c "import abacuscopilot" >/dev/null 2>&1; then
+    echo -e "  ${RED}ERROR: abacuscopilot import failed — install is incomplete.${NC}"
+    echo -e "  Run:  conda activate ${ENV_NAME} && pip install -e . --no-build-isolation"
+    exit 1
+fi
 INSTALLED_VER=$(python -c "import abacuscopilot; print(abacuscopilot.__version__)" 2>/dev/null || echo "unknown")
 echo -e "        ${GREEN}✓${NC} AbacusCopilot version: ${BOLD}${INSTALLED_VER}${NC}"
 

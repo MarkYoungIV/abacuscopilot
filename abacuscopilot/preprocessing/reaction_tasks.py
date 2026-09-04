@@ -21,15 +21,18 @@ def _read_structure(filepath: str):
     p = Path(filepath)
 
     # Detect STRU format: no suffix, or filename contains "STRU"
-    is_stru = (p.suffix == "" and "STRU" in p.name.upper()) or \
-              p.suffix.upper() == ".STRU"
+    is_stru = (p.suffix == "" and "STRU" in p.name.upper()) or p.suffix.upper() == ".STRU"
 
     if is_stru:
         from abacuscopilot.io.stru_file import read_stru
+
         return read_stru(filepath).to_ase()
     else:
-        from ase.io import read as ase_read
-        return ase_read(filepath)
+        # Clean VASP velocity/trailing blocks (CONTCAR endpoints carry velocities
+        # that NEB only needs the geometry of) before ASE reads the file.
+        from abacuscopilot.preprocessing.stru_tasks import _ase_read_vasp_clean
+
+        return _ase_read_vasp_clean(filepath)
 
 
 def _write_images(images, fmt: str = "STRU"):
@@ -42,10 +45,44 @@ def _write_images(images, fmt: str = "STRU"):
         if fmt == "STRU":
             s = Structure.from_ase(img)
             from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
+
             _write_stru_bare(s, is_lcao=False, filepath=str(d / "STRU"))
         else:
             from ase.io import write as ase_write
+
             ase_write(d / "POSCAR", img, format="vasp")
+
+
+def _write_chain_pdb(images, path: str = "trj.pdb"):
+    """Write a NEB chain as a multi-model PDB for VMD.
+
+    Each image becomes one ``MODEL`` block, so VMD opens the path as a
+    trajectory (init → final). ASE 3.29 removed the PDB codec entirely, so the
+    records are emitted directly with standard fixed columns.
+    """
+    lines = [f"REMARK  NEB chain: {len(images)} images (one MODEL each); open with VMD"]
+    for m, img in enumerate(images, 1):
+        lines.append(f"MODEL     {m:4d}")
+        for i, (pos, elem) in enumerate(zip(img.get_positions(), img.get_chemical_symbols()), 1):
+            x, y, z = pos
+            buf = [" "] * 80
+            buf[0:6] = "ATOM  "  # record
+            buf[6:11] = f"{i:5d}"  # serial      (7-11)
+            buf[12:16] = elem.rjust(4) if len(elem) == 1 else elem[:4].ljust(4)  # name (13-16)
+            buf[17:20] = "MOL"  # residue     (18-20)
+            buf[21] = "A"  # chain       (22)
+            buf[22:26] = f"{1:4d}"  # residue seq (23-26)
+            buf[30:38] = f"{x:8.3f}"  # x (31-38)
+            buf[38:46] = f"{y:8.3f}"  # y (39-46)
+            buf[46:54] = f"{z:8.3f}"  # z (47-54)
+            buf[54:60] = f"{1.0:6.2f}"  # occupancy
+            buf[60:66] = f"{0.0:6.2f}"  # temp factor
+            buf[76:78] = elem.rjust(2)  # element (77-78)
+            lines.append("".join(buf))
+        lines.append("ENDMDL")
+    lines.append("END")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def _write_chain_structure(images, cell):
@@ -56,8 +93,6 @@ def _write_chain_structure(images, cell):
     Cell size unchanged.
     """
     from ase import Atoms as ASEAtoms
-
-    from abacuscopilot.core.models import Structure
 
     n_frames = len(images)
     n_atoms_per_frame = len(images[0])
@@ -81,15 +116,14 @@ def _write_chain_structure(images, cell):
             all_pos.append(images[0].get_positions()[i])
             all_symbols.append(images[0].get_chemical_symbols()[i])
 
-    big_atoms = ASEAtoms(symbols=all_symbols, positions=all_pos,
-                          cell=cell, pbc=True)
+    big_atoms = ASEAtoms(symbols=all_symbols, positions=all_pos, cell=cell, pbc=True)
 
-    s = Structure.from_ase(big_atoms)
-    from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
-    _write_stru_bare(s, is_lcao=False, filepath="trj.STRU", is_dp=True)
-
+    # trj.vasp: merged "whole chain in one structure" quick-look (static atoms
+    # once, moving atoms per frame). trj.pdb: the chain as a VMD trajectory.
     from ase.io import write as ase_write
+
     ase_write("trj.vasp", big_atoms, format="vasp")
+    _write_chain_pdb(images)
 
 
 def _compute_max_displacement(atoms_init, atoms_final) -> float:
@@ -98,21 +132,51 @@ def _compute_max_displacement(atoms_init, atoms_final) -> float:
     For single-atom movement this is the actual displacement.
     For multi-atom/rotation this is the maximum atom-wise displacement.
     Used to estimate NEB image count: n_images ≈ d_max / 0.8.
+
+    Periodic structures: the difference is reduced to the minimum image along
+    periodic axes. Two endpoint structures (e.g. ABACUS relaxations exported to
+    CIF) can store the same physical atom at a different periodic image, which
+    would otherwise inflate a framework atom's raw Cartesian difference by a
+    whole lattice vector and produce a bogus d_max ≈ cell size.
     """
     pos_i = atoms_init.get_positions()
     pos_f = atoms_final.get_positions()
-    diffs = np.linalg.norm(pos_f - pos_i, axis=1)
+    cell = atoms_init.get_cell(complete=True)
+    delta = pos_f - pos_i
+
+    pbc = np.asarray(atoms_init.pbc)
+    if pbc.any():
+        frac = delta @ np.linalg.inv(cell)
+        frac[:, ~pbc] = 0.0  # never wrap non-periodic axes
+        delta = delta - np.round(frac) @ cell
+
+    diffs = np.linalg.norm(delta, axis=1)
     return float(np.max(diffs))
 
 
 def _linear_interpolate(atoms_init, atoms_final, n_images: int):
-    """Linear interpolation of Cartesian coordinates between two structures."""
+    """Linear interpolation of Cartesian coordinates between two structures.
+
+    Endpoints (e.g. ABACUS relaxations or CIF exports) can store the same atom
+    at a different periodic image. Without alignment, index-wise interpolation
+    would sweep such framework atoms a whole lattice vector across the cell,
+    producing intermediate images with overlapping atoms (ABACUS then rejects
+    them as "structure unreasonable / atoms too close"). So first wrap each
+    final atom to the minimum-image position relative to its initial partner.
+    """
     from ase import Atoms as ASEAtoms
+
+    cell = atoms_init.get_cell()
+    inv_cell = np.linalg.inv(cell)
+    pos_init = atoms_init.get_positions()
+    pos_final = atoms_final.get_positions()
+    frac = (pos_final - pos_init) @ inv_cell
+    pos_final_aligned = pos_init + (frac - np.round(frac)) @ cell
 
     images = []
     for i in range(n_images + 2):  # including endpoints
         alpha = i / (n_images + 1)
-        pos = (1 - alpha) * atoms_init.get_positions() + alpha * atoms_final.get_positions()
+        pos = (1 - alpha) * pos_init + alpha * pos_final_aligned
         img = ASEAtoms(
             symbols=atoms_init.get_chemical_symbols(),
             positions=pos,
@@ -142,8 +206,13 @@ def _idpp_interpolate(atoms_init, atoms_final, n_images: int):
 # Task 3301: NEB Path (Linear)
 # =============================================================================
 
-@task(3301, category="Reaction Dynamics", name="NEB Path (Linear)",
-      description="Generate NEB path images by linear interpolation of coordinates")
+
+@task(
+    3301,
+    category="Reaction Dynamics",
+    name="NEB Path (Linear)",
+    description="Generate NEB path images by linear interpolation of coordinates",
+)
 def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> None:
     """Generate intermediate NEB images by linear interpolation."""
     console = _get_console()
@@ -154,10 +223,16 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
 
     # Find initial and final structures
     # Auto-detect: STRU_ini/STRU_fin, POSCAR_ini/fin, or relaxed STRU_ION_D
-    init_path = "STRU_ini" if Path("STRU_ini").exists() else \
-                ("POSCAR_ini" if Path("POSCAR_ini").exists() else "init/OUT.ABACUS/STRU_ION_D")
-    final_path = "STRU_fin" if Path("STRU_fin").exists() else \
-                 ("POSCAR_fin" if Path("POSCAR_fin").exists() else "final/OUT.ABACUS/STRU_ION_D")
+    init_path = (
+        "STRU_ini"
+        if Path("STRU_ini").exists()
+        else ("POSCAR_ini" if Path("POSCAR_ini").exists() else "init/OUT.ABACUS/STRU_ION_D")
+    )
+    final_path = (
+        "STRU_fin"
+        if Path("STRU_fin").exists()
+        else ("POSCAR_fin" if Path("POSCAR_fin").exists() else "final/OUT.ABACUS/STRU_ION_D")
+    )
 
     if interactive:
         init_path = _prompt(console, "Initial structure (POSCAR/STRU/CIF)", init_path)
@@ -187,7 +262,9 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
     console.print(f"  Max atomic displacement: {d_max:.4f} Å → suggested {suggested} images (odd)")
 
     if interactive:
-        n_images = int(_prompt(console, "Number of intermediate images (odd recommended)", str(suggested)))
+        n_images = int(
+            _prompt(console, "Number of intermediate images (odd recommended)", str(suggested))
+        )
     else:
         n_images = suggested
 
@@ -210,9 +287,9 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
         )
         write_dirs = "Yes" in want
         if write_dirs:
-            fmt = _prompt_choice(console, "Output format",
-                                 ["STRU (ABACUS)", "POSCAR (VASP)"],
-                                 "STRU (ABACUS)")
+            fmt = _prompt_choice(
+                console, "Output format", ["STRU (ABACUS)", "POSCAR (VASP)"], "STRU (ABACUS)"
+            )
             fmt = "STRU" if "STRU" in fmt else "POSCAR"
 
     if write_dirs:
@@ -222,15 +299,21 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
     _write_chain_structure(images, atoms_init.cell)
 
     from ase.io import write as ase_write
+
     traj_path = f"path_{n_images + 2}frames.traj"
     ase_write(traj_path, images)
     console.print()
     if write_dirs:
-        console.print(f"[green]✓ {n_images + 2} images ({fmt}) written to 00/ → {n_images + 1:02d}/[/green]")
-    console.print("[green]✓ Chain view: trj.STRU + trj.vasp (all frames in one structure)[/green]")
-    console.print(f"[green]✓ Trajectory: {traj_path} (open with task 206)[/green]")
-    console.print("  [dim]Copy INPUT and KPT to each subdirectory before running NEB[/dim]")
-    console.print("  [dim]Or use task 3303 to generate atst-tools config[/dim]")
+        console.print(
+            f"[green]✓ {n_images + 2} images ({fmt}) written to 00/ → {n_images + 1:02d}/[/green]"
+        )
+    console.print(
+        "[green]✓ Chain view: trj.vasp (merged) / trj.pdb (open in VMD to animate the path)[/green]"
+    )
+    console.print(f"[green]✓ Trajectory: {traj_path}[/green] (view frames with task 210)")
+    console.print(
+        f"  [dim]{traj_path} ready — run task 3303 (atst-tools NEB) or 3304 (ASE NEB) with it.[/dim]"
+    )
     console.print()
 
 
@@ -238,8 +321,13 @@ def task_neb_linear(args: list[str] | None = None, interactive: bool = True) -> 
 # Task 3302: NEB Path (IDPP)
 # =============================================================================
 
-@task(3302, category="Reaction Dynamics", name="NEB Path (IDPP)",
-      description="Generate NEB path images with IDPP pairwise-distance optimization")
+
+@task(
+    3302,
+    category="Reaction Dynamics",
+    name="NEB Path (IDPP)",
+    description="Generate NEB path images with IDPP pairwise-distance optimization",
+)
 def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> None:
     """Generate NEB images using IDPP (Image-Dependent Pair Potential).
 
@@ -254,10 +342,16 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
     console.print()
 
     # Auto-detect: STRU_ini/STRU_fin, POSCAR_ini/fin, or relaxed STRU_ION_D
-    init_path = "STRU_ini" if Path("STRU_ini").exists() else \
-                ("POSCAR_ini" if Path("POSCAR_ini").exists() else "init/OUT.ABACUS/STRU_ION_D")
-    final_path = "STRU_fin" if Path("STRU_fin").exists() else \
-                 ("POSCAR_fin" if Path("POSCAR_fin").exists() else "final/OUT.ABACUS/STRU_ION_D")
+    init_path = (
+        "STRU_ini"
+        if Path("STRU_ini").exists()
+        else ("POSCAR_ini" if Path("POSCAR_ini").exists() else "init/OUT.ABACUS/STRU_ION_D")
+    )
+    final_path = (
+        "STRU_fin"
+        if Path("STRU_fin").exists()
+        else ("POSCAR_fin" if Path("POSCAR_fin").exists() else "final/OUT.ABACUS/STRU_ION_D")
+    )
 
     if interactive:
         init_path = _prompt(console, "Initial structure (POSCAR/STRU/CIF)", init_path)
@@ -287,7 +381,9 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
     console.print(f"  Max atomic displacement: {d_max:.4f} Å → suggested {suggested} images (odd)")
 
     if interactive:
-        n_images = int(_prompt(console, "Number of intermediate images (odd recommended)", str(suggested)))
+        n_images = int(
+            _prompt(console, "Number of intermediate images (odd recommended)", str(suggested))
+        )
     else:
         n_images = suggested
 
@@ -310,9 +406,9 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
         )
         write_dirs = "Yes" in want
         if write_dirs:
-            fmt = _prompt_choice(console, "Output format",
-                                 ["STRU (ABACUS)", "POSCAR (VASP)"],
-                                 "STRU (ABACUS)")
+            fmt = _prompt_choice(
+                console, "Output format", ["STRU (ABACUS)", "POSCAR (VASP)"], "STRU (ABACUS)"
+            )
             fmt = "STRU" if "STRU" in fmt else "POSCAR"
 
     if write_dirs:
@@ -321,15 +417,21 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
     _write_chain_structure(images, atoms_init.cell)
 
     from ase.io import write as ase_write
+
     traj_path = f"path_{n_images + 2}frames.traj"
     ase_write(traj_path, images)
     console.print()
     if write_dirs:
-        console.print(f"[green]✓ {n_images + 2} images ({fmt}) written to 00/ → {n_images + 1:02d}/[/green]")
-    console.print("[green]✓ Chain view: trj.STRU + trj.vasp (all frames in one structure)[/green]")
-    console.print(f"[green]✓ Trajectory: {traj_path} (open with task 206)[/green]")
-    console.print("  [dim]Copy INPUT and KPT to each subdirectory before running NEB[/dim]")
-    console.print("  [dim]Or use task 3303 to generate atst-tools config[/dim]")
+        console.print(
+            f"[green]✓ {n_images + 2} images ({fmt}) written to 00/ → {n_images + 1:02d}/[/green]"
+        )
+    console.print(
+        "[green]✓ Chain view: trj.vasp (merged) / trj.pdb (open in VMD to animate the path)[/green]"
+    )
+    console.print(f"[green]✓ Trajectory: {traj_path}[/green] (view frames with task 210)")
+    console.print(
+        f"  [dim]{traj_path} ready — run task 3303 (atst-tools NEB) or 3304 (ASE NEB) with it.[/dim]"
+    )
     console.print()
 
 
@@ -337,8 +439,13 @@ def task_neb_idpp(args: list[str] | None = None, interactive: bool = True) -> No
 # Task 3303: atst-tools NEB YAML generator
 # =============================================================================
 
-@task(3303, category="Reaction Dynamics", name="atst-tools NEB Config",
-      description="Generate atst-tools neb.yaml from NEB image directories")
+
+@task(
+    3303,
+    category="Reaction Dynamics",
+    name="atst-tools NEB Config",
+    description="Generate atst-tools neb.yaml from NEB image directories",
+)
 def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True) -> None:
     """Generate an atst-tools compatible YAML configuration for NEB."""
     console = _get_console()
@@ -347,8 +454,9 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     console.print("[bold cyan]=== Generate atst-tools NEB Config ===[/bold cyan]")
     console.print()
 
-    image_dirs = sorted([d for d in Path(".").iterdir()
-                         if d.is_dir() and d.name.isdigit() and len(d.name) == 2])
+    image_dirs = sorted(
+        [d for d in Path(".").iterdir() if d.is_dir() and d.name.isdigit() and len(d.name) == 2]
+    )
     n_images = len(image_dirs)
     first_dir = image_dirs[0] if image_dirs else None
 
@@ -362,6 +470,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
             console.print("[dim]Run task 3301 or 3302 first to generate NEB paths.[/dim]")
             return
         from ase.io import read as ase_read
+
         images = ase_read(str(traj_files[0]), index=":")
         n_images = len(images)
         atoms0 = images[0]
@@ -372,17 +481,20 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
         from_traj = True
         console.print(f"  Reading {n_images} images from {traj_files[0].name}")
     else:
-        console.print(f"  Found {n_images} image directories: "
-                      f"{first_dir.name}/ -> {image_dirs[-1].name}/")
+        console.print(
+            f"  Found {n_images} image directories: {first_dir.name}/ -> {image_dirs[-1].name}/"
+        )
         stru_file = first_dir / "STRU"
         poscar_file = first_dir / "POSCAR"
         if stru_file.exists():
             from abacuscopilot.io.stru_file import read_stru
+
             structure = read_stru(str(stru_file))
             species = structure.species_order
         elif poscar_file.exists():
-            from ase.io import read as ase_read
-            atoms = ase_read(str(poscar_file))
+            from abacuscopilot.preprocessing.stru_tasks import _ase_read_vasp_clean
+
+            atoms = _ase_read_vasp_clean(poscar_file)
             symbols = atoms.get_chemical_symbols()
             seen = set()
             species = [s for s in symbols if not (s in seen or seen.add(s))]
@@ -394,6 +506,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
 
     # Basis type decides the standard规范: lcao writes+copies orb, pw does not.
     from abacuscopilot.core.standards import is_lcao_basis, solver_for
+
     basis_type = "lcao"
     if interactive:
         basis_type = _prompt_choice(console, "Basis type", ["lcao", "pw"], "lcao")
@@ -405,12 +518,14 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
         if stru_file.exists():
             cell_a = structure.lattice.cell_angstrom
         elif poscar_file.exists():
-            from ase.io import read as _ase_read
-            cell_a = _ase_read(str(poscar_file)).cell.array
+            from abacuscopilot.preprocessing.stru_tasks import _ase_read_vasp_clean
+
+            cell_a = _ase_read_vasp_clean(poscar_file).cell.array
 
     # Resolve pseudo/orbital filenames
     from abacuscopilot.config import load_config
     from abacuscopilot.preprocessing.system_tasks import _find_file_for_element
+
     config = load_config()
     libs = config.get("libraries", {})
     pseudo_lib = libs.get("pseudo_library", "")
@@ -446,6 +561,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
 
     # Auto-copy missing files
     import shutil
+
     paths_cfg = config.get("paths", {})
     copied = []
     for sp in species:
@@ -491,21 +607,27 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     n_omp = 1
 
     if interactive:
-        hw = _prompt_choice(console, "Target hardware",
-                            ["CPU (single node)", "GPU (single card)"],
-                            "CPU (single node)")
+        hw = _prompt_choice(
+            console,
+            "Target hardware",
+            ["CPU (single node)", "GPU (single card)"],
+            "CPU (single node)",
+        )
         is_gpu = "GPU" in hw
         if is_gpu:
             device = "gpu"
-            n_mpi = 1             # cusolver uses one GPU card
+            n_mpi = 1  # cusolver uses one GPU card
             n_omp = int(_prompt(console, "OMP threads per image", "12"))
         else:
             device = "cpu"
             n_mpi = int(_prompt(console, "MPI cores per image", "8"))
             n_omp = 1
-        kpt_mode = _prompt_choice(console, "K-point mode",
-                                   ["kspacing (auto mesh)", "KPT (explicit grid)"],
-                                   "kspacing (auto mesh)")
+        kpt_mode = _prompt_choice(
+            console,
+            "K-point mode",
+            ["kspacing (auto mesh)", "KPT (explicit grid)"],
+            "kspacing (auto mesh)",
+        )
         use_kpt = "KPT" in kpt_mode
         if use_kpt:
             a = np.linalg.norm(cell_a[0])
@@ -523,11 +645,11 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
                 kpt_grid = [nkx, nky, nkz]
         else:
             kspacing = _prompt(console, "K-spacing (2pi/A)", "0.14")
-        climbing = _prompt_choice(console, "CI-NEB (climbing image)?",
-                                   ["Yes", "No"], "Yes")
+        climbing = _prompt_choice(console, "CI-NEB (climbing image)?", ["Yes", "No"], "Yes")
         climb = "Yes" in climbing
-        two_stage = _prompt_choice(console, "Two-stage optimization? (coarse -> fine)",
-                                    ["Yes", "No"], "Yes")
+        two_stage = _prompt_choice(
+            console, "Two-stage optimization? (coarse -> fine)", ["Yes", "No"], "Yes"
+        )
         do_two_stage = "Yes" in two_stage
 
     solver = solver_for(basis_type, device)
@@ -572,17 +694,19 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     }
     if not use_kpt:
         abacus_params["kspacing"] = float(kspacing)
-    abacus_params.update({
-        "cal_force": 1,
-        "cal_stress": 1,
-        "init_wfc": "atomic",
-        "init_chg": "atomic",
-        "out_stru": 1,
-        "out_chg": 0,
-        "out_mul": 0,
-        "pseudo_dir": "./",
-        "pseudopotentials": pp_map,
-    })
+    abacus_params.update(
+        {
+            "cal_force": 1,
+            "cal_stress": 1,
+            "init_wfc": "atomic",
+            "init_chg": "atomic",
+            "out_stru": 1,
+            "out_chg": 0,
+            "out_mul": 0,
+            "pseudo_dir": "./",
+            "pseudopotentials": pp_map,
+        }
+    )
     if is_lcao:
         abacus_params["out_wfc_lcao"] = 0
         abacus_params["orbital_dir"] = "./"
@@ -599,6 +723,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     abacus_section["parameters"] = abacus_params
 
     import yaml
+
     neb_config = {
         "calculation": calc_section,
         "calculator": {
@@ -607,31 +732,40 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
         },
     }
 
-    yaml_out = yaml.dump(neb_config, default_flow_style=False, sort_keys=False,
-                         allow_unicode=True)
+    yaml_out = yaml.dump(neb_config, default_flow_style=False, sort_keys=False, allow_unicode=True)
     # Post-process: blank line before calculator, inline kpts
     yaml_out = yaml_out.replace("\ncalculator:", "\n\ncalculator:")
     # Make kpts inline: "[2, 2, 2]" instead of "- 2\n- 2\n- 2"
     import re
-    yaml_out = re.sub(r'kpts:\n(\s+- \d+\n)+', lambda m: 'kpts: [' +
-                      ', '.join(re.findall(r'- (\d+)', m.group())) + ']\n', yaml_out)
+
+    yaml_out = re.sub(
+        r"kpts:\n(\s+- \d+\n)+",
+        lambda m: "kpts: [" + ", ".join(re.findall(r"- (\d+)", m.group())) + "]\n",
+        yaml_out,
+    )
     with open("neb.yaml", "w") as f:
         f.write(yaml_out)
 
     console.print()
     console.print("[green]NEB config written: neb.yaml[/green]")
     if is_gpu:
-        console.print(f"  Images: {len(image_dirs)} | Basis: {basis_type} | Hardware: GPU "
-                      f"(device=gpu, ks_solver={solver}, mpi={n_mpi}, omp={n_omp}, parallel=False)")
+        console.print(
+            f"  Images: {len(image_dirs)} | Basis: {basis_type} | Hardware: GPU "
+            f"(device=gpu, ks_solver={solver}, mpi={n_mpi}, omp={n_omp}, parallel=False)"
+        )
     else:
-        console.print(f"  Images: {len(image_dirs)} | Basis: {basis_type} | Hardware: CPU "
-                      f"(ks_solver={solver}, mpi={n_mpi}, omp={n_omp}, parallel=True)")
+        console.print(
+            f"  Images: {len(image_dirs)} | Basis: {basis_type} | Hardware: CPU "
+            f"(ks_solver={solver}, mpi={n_mpi}, omp={n_omp}, parallel=True)"
+        )
     if use_kpt:
         console.print(f"  K-points: {kpt_grid[0]}x{kpt_grid[1]}x{kpt_grid[2]} (explicit)")
     else:
         console.print(f"  K-spacing: {kspacing} (auto mesh)")
     console.print(f"  CI-NEB: {'Yes' if climb else 'No'}")
-    console.print(f"  Two-stage: {'Yes (20 coarse + 200 fine)' if do_two_stage else 'No (200 fine only)'}")
+    console.print(
+        f"  Two-stage: {'Yes (20 coarse + 200 fine)' if do_two_stage else 'No (200 fine only)'}"
+    )
     console.print("  Optimizer: FIRE (fmax=0.05, max_steps=200)")
     console.print("  [dim]pseudo_dir/orbital_dir = ./ (files auto-copied)[/dim]")
     console.print()
@@ -639,7 +773,9 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
     console.print("    1. Review neb.yaml and edit as needed")
     console.print("    2. atst run neb.yaml")
     console.print("  [dim]atst-tools is installed automatically as a core dependency[/dim]")
-    console.print("  [dim]Or use task 3304 for a self-contained ASE script (no atst-tools needed)[/dim]")
+    console.print(
+        "  [dim]Or use task 3304 for a self-contained ASE script (no atst-tools needed)[/dim]"
+    )
     console.print()
 
     # Copy the Slurm sbatch template and adapt it for atst-tools NEB
@@ -653,12 +789,14 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
             # conda env; fall back to the same bin dir as the running python.
             import shutil as _shutil
             import sys as _sys
+
             atst_bin = _shutil.which("atst")
             if not atst_bin:
                 atst_bin = str(Path(_sys.executable).parent / "atst")
             if not Path(atst_bin).exists():
                 atst_bin = "atst"  # last resort — needs PATH in SLURM
             import re
+
             # Common patterns: "abacus", "mpirun -np N abacus", "srun abacus"
             content = re.sub(
                 r"^(mpirun\s+.*\s+)?abacus\b.*$",
@@ -676,7 +814,9 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
             out_name = "sub.abacus_neb_atst.sh"
             with open(out_name, "w") as f:
                 f.write(content)
-            console.print(f"  [green]✓ {out_name} copied from template[/green] (→ {atst_bin} run neb.yaml)")
+            console.print(
+                f"  [green]✓ {out_name} copied from template[/green] (→ {atst_bin} run neb.yaml)"
+            )
         else:
             console.print(f"  [yellow]! sub_script not found: {sub_template}[/yellow]")
     console.print()
@@ -686,8 +826,326 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
 # Task 3304: ASE NEB standalone script
 # =============================================================================
 
-@task(3304, category="Reaction Dynamics", name="ASE NEB Script",
-      description="Generate a self-contained Python script for ASE+abacuslite NEB")
+# 4-GPU parallel NEB driver template (task 3304 "4-GPU parallel" mode).
+# Written as a plain string with @@TOKEN@@ placeholders (NOT an f-string) so the
+# embedded Python can contain braces / f-strings freely. Single-card generation
+# (the default) is untouched. Tokens are filled in task_ase_neb_script.
+# Validated end-to-end on 4xV100: barrier bit-identical to the single-card run.
+_NEB4_TPL = '''#!/usr/bin/env python3
+"""AbacusCopilot 4-GPU parallel NEB driver (generated by task 3304, 4-GPU mode).
+
+Design: endpoints SCF'd once and cached; each step the interior images' SCFs are
+fanned out to 4 GPU worker processes; ASE then computes the NEB gradient
+(improvedtangent / springs / climbing) on the cached forces in the main process.
+ASE's own NEB(parallel=True) is NOT used (it silently mis-evaluates unless the
+rank count equals the interior-image count). Results are cached by geometry so
+ASE's per-step extra force calls (log + convergence check) cost no SCFs.
+Run this inside a SLURM job with --gres=gpu:N (N = number of GPUs, see neb_slurm.sh).
+"""
+import os, sys, time, multiprocessing as mp
+import numpy as np
+
+N_GPUS = @@N_GPUS@@
+N_OMP = @@N_OMP@@
+STAGE1_STEPS = int(sys.argv[1]) if len(sys.argv) > 1 else @@STAGE1@@
+STAGE2_STEPS = int(sys.argv[2]) if len(sys.argv) > 2 else @@STAGE2@@
+
+RUN_DIR = os.path.dirname(os.path.abspath(__file__))
+TRAJ_FILE = "@@TRAJ_FILE@@"
+
+from ase.io import read
+from ase import Atoms
+from abacuscopilot.interfaces.ASE_interface.abacuslite import Abacus, AbacusProfile
+
+# --- pick which physical GPUs to use at runtime ---
+# Some clusters' SLURM does not grant GPU gres, so CUDA_VISIBLE_DEVICES is left
+# unset and the job sees every card. Blindly using physical devices 0..N-1 then
+# lands on cards that may be busy with other jobs. Honor an allocated
+# CUDA_VISIBLE_DEVICES when present; otherwise pick low-utilization cards via
+# nvidia-smi; fall back to 0..N-1 only if nothing is detectable.
+def _pick_gpu_devices(n_gpu):
+    import shutil as _shutil
+    import subprocess as _subprocess
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if cvd and cvd.lower() != "no" and "none" not in cvd.lower():
+        devs = [d.strip() for d in cvd.split(",") if d.strip()]
+        if len(devs) >= n_gpu:
+            return devs[:n_gpu]
+    gpu_bin = _shutil.which("nvidia-smi")
+    if gpu_bin:
+        try:
+            out = _subprocess.run(
+                [gpu_bin, "--query-gpu=index,utilization.gpu,memory.used",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10)
+            free = []
+            for ln in (out.stdout or "").strip().splitlines():
+                parts = [p.strip() for p in ln.split(",")]
+                if len(parts) == 3 and parts[0].isdigit():
+                    try:
+                        util = int(parts[1]); mem = int(parts[2])
+                    except ValueError:
+                        continue
+                    if util < 10 and mem < 1000:
+                        free.append(parts[0])
+            if len(free) >= n_gpu:
+                return free[:n_gpu]
+        except Exception:
+            pass
+    return [str(i) for i in range(n_gpu)]
+
+GPU_DEVS = _pick_gpu_devices(N_GPUS)
+print("  [neb4] using GPUs:", GPU_DEVS, flush=True)
+
+# --- stage one flat copy of each needed upf/orb into RUN_DIR ---
+PSEUDO_LIBS = @@PSEUDO_LIBS@@
+ORBITAL_LIBS = @@ORBITAL_LIBS@@
+def _stage_one(fname, libs):
+    if not fname or os.path.exists(os.path.join(RUN_DIR, fname)):
+        return
+    for lib in libs:
+        for _root, _dirs, _files in os.walk(lib):
+            if fname in _files:
+                import shutil
+                shutil.copy(os.path.join(_root, fname), os.path.join(RUN_DIR, fname))
+                return
+
+PSEUDOPOTENTIALS = {
+@@PP_DICT@@}
+BASISSETS = {
+@@ORB_DICT@@}
+for _f in PSEUDOPOTENTIALS.values():
+    _stage_one(_f, PSEUDO_LIBS)
+@@ORB_STAGE@@
+INP = {
+    "calculation": "scf",
+    "ecutwfc": 100,
+    "basis_type": "@@BASIS@@",
+    "device": "@@DEVICE@@",
+    "ks_solver": "@@SOLVER@@",
+    "dft_functional": "@@FUNCTIONAL@@",
+    "scf_thr": 1e-7,
+    "scf_nmax": 100,
+    "smearing_method": "gaussian",
+    "smearing_sigma": 0.001,
+    "mixing_type": "broyden",
+    "cal_force": 1,
+    "cal_stress": 1,
+    "init_wfc": "atomic",
+    "init_chg": "atomic",
+    "out_stru": 1,
+@@KPT@@}
+
+# ---------- one ABACUS SCF for one image ----------
+def scf_image(i, symbols, positions, cell, pbc):
+    atoms = Atoms(symbols=symbols, positions=positions, cell=cell, pbc=pbc)
+    profile = AbacusProfile(command="abacus", omp_num_threads=N_OMP,
+                            pseudo_dir=RUN_DIR, orbital_dir=RUN_DIR)
+    calc = Abacus(profile=profile, directory=f"neb-{i}",
+                  pseudopotentials=PSEUDOPOTENTIALS, basissets=BASISSETS, inp=INP)
+    atoms.calc = calc
+    E = atoms.get_potential_energy()
+    F = atoms.get_forces()
+    return E, np.asarray(F)
+
+def _worker(gpu, jobs, q):
+    os.environ["CUDA_VISIBLE_DEVICES"] = GPU_DEVS[gpu]
+    os.environ["OMP_NUM_THREADS"] = str(N_OMP)
+    for (i, symbols, positions, cell, pbc) in jobs:
+        try:
+            E, F = scf_image(i, symbols, positions, cell, pbc)
+            q.put((i, E, F, None))
+        except Exception as e:
+            q.put((i, None, None, repr(e)))
+
+def run_parallel_scf(images_list):
+    jobs = []
+    for i, img in images_list:
+        jobs.append((i, img.get_chemical_symbols(), np.asarray(img.positions).copy(),
+                     np.asarray(img.cell.array).copy(), np.asarray(img.pbc).copy()))
+    buckets = [[] for _ in range(N_GPUS)]
+    for k, j in enumerate(jobs):
+        buckets[k % N_GPUS].append(j)
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    procs = [ctx.Process(target=_worker, args=(g, buckets[g], q)) for g in range(N_GPUS)]
+    for p in procs: p.start()
+    res = {}
+    for _ in range(len(jobs)):
+        i, E, F, err = q.get()
+        if err is not None:
+            raise RuntimeError(f"image {i} SCF failed: {err}")
+        res[i] = (E, F)
+    for p in procs: p.join()
+    return res
+
+from ase.calculators.calculator import Calculator, all_changes
+class CachedCalc(Calculator):
+    implemented_properties = ["energy", "forces"]
+    def __init__(self, energy, forces):
+        super().__init__()
+        self._energy = energy
+        self._forces = np.array(forces, dtype=float)
+        # results populated at construction so ASE's trajectory writer persists
+        # endpoint energies (otherwise the saved frames lack them and the
+        # analysis task reports "no calculator results").
+        self.results = {"energy": energy, "forces": self._forces}
+    def calculate(self, atoms=None, properties=["energy"], system_changes=all_changes):
+        self.results = {"energy": self._energy, "forces": self._forces}
+
+from ase.mep import NEB
+class ParallelNEB(NEB):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self._cache = {}
+        self._pos = {}
+
+    def get_forces(self):
+        changed = []
+        for i in range(1, self.nimages - 1):
+            cur = np.asarray(self.images[i].positions)
+            last = self._pos.get(i)
+            if last is None or not np.array_equal(last, cur):
+                changed.append(i)
+        if changed:
+            t0 = time.time()
+            res = run_parallel_scf([(i, self.images[i]) for i in changed])
+            for i, (E, F) in res.items():
+                self._cache[i] = (E, F)
+                self._pos[i] = np.asarray(self.images[i].positions).copy()
+            print(f"  [neb4] SCF {len(changed)} images on {N_GPUS} GPUs: {time.time()-t0:.0f}s", flush=True)
+        else:
+            print("  [neb4] geometry unchanged -- reusing cached forces", flush=True)
+        for i in range(1, self.nimages - 1):
+            E, F = self._cache[i]
+            self.images[i].calc = CachedCalc(E, F)
+        return super().get_forces()
+
+def main():
+    os.environ.setdefault("OMP_NUM_THREADS", str(N_OMP))
+    images = read(TRAJ_FILE, index=":")
+    n = len(images)
+    print(f"Loaded {n} images from {TRAJ_FILE}", flush=True)
+    print("[neb4] SCF endpoints once...", flush=True)
+    ends = run_parallel_scf([(0, images[0]), (n - 1, images[-1])])
+    E0 = ends[0][0]; E8 = ends[n - 1][0]
+    print(f"[neb4] endpoint E0 = {E0:.6f} eV, E(n-1) = {E8:.6f} eV", flush=True)
+    z = np.zeros_like(images[0].positions)
+    images[0].calc = CachedCalc(E0, z)
+    images[-1].calc = CachedCalc(E8, z)
+    from ase.optimize import FIRE
+    neb = ParallelNEB(images, climb=True, k=0.1, parallel=False, method="improvedtangent")
+    opt1 = FIRE(neb, trajectory="neb_stage1.traj")
+    opt1.run(fmax=0.20, steps=STAGE1_STEPS)
+    print("Stage 1 done -- starting stage 2 (fine)", flush=True)
+    opt2 = FIRE(neb, trajectory="neb_stage2.traj")
+    opt2.run(fmax=0.05, steps=STAGE2_STEPS)
+    energies = []
+    for i, img in enumerate(images):
+        e = img.get_potential_energy()
+        energies.append(e)
+        print(f"  Image {i}: E = {e:.6f} eV", flush=True)
+    energies = np.array(energies)
+    barrier = np.max(energies) - energies[0]
+    print(f"\\nEnergy barrier: {barrier:.4f} eV", flush=True)
+    print("Done! Trajectory saved to neb.traj", flush=True)
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def _extract_env_from_subscript(sub_path: str | Path) -> str:
+    """Pull environment lines out of an sbatch submit script (sub.abacus).
+
+    NEB SLURM scripts need the server's ABACUS/CUDA environment (source the
+    abacus_env.sh, PATH/LD_LIBRARY_PATH exports) to find the ``abacus`` binary.
+    Rather than making the user configure ``slurm_env_file`` on every machine,
+    reuse the environment already present in the configured ``sub_script``:
+    keep source/export/module lines, drop #SBATCH directives, banner comments
+    and the trailing execution command (``srun abacus`` etc.).
+    """
+    try:
+        lines = Path(sub_path).read_text(errors="ignore").splitlines()
+    except Exception:
+        return ""
+    env = []
+    for ln in lines:
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith(("source ", "export ", "module ", ". ")):
+            env.append(ln)
+    return ("\n".join(env) + "\n") if env else ""
+
+
+def _detect_hardware() -> tuple[int | None, int]:
+    """Detect GPU count (nvidia-smi) and logical CPU count on this machine.
+
+    Returns (n_gpu_or_None, n_cpu). n_gpu is None when nvidia-smi is missing or
+    the machine has no GPU / no driver (e.g. a login node).
+    """
+    import os as _os
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    n_gpu = None
+    gpu_bin = _shutil.which("nvidia-smi")
+    if gpu_bin:
+        try:
+            out = _subprocess.run(
+                [gpu_bin, "--query-gpu=count", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            txt = (out.stdout or "").strip()
+            if txt and txt[0].isdigit():
+                n_gpu = int(txt.split()[0])
+        except Exception:
+            n_gpu = None
+    return n_gpu, (_os.cpu_count() or 0)
+
+
+def _auto_omp(n_cpu: int, n_gpu: int) -> int:
+    """Auto-split CPU threads across GPUs for the NEB image calculators.
+
+    Only used when sub.abacus sets no --cpus-per-task. ABACUS GPU runs are
+    GPU-bound; too many OMP threads oversubscribe the node and slow the SCF
+    (observed on 4xV100). Use most cores but leave a couple spare for the
+    OS/driver and cap each card at 16 threads.
+    """
+    if not n_cpu or n_gpu <= 0:
+        return 12
+    avail = max(2, n_cpu - 2)
+    return max(1, min(16, avail // n_gpu))
+
+
+def _sub_script_cpus(sub_script: str | Path) -> int | None:
+    """Read the per-task core count from an sbatch submit script (sub.abacus).
+
+    The NEB SLURM script should use the same CPU count as the server's standard
+    ABACUS submit script rather than grabbing every core. Returns None when the
+    script does not set ``--cpus-per-task``.
+    """
+    if not sub_script:
+        return None
+    try:
+        text = Path(sub_script).read_text(errors="ignore")
+    except Exception:
+        return None
+    import re as _re
+
+    m = _re.search(r"#SBATCH\s+--cpus-per-task\s*[= ]\s*(\d+)", text)
+    return int(m.group(1)) if m else None
+
+
+@task(
+    3304,
+    category="Reaction Dynamics",
+    name="ASE NEB Script",
+    description="Generate a self-contained Python script for ASE+abacuslite NEB",
+)
 def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True) -> None:
     """Generate a standalone Python script that runs NEB via ASE + abacuslite.
 
@@ -700,8 +1158,9 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     console.print("[bold cyan]=== Generate ASE NEB Script ===[/bold cyan]")
     console.print()
 
-    image_dirs = sorted([d for d in Path(".").iterdir()
-                         if d.is_dir() and d.name.isdigit() and len(d.name) == 2])
+    image_dirs = sorted(
+        [d for d in Path(".").iterdir() if d.is_dir() and d.name.isdigit() and len(d.name) == 2]
+    )
     from_traj = False
 
     if len(image_dirs) < 3:
@@ -710,6 +1169,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
             console.print("[red]No NEB image directories or path_*frames.traj found.[/red]")
             return
         from ase.io import read as ase_read
+
         images_traj = ase_read(str(traj_files[0]), index=":")
         atoms0 = images_traj[0]
         symbols = atoms0.get_chemical_symbols()
@@ -717,24 +1177,28 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
         species = [s for s in symbols if not (s in seen or seen.add(s))]
         # Create a dummy structure from the first frame for cell info
         from abacuscopilot.core.models import Structure
+
         structure = Structure.from_ase(atoms0)
         stru_file = Path()
         poscar_file = Path()
         from_traj = True
         console.print(f"  Reading {len(images_traj)} images from {traj_files[0].name}")
     else:
-        console.print(f"  Found {len(image_dirs)} images: "
-                      f"{image_dirs[0].name}/ -> {image_dirs[-1].name}/")
+        console.print(
+            f"  Found {len(image_dirs)} images: {image_dirs[0].name}/ -> {image_dirs[-1].name}/"
+        )
         first_dir = image_dirs[0]
         stru_file = first_dir / "STRU"
         poscar_file = first_dir / "POSCAR"
         if stru_file.exists():
             from abacuscopilot.io.stru_file import read_stru
+
             structure = read_stru(str(stru_file))
             species = structure.species_order
         elif poscar_file.exists():
-            from ase.io import read as ase_read
-            atoms = ase_read(str(poscar_file))
+            from abacuscopilot.preprocessing.stru_tasks import _ase_read_vasp_clean
+
+            atoms = _ase_read_vasp_clean(poscar_file)
             symbols = atoms.get_chemical_symbols()
             seen = set()
             species = [s for s in symbols if not (s in seen or seen.add(s))]
@@ -743,6 +1207,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
             return
 
     from abacuscopilot.config import load_config
+
     config = load_config()
     libs = config.get("libraries", {})
     paths_cfg = config.get("paths", {})
@@ -751,6 +1216,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     abacus_bin = paths_cfg.get("abacus_binary", "abacus")
     # Resolve abacus binary to absolute path (same search as mpirun below).
     import shutil
+
     abacus_bin = shutil.which(abacus_bin) or abacus_bin
     # Resolve mpirun to absolute path.  Also check common locations since
     # it may not be on PATH outside of a SLURM env script.
@@ -759,9 +1225,13 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     if not mpirun:
         # search common locations
         import sys
-        for d in (Path(sys.executable).parent,
-                  Path.home() / "softwares" / "miniforge3" / "bin",
-                  Path("/usr/bin"), Path("/usr/local/bin")):
+
+        for d in (
+            Path(sys.executable).parent,
+            Path.home() / "softwares" / "miniforge3" / "bin",
+            Path("/usr/bin"),
+            Path("/usr/local/bin"),
+        ):
             p = d / _mpirun_cfg
             if p.exists():
                 mpirun = str(p)
@@ -770,22 +1240,33 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
         mpirun = _mpirun_cfg  # bare name — needs PATH
     # For single-GPU (mpi=1), abacuslite doesn't need mpirun at all.
     # Use abacus directly so the script works without any env setup.
-    use_mpirun = bool(mpirun and Path(mpirun).exists()) if "/" in mpirun else bool(shutil.which(mpirun))
+    use_mpirun = (
+        bool(mpirun and Path(mpirun).exists()) if "/" in mpirun else bool(shutil.which(mpirun))
+    )
     abacus_src = paths_cfg.get("abacus_source", "")
     slurm_env = paths_cfg.get("slurm_env_file", "")
+    # If no slurm_env_file is configured, auto-extract the server's ABACUS/CUDA
+    # environment from its configured sub_script (e.g. sub.abacus) so the NEB
+    # SLURM script carries a working environment instead of a comment placeholder.
+    sub_script = paths_cfg.get("sub_script", "")
+    auto_env = _extract_env_from_subscript(sub_script) if sub_script else ""
     n_total = len(images_traj) if from_traj else len(image_dirs)
 
     if interactive:
-        console.print(f"  [dim]SLURM env script (CUDA/compiler/conda): {slurm_env or 'not set'}[/dim]")
+        console.print(
+            f"  [dim]SLURM env script (CUDA/compiler/conda): {slurm_env or 'not set'}[/dim]"
+        )
         env_in = console.input("  Change? [Enter=keep]: ").strip()
         if env_in:
             slurm_env = env_in
             paths_cfg["slurm_env_file"] = env_in
             from abacuscopilot.config import save_config
+
             save_config(config)
 
     # Basis type decides the standard规范 (lcao writes orb, pw does not).
     from abacuscopilot.core.standards import is_lcao_basis, solver_for
+
     basis_type = "lcao"
     if interactive:
         basis_type = _prompt_choice(console, "Basis type", ["lcao", "pw"], "lcao")
@@ -794,6 +1275,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     # Build PP/orb maps — resolve real filenames from library (标准规范).
     # Same logic as 3303: current dir first, then library, then bare fallback.
     from abacuscopilot.preprocessing.system_tasks import _find_file_for_element
+
     pp_map = {}
     orb_map = {}
     if stru_file.exists():
@@ -827,31 +1309,77 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     device = "cpu"
     n_mpi = 8
     n_omp = 1
+    multi_gpu = False
+    n_gpu = 1
     if interactive:
-        hw = _prompt_choice(console, "Target hardware",
-                            ["CPU (single node)", "GPU (single card)"],
-                            "CPU (single node)")
+        _gpu_detected, _cpu_detected = _detect_hardware()
+        # Show "Multi GPU" only when more than one GPU is detected (or the
+        # count could not be determined); a 1-GPU box just uses "GPU (1 card)".
+        _hw_opts = ["CPU (single node)", "GPU (1 card)"]
+        if _gpu_detected is None or _gpu_detected > 1:
+            _multi_opt = (
+                f"Multi GPU ({_gpu_detected} cards)" if _gpu_detected else "Multi GPU (auto)"
+            )
+            _hw_opts.append(_multi_opt)
+        hw = _prompt_choice(console, "Target hardware", _hw_opts, "CPU (single node)")
         is_gpu = "GPU" in hw
-        if is_gpu:
+        multi_gpu = "Multi GPU" in hw
+        # Single-GPU NEB should use the same per-task core count as the server's
+        # standard ABACUS submit script (sub.abacus), not grab every core.
+        sub_omp = _sub_script_cpus(sub_script)
+        if multi_gpu:
             device = "gpu"
-            n_mpi = 1             # cusolver uses one GPU card
-            n_omp = int(_prompt(console, "OMP threads per image", "12"))
+            n_mpi = 1
+            # Number of cards to actually use. Defaults to all detected; lower it
+            # when some GPUs are busy with other jobs (SLURM gres would otherwise
+            # wait for every card to be free). Capped at what the machine has.
+            _default_gpu = _gpu_detected if _gpu_detected else 4
+            n_gpu = int(_prompt(console, "Number of GPUs to use", str(_default_gpu)))
+            if _gpu_detected:
+                n_gpu = max(1, min(n_gpu, _gpu_detected))
+        elif is_gpu:
+            device = "gpu"
+            n_mpi = 1  # cusolver uses one GPU card
+            n_gpu = 1
         else:
             device = "cpu"
             n_mpi = int(_prompt(console, "MPI cores per image", "8"))
+            n_gpu = 0
+        # Per-worker OMP threads. Each NEB worker runs exactly one ABACUS — the
+        # same as one sub.abacus job — so reuse sub.abacus's --cpus-per-task.
+        # Too many OMP threads oversubscribe the node and slow the SCF (observed
+        # on 4xV100: 80/64 threads were slower than sub.abacus's 12 per card).
+        # If sub.abacus sets no count, auto-allocate and leave a few cores spare.
+        if n_gpu > 0:
+            if sub_omp:
+                n_omp = sub_omp
+                if _cpu_detected and n_gpu * sub_omp > _cpu_detected:
+                    n_omp = max(1, _cpu_detected // n_gpu)  # too few cores: scale down
+            else:
+                n_omp = _auto_omp(_cpu_detected, n_gpu)  # auto (leaves cores spare)
+        else:
             n_omp = 1
-        kpt_mode = _prompt_choice(console, "K-point mode",
-                                   ["kspacing (auto mesh)", "KPT (explicit grid)"],
-                                   "kspacing (auto mesh)")
+        kpt_mode = _prompt_choice(
+            console,
+            "K-point mode",
+            ["kspacing (auto mesh)", "KPT (explicit grid)"],
+            "kspacing (auto mesh)",
+        )
         use_kpt = "KPT" in kpt_mode
         if use_kpt:
             if from_traj or stru_file.exists():
                 cell_a = structure.lattice.cell_angstrom
             elif poscar_file.exists():
-                cell_a = _ase_read(str(poscar_file)).cell.array
+                from abacuscopilot.preprocessing.stru_tasks import _ase_read_vasp_clean
+
+                cell_a = _ase_read_vasp_clean(poscar_file).cell.array
             else:
                 cell_a = np.eye(3)
-            a, b, c = np.linalg.norm(cell_a[0]), np.linalg.norm(cell_a[1]), np.linalg.norm(cell_a[2])
+            a, b, c = (
+                np.linalg.norm(cell_a[0]),
+                np.linalg.norm(cell_a[1]),
+                np.linalg.norm(cell_a[2]),
+            )
             nkx = max(1, int(round(30.0 / a)))
             nky = max(1, int(round(30.0 / b)))
             nkz = max(1, int(round(30.0 / c)))
@@ -894,20 +1422,34 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
     # Build the Python script
     pp_block = "    " + "\n    ".join(f'"{sp}": "{pp_map[sp]}",' for sp in species)
 
+    # Library search roots. Config may store one dir or a list (several PP-Orb
+    # libs, possibly with nested subdirs). Emit real Python lists so neb_run.py
+    # can stage the needed upf/orb into the working dir and point every image
+    # calc's INPUT pseudo_dir/orbital_dir at that local flat copy.
+    def _as_list(v):
+        return [] if not v else (v if isinstance(v, list) else [v])
+
+    pseudo_libs_line = f"PSEUDO_LIBS = {_as_list(pseudo_lib)!r}\n"
+    stage_pp_line = "for _f in pseudopotentials.values():\n    _stage_one(_f, PSEUDO_LIBS)\n"
+
     # LCAO-only blocks (标准规范: pw writes no orbital info)
     if is_lcao:
         orb_block = "    " + "\n    ".join(f'"{sp}": "{orb_map[sp]}",' for sp in species)
-        orbital_dir_line = f'ORBITAL_DIR = "{orbital_lib or "./"}"\n'
+        orbital_libs_line = f"ORBITAL_LIBS = {_as_list(orbital_lib)!r}\n"
+        orbital_dir_line = "ORBITAL_DIR = RUN_DIR\n"
         profile_orb_line = "    orbital_dir=ORBITAL_DIR,\n"
         basissets_block = f"basissets = {{\n{orb_block}\n}}\n"
         inp_orbital_lines = '    "out_wfc_lcao": 0,\n'
         calc_basissets_arg = "        basissets=basissets,\n"
+        stage_orb_line = "for _f in basissets.values():\n    _stage_one(_f, ORBITAL_LIBS)\n"
     else:
+        orbital_libs_line = ""
         orbital_dir_line = ""
         profile_orb_line = ""
         basissets_block = ""
         inp_orbital_lines = ""
         calc_basissets_arg = ""
+        stage_orb_line = ""
 
     kpt_lines = ""
     if use_kpt:
@@ -937,6 +1479,7 @@ opt.run(fmax=0.05, steps=200)
 
     # Absolute Python path so SLURM doesn't need conda activate
     import sys as _sys1604
+
     python_bin = _sys1604.executable
 
     script = f'''#!/usr/bin/env python3
@@ -944,10 +1487,10 @@ opt.run(fmax=0.05, steps=200)
 
 Dependencies: ase, abacuslite (from ABACUS source: interfaces/ASE_interface/)
 Usage:
-  {python_bin} neb_run.py               # run NEB
-  {python_bin} neb_run.py --check       # validate structure only (no ABACUS needed)
+  {python_bin} -u neb_run.py               # run NEB
+  {python_bin} -u neb_run.py --check       # validate structure only (no ABACUS needed)
 """
-import os, sys
+import os, sys, shutil
 import numpy as np
 from ase.io import read
 
@@ -980,7 +1523,23 @@ from abacuscopilot.interfaces.ASE_interface.abacuslite import Abacus, AbacusProf
 N_MPI = {n_mpi}
 N_OMP = {n_omp}
 TRAJ_FILE = "{traj_path}"
-PSEUDO_DIR = "{pseudo_lib or './'}"
+RUN_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Library search roots (several dirs, possibly nested). A single flat copy of
+# each needed upf/orb is staged into RUN_DIR below; every image calc's INPUT
+# then points pseudo_dir/orbital_dir at it — robust to nested / multi-dir
+# library layouts instead of hand-writing a library path into each INPUT.
+{pseudo_libs_line}{orbital_libs_line}
+def _stage_one(fname, libs):
+    if not fname or os.path.exists(os.path.join(RUN_DIR, fname)):
+        return
+    for lib in libs:
+        for _root, _dirs, _files in os.walk(lib):
+            if fname in _files:
+                shutil.copy(os.path.join(_root, fname), os.path.join(RUN_DIR, fname))
+                return
+
+PSEUDO_DIR = RUN_DIR
 {orbital_dir_line}
 profile = AbacusProfile(
     command="{profile_cmd}",
@@ -992,8 +1551,7 @@ pseudopotentials = {{
 {pp_block}
 }}
 
-{basissets_block}
-inp_params = {{
+{basissets_block}{stage_pp_line}{stage_orb_line}inp_params = {{
     "calculation": "scf",
     "ecutwfc": 100,
     "basis_type": "{basis_type}",
@@ -1029,6 +1587,25 @@ for i, img in enumerate(images):
     )
     print(f"  Image {{i}}: directory=neb-{{i}}")
 
+# === Cache the fixed endpoints: SCF each once, reuse afterwards ===
+# Endpoints never move during NEB, so re-running their SCF on every force call
+# (ASE's default) is pure waste. Compute each endpoint's energy once, then hand
+# it a cached calculator so later force evaluations return instantly.
+from ase.calculators.calculator import Calculator, all_changes
+class _CachedCalc(Calculator):
+    implemented_properties = ["energy", "forces"]
+    def __init__(self, energy, forces):
+        super().__init__()
+        self._energy = energy
+        self._forces = np.array(forces)
+        self.results.update(energy=energy, forces=self._forces)
+    def calculate(self, atoms=None, properties=["energy"], system_changes=all_changes):
+        self.results.update(energy=self._energy, forces=self._forces)
+for _ep in (0, n_images - 1):
+    _e = images[_ep].get_potential_energy()          # one ABACUS SCF per endpoint
+    images[_ep].calc = _CachedCalc(_e, np.zeros_like(images[_ep].positions))
+    print(f"  Endpoint {{_ep}} SCF done, cached: E = {{_e:.6f}} eV")
+
 # === Run NEB ===
 print(f"Running NEB ({{n_images}} images, parallel={par})...")
 {two_stage_block}
@@ -1046,10 +1623,90 @@ print(f"\\nEnergy barrier: {{barrier:.4f}} eV")
 print("Done! Trajectory saved to neb.traj")
 '''
 
+    # --- Multi-GPU parallel NEB mode (experimental). Single-card path above is
+    #     left untouched; we only branch at write time. ---
+    if multi_gpu:
+        n_active = n_total - 2  # exclude endpoints
+
+        def _norm_libs(v):
+            return [] if not v else (v if isinstance(v, list) else [v])
+
+        _kpt = f'    "kspacing": {kspacing_val},' if not use_kpt else f'    "kpts": {kpt_grid},'
+        _orb_dict = (orb_block + "\n") if (is_lcao and orb_block) else ""
+        _orb_stage = (
+            "for _f in BASISSETS.values():\n    _stage_one(_f, ORBITAL_LIBS)\n" if is_lcao else ""
+        )
+        neb4_script = (
+            _NEB4_TPL.replace("@@N_OMP@@", str(n_omp))
+            .replace("@@STAGE1@@", "20")
+            .replace("@@STAGE2@@", "200")
+            .replace("@@TRAJ_FILE@@", traj_path)
+            .replace("@@PSEUDO_LIBS@@", repr(_norm_libs(pseudo_lib)))
+            .replace("@@ORBITAL_LIBS@@", repr(_norm_libs(orbital_lib)))
+            .replace("@@PP_DICT@@", (pp_block + "\n") if pp_block else "")
+            .replace("@@ORB_DICT@@", _orb_dict)
+            .replace("@@ORB_STAGE@@", _orb_stage)
+            .replace("@@BASIS@@", basis_type)
+            .replace("@@DEVICE@@", device)
+            .replace("@@SOLVER@@", solver)
+            .replace("@@FUNCTIONAL@@", "pbe")
+            .replace("@@KPT@@", _kpt)
+            .replace("@@N_GPUS@@", str(n_gpu))
+        )
+        out_path = "neb_run4.py"
+        with open(out_path, "w") as f:
+            f.write(neb4_script)
+        import os
+
+        os.chmod(out_path, 0o755)
+        se4 = (
+            f"source {slurm_env}\n"
+            if slurm_env
+            else (
+                auto_env
+                if auto_env
+                else "# === source your CUDA + ABACUS setup (config slurm_env_file) ===\n"
+            )
+        )
+        slurm_script = f"""#!/bin/bash
+#SBATCH --job-name=neb4
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task={n_gpu * n_omp}
+#SBATCH --gres=gpu:{n_gpu}
+#SBATCH --output=neb4_%j.out
+#SBATCH --error=neb4_%j.err
+
+{se4}export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+{python_bin} -u neb_run4.py
+"""
+        slurm_path = "neb_slurm.sh"
+        with open(slurm_path, "w") as f:
+            f.write(slurm_script)
+        os.chmod(slurm_path, 0o755)
+        console.print()
+        console.print(f"[green]ASE NEB script written: {out_path}[/green]")
+        console.print(f"[green]SLURM script written: {slurm_path}[/green]")
+        console.print(
+            f"  Images: {n_total} ({n_active} active) | {n_gpu}-GPU parallel "
+            f"(device=gpu, ks_solver={solver}, omp={n_omp} x {n_gpu})"
+        )
+        if use_kpt:
+            console.print(f"  KPT: {kpt_grid}")
+        else:
+            console.print(f"  K-spacing: {kspacing_val}")
+        console.print("  CI-NEB: Yes | Two-stage: Yes")
+        console.print()
+        console.print("  Submit via SLURM:")
+        console.print(f"    sbatch {slurm_path}")
+        console.print("  Do NOT run 'python neb_run4.py' directly — abacus/mpirun")
+        console.print("  are only available inside the SLURM job environment.")
+        return
     out_path = "neb_run.py"
     with open(out_path, "w") as f:
         f.write(script)
     import os
+
     os.chmod(out_path, 0o755)
 
     console.print()
@@ -1060,6 +1717,9 @@ print("Done! Trajectory saved to neb.traj")
     # the script has a commented placeholder for the user to fill in.
     if slurm_env:
         slurm_env_block = f"source {slurm_env}\n"
+    elif auto_env:
+        # auto-derived from the server's sub_script (sub.abacus)
+        slurm_env_block = auto_env
     else:
         slurm_env_block = (
             "# === Environment: source your CUDA + ABACUS setup (configure in\n"
@@ -1071,7 +1731,7 @@ print("Done! Trajectory saved to neb.traj")
     if is_gpu:
         # GPU single card: one MPI task, one GPU. NEB images run sequentially
         # (parallel=False) since a single card can't split across images.
-        slurm_script = f'''#!/bin/bash
+        slurm_script = f"""#!/bin/bash
 #SBATCH --job-name=neb
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -1083,11 +1743,11 @@ print("Done! Trajectory saved to neb.traj")
 {slurm_env_block}export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export CUDA_VISIBLE_DEVICES=0
 {slurm_pp_block}
-{python_bin} neb_run.py
-'''
+{python_bin} -u neb_run.py
+"""
     else:
         # CPU: one MPI task per active image, n_mpi cores each (parallel=True).
-        slurm_script = f'''#!/bin/bash
+        slurm_script = f"""#!/bin/bash
 #SBATCH --job-name=neb
 #SBATCH --nodes=1
 #SBATCH --ntasks={n_active}
@@ -1097,23 +1757,28 @@ export CUDA_VISIBLE_DEVICES=0
 
 {slurm_env_block}export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 {slurm_pp_block}
-{python_bin} neb_run.py
-'''
+{python_bin} -u neb_run.py
+"""
     slurm_path = "neb_slurm.sh"
     with open(slurm_path, "w") as f:
         f.write(slurm_script)
     import os
+
     os.chmod(slurm_path, 0o755)
 
     console.print(f"[green]ASE NEB script written: {out_path}[/green]")
     console.print(f"[green]SLURM script written: {slurm_path}[/green]")
     if is_gpu:
-        console.print(f"  Images: {n_total} ({n_active} active) | Hardware: GPU "
-                      f"(device=gpu, ks_solver={solver}, omp={n_omp}, parallel=False)")
+        console.print(
+            f"  Images: {n_total} ({n_active} active) | Hardware: GPU "
+            f"(device=gpu, ks_solver={solver}, omp={n_omp}, parallel=False)"
+        )
     else:
         total_cores = n_mpi * n_active
-        console.print(f"  Images: {n_total} ({n_active} active) | Hardware: CPU "
-                      f"(ks_solver={solver}, parallel=True)")
+        console.print(
+            f"  Images: {n_total} ({n_active} active) | Hardware: CPU "
+            f"(ks_solver={solver}, parallel=True)"
+        )
         console.print(f"  Cores: {n_mpi}/image × {n_active} = {total_cores} total")
     if use_kpt and kpt_grid:
         console.print(f"  K-points: {kpt_grid[0]}x{kpt_grid[1]}x{kpt_grid[2]}")
@@ -1133,8 +1798,13 @@ export CUDA_VISIBLE_DEVICES=0
 # Task 3305: NEB result analysis
 # =============================================================================
 
-@task(3305, category="Reaction Dynamics", name="atst-tools NEB Analysis",
-      description="Analyze atst-tools NEB results (from task 3303): barrier, saddle, convergence")
+
+@task(
+    3305,
+    category="Reaction Dynamics",
+    name="atst-tools NEB Analysis",
+    description="Analyze atst-tools NEB results (from task 3303): barrier, saddle, convergence",
+)
 def task_atst_neb_analysis(args: list[str] | None = None, interactive: bool = True) -> None:
     """Analyze atst-tools NEB trajectory and plot the energy barrier profile."""
     console = _get_console()
@@ -1173,6 +1843,7 @@ def task_atst_neb_analysis(args: list[str] | None = None, interactive: bool = Tr
 
     try:
         from ase.io import read as ase_read
+
         all_frames = ase_read(traj_path, index=":")
     except Exception as e:
         console.print(f"[red]Failed to read trajectory: {e}[/red]")
@@ -1186,6 +1857,7 @@ def task_atst_neb_analysis(args: list[str] | None = None, interactive: bool = Tr
     yaml_path = Path("neb.yaml")
     if yaml_path.exists():
         import yaml
+
         try:
             cfg = yaml.safe_load(yaml_path.read_text())
             init = cfg.get("calculation", {}).get("init_chain", None)
@@ -1210,7 +1882,9 @@ def task_atst_neb_analysis(args: list[str] | None = None, interactive: bool = Tr
 
     if n_chain is None or n_chain > n_total:
         console.print("[red]Cannot determine NEB chain size.[/red]")
-        console.print("[dim]neb.traj contains optimization history — specify number of images.[/dim]")
+        console.print(
+            "[dim]neb.traj contains optimization history — specify number of images.[/dim]"
+        )
         return
 
     # Take only the final converged chain (last n_chain frames)
@@ -1248,6 +1922,7 @@ def task_atst_neb_analysis(args: list[str] | None = None, interactive: bool = Tr
     n_img = len(images)
     try:
         from scipy.interpolate import CubicSpline
+
         cs = CubicSpline(x_raw, e_rel, bc_type="natural")
         x_fine = np.linspace(0, n_img - 1, (n_img - 1) * 20 + 1)
         e_fine = cs(x_fine)
@@ -1262,37 +1937,52 @@ def task_atst_neb_analysis(args: list[str] | None = None, interactive: bool = Tr
         spline_saddle_e = e_rel[saddle_idx]
 
     if has_spline:
-        console.print(f"  Spline-fitted saddle: image {spline_saddle_x:.2f}, barrier = {spline_saddle_e:.4f} eV")
+        console.print(
+            f"  Spline-fitted saddle: image {spline_saddle_x:.2f}, barrier = {spline_saddle_e:.4f} eV"
+        )
     console.print()
 
     # Plot options
     show_saddle = True
     if interactive:
-        show_saddle = "Yes" in _prompt_choice(console, "Mark saddle point on plot?",
-                                               ["Yes", "No"], "Yes")
+        show_saddle = "Yes" in _prompt_choice(
+            console, "Mark saddle point on plot?", ["Yes", "No"], "Yes"
+        )
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     fig, ax = plt.subplots(figsize=(8, 6))
     # Raw data points
-    ax.plot(x_raw, e_rel, "o", color="#1f77b4", markersize=8, zorder=5,
-            label="NEB images")
+    ax.plot(x_raw, e_rel, "o", color="#1f77b4", markersize=8, zorder=5, label="NEB images")
     # Spline curve
     if has_spline:
-        ax.plot(x_fine, e_fine, "-", color="#1f77b4", linewidth=1.2, alpha=0.7,
-                label="Cubic spline")
+        ax.plot(
+            x_fine, e_fine, "-", color="#1f77b4", linewidth=1.2, alpha=0.7, label="Cubic spline"
+        )
         if show_saddle:
-            ax.axvline(x=spline_saddle_x, color="#d62728", linestyle="--", linewidth=0.8,
-                       label=f"Saddle: {spline_saddle_e:.3f} eV @ image {spline_saddle_x:.2f}")
+            ax.axvline(
+                x=spline_saddle_x,
+                color="#d62728",
+                linestyle="--",
+                linewidth=0.8,
+                label=f"Saddle: {spline_saddle_e:.3f} eV @ image {spline_saddle_x:.2f}",
+            )
     else:
         ax.plot(x_raw, e_rel, "-", color="#1f77b4", linewidth=1.2)
         if show_saddle:
-            ax.axvline(x=saddle_idx, color="#d62728", linestyle="--", linewidth=0.8,
-                       label=f"Saddle: {e_rel[saddle_idx]:.3f} eV @ image {saddle_idx}")
+            ax.axvline(
+                x=saddle_idx,
+                color="#d62728",
+                linestyle="--",
+                linewidth=0.8,
+                label=f"Saddle: {e_rel[saddle_idx]:.3f} eV @ image {saddle_idx}",
+            )
     ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
     ax.set_xlabel("NEB image index")
     ax.set_ylabel("Relative energy (eV)")
@@ -1324,7 +2014,9 @@ def task_atst_neb_analysis(args: list[str] | None = None, interactive: bool = Tr
     console.print(f"[green]✓ Data file: {out_dat}[/green]")
     console.print(f"  Barrier: {barrier:.4f} eV, Saddle: image {saddle_idx}/{n_img - 1}")
     if has_spline:
-        console.print(f"  Spline-fit: barrier = {spline_saddle_e:.4f} eV at image {spline_saddle_x:.2f}")
+        console.print(
+            f"  Spline-fit: barrier = {spline_saddle_e:.4f} eV at image {spline_saddle_x:.2f}"
+        )
     console.print()
 
 
@@ -1332,8 +2024,72 @@ def task_atst_neb_analysis(args: list[str] | None = None, interactive: bool = Tr
 # Task 3306: ASE NEB Analysis
 # =============================================================================
 
-@task(3306, category="Reaction Dynamics", name="ASE NEB Analysis",
-      description="Analyze ASE NEB results (from task 3304): convergence, barrier, forces")
+
+def _parse_neb_out_energies() -> dict[int, float] | None:
+    """Read the final per-image energies from the newest NEB run log.
+
+    neb_run.py / neb_run4.py print ``Image i: E = X eV`` for the converged
+    chain. The analysis falls back to these when the trajectory frames do not
+    carry calculator energies (e.g. endpoint frames cached with a custom
+    calculator that ASE's trajectory writer does not persist).
+    """
+    import re as _re
+
+    outs = sorted(Path(".").glob("neb*.out"))
+    if not outs:
+        return None
+    outs.sort(key=lambda p: p.stat().st_mtime)  # newest last
+    text = outs[-1].read_text(errors="ignore")
+    pat = _re.compile(r"Image\s+(\d+):\s*E\s*=\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)")
+    pairs = {int(m.group(1)): float(m.group(2)) for m in pat.finditer(text)}
+    return pairs or None
+
+
+def _max_force_from_abacus_text(text: str) -> float | None:
+    """Max atomic force (eV/Å) from the last TOTAL-FORCE block of an ABACUS log.
+
+    Lines look like ``C1  -0.007174  -0.017708  0.001641`` (element label + fx
+    fy fz). Endpoint frames of a NEB trajectory carry no forces, but every
+    per-image ABACUS run wrote its forces to neb-i/OUT.ABACUS.
+    """
+    import re as _re
+
+    idx = text.rfind("TOTAL-FORCE (eV/Angstrom)")
+    if idx < 0:
+        return None
+    seg = text[idx:].split("TOTAL-STRESS")[0]
+    fs = []
+    pat = _re.compile(
+        r"^\s*[A-Z][a-z]?\d*\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)",
+        _re.MULTILINE,
+    )
+    for m in pat.finditer(seg):
+        fx, fy, fz = (float(m.group(k)) for k in (1, 2, 3))
+        fs.append((fx * fx + fy * fy + fz * fz) ** 0.5)
+    return max(fs) if fs else None
+
+
+def _image_max_force_from_out(i: int) -> float | None:
+    """Max atomic force of NEB image i, read from its ABACUS output dir."""
+    d = Path(f"neb-{i}/OUT.ABACUS")
+    if not d.is_dir():
+        return None
+    for lp in sorted(d.glob("running*.log")):
+        try:
+            mf = _max_force_from_abacus_text(lp.read_text(errors="ignore"))
+        except Exception:
+            continue
+        if mf is not None:
+            return mf
+    return None
+
+
+@task(
+    3306,
+    category="Reaction Dynamics",
+    name="ASE NEB Analysis",
+    description="Analyze ASE NEB results (from task 3304): convergence, barrier, forces",
+)
 def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = True) -> None:
     """Analyze ASE NEB results generated by task 3304 (ASE NEB Script).
 
@@ -1347,10 +2103,14 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
     console.print("[bold cyan]=== ASE NEB Result Analysis ===[/bold cyan]")
     console.print()
 
-    # --- Auto-detect 3304 output ---
-    if not Path("neb_run.py").exists():
-        console.print("[red]No neb_run.py found — not a task 3304 output directory.[/red]")
-        console.print("[dim]Run task 3304 first, then run this analysis in the same directory.[/dim]")
+    # --- Auto-detect 3304 output (single-GPU neb_run.py or 4-GPU neb_run4.py) ---
+    if not (Path("neb_run.py").exists() or Path("neb_run4.py").exists()):
+        console.print(
+            "[red]No neb_run.py / neb_run4.py found — not a task 3304 output directory.[/red]"
+        )
+        console.print(
+            "[dim]Run task 3304 first, then run this analysis in the same directory.[/dim]"
+        )
         return
     console.print("  [dim]Detected task 3304 output[/dim]")
 
@@ -1372,6 +2132,7 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
 
     try:
         from ase.io import read as ase_read
+
         all_frames = ase_read(traj_path, index=":")
     except Exception as e:
         console.print(f"[red]Failed to read trajectory: {e}[/red]")
@@ -1421,8 +2182,43 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
             fmaxes[i] = np.nan
 
     if np.isnan(energies[0]):
-        console.print("[red]Energies not available — images have no calculator results.[/red]")
-        return
+        # Trajectory frames may lack calculator energies (cached-endpoint frames
+        # in particular). Fill only the missing energies from the run log
+        # ("Image i: E = ... eV" in neb*.out / neb4*.out). Interior frames in the
+        # trajectory still carry their forces, so keep those fmax values — the
+        # force bar chart stays meaningful. Endpoints are fixed in NEB, so 0 is
+        # their correct force.
+        parsed = _parse_neb_out_energies()
+        if parsed:
+            n_filled = 0
+            for i in range(n_chain):
+                if np.isnan(energies[i]) and i in parsed:
+                    energies[i] = parsed[i]
+                    n_filled += 1
+                if np.isnan(fmaxes[i]):
+                    fmaxes[i] = 0.0  # fixed endpoints (~0 force) / no traj force
+            if n_filled == 0:
+                console.print(
+                    "[red]Energies not available — images have no calculator results.[/red]"
+                )
+                return
+            console.print(
+                f"  [dim]Filled {n_filled} endpoint energies from the run log; "
+                "interior forces read from the trajectory.[/dim]"
+            )
+        else:
+            console.print("[red]Energies not available — images have no calculator results.[/red]")
+            return
+
+    # Endpoints are fixed during NEB, so the trajectory never stores their
+    # forces (cached-endpoint frames carry none). Read each image's real atomic
+    # force from its ABACUS output dir wherever the trajectory gave none (nan or
+    # the 0 placeholder) — this exposes whether init/final were well relaxed.
+    for i in range(n_chain):
+        if np.isnan(fmaxes[i]) or fmaxes[i] == 0.0:
+            mf = _image_max_force_from_out(i)
+            if mf is not None:
+                fmaxes[i] = mf
 
     e_rel = energies - energies[0]
     barrier = np.max(e_rel)
@@ -1432,7 +2228,7 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
     console.print()
     console.print("  [bold]Converged NEB chain:[/bold]")
     console.print(f"  {'Image':>6s}  {'E (eV)':>14s}  {'E rel (eV)':>12s}  {'fmax (eV/A)':>13s}")
-    console.print(f"  {'-'*6}  {'-'*14}  {'-'*12}  {'-'*13}")
+    console.print(f"  {'-' * 6}  {'-' * 14}  {'-' * 12}  {'-' * 13}")
     for i in range(n_chain):
         marker = " ← saddle" if i == saddle_idx else ""
         console.print(
@@ -1450,6 +2246,7 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
     n_img = n_chain
     try:
         from scipy.interpolate import CubicSpline
+
         cs = CubicSpline(x_raw, e_rel, bc_type="natural")
         x_fine = np.linspace(0, n_img - 1, (n_img - 1) * 50 + 1)
         e_fine = cs(x_fine)
@@ -1468,39 +2265,46 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
 
     # --- Plot (energy profile + force bar chart) ---
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(8, 8), gridspec_kw={"height_ratios": [3, 1]}
-    )
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8), gridspec_kw={"height_ratios": [3, 1]})
 
     # Upper panel: energy barrier
-    ax1.plot(x_raw, e_rel, "o", color="#1f77b4", markersize=8, zorder=5,
-             label="ASE NEB images")
+    ax1.plot(x_raw, e_rel, "o", color="#1f77b4", markersize=8, zorder=5, label="ASE NEB images")
     if has_spline:
-        ax1.plot(x_fine, e_fine, "-", color="#1f77b4", linewidth=1.2, alpha=0.6,
-                 label="Cubic spline")
-        ax1.axvline(x=spline_saddle_x, color="#d62728", linestyle="--",
-                    linewidth=0.8, label=f"Barrier: {spline_barrier:.3f} eV")
+        ax1.plot(
+            x_fine, e_fine, "-", color="#1f77b4", linewidth=1.2, alpha=0.6, label="Cubic spline"
+        )
+        ax1.axvline(
+            x=spline_saddle_x,
+            color="#d62728",
+            linestyle="--",
+            linewidth=0.8,
+            label=f"Barrier: {spline_barrier:.3f} eV",
+        )
     else:
         ax1.plot(x_raw, e_rel, "-", color="#1f77b4", linewidth=1.2)
         ax1.axvline(x=saddle_idx, color="#d62728", linestyle="--", linewidth=0.8)
     ax1.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
     ax1.set_ylabel("Relative energy (eV)")
     ax1.set_title(
-        f"ASE NEB Barrier — {spline_barrier:.3f} eV" if has_spline
+        f"ASE NEB Barrier — {spline_barrier:.3f} eV"
+        if has_spline
         else f"ASE NEB Barrier — {barrier:.3f} eV"
     )
     ax1.legend(loc="upper left", fontsize=9)
 
     # Lower panel: max-force per image
     ax2.bar(x_raw, fmaxes, color="#ff7f0e", alpha=0.7, label="|F| max")
-    ax2.axhline(y=0.05, color="#2ca02c", linestyle="--", linewidth=0.8,
-                label="target fmax (0.05 eV/A)")
+    ax2.axhline(
+        y=0.05, color="#2ca02c", linestyle="--", linewidth=0.8, label="target fmax (0.05 eV/A)"
+    )
     ax2.set_xlabel("NEB image index")
     ax2.set_ylabel("Max force (eV/A)")
     ax2.legend(loc="upper right", fontsize=9)
@@ -1530,6 +2334,7 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
 
     # Export converged NEB chain as .traj and .vasp
     from ase.io import write as ase_write
+
     ase_write("converged.traj", images)
     try:
         ase_write("converged.vasp", images, format="vasp")
@@ -1537,12 +2342,19 @@ def task_ase_neb_analysis(args: list[str] | None = None, interactive: bool = Tru
         # VASP format can't write multi-frame — write individual POSCARs instead
         for i, img in enumerate(images):
             ase_write(f"converged_{i:02d}.vasp", img, format="vasp", direct=True)
-        console.print(f"[green]✓ Converged chain: converged.traj + converged_00__{n_img-1:02d}.vasp[/green]")
+        console.print(
+            f"[green]✓ Converged chain: converged.traj + converged_00__{n_img - 1:02d}.vasp[/green]"
+        )
     else:
         console.print("[green]✓ Converged chain: converged.traj + converged.vasp[/green]")
 
-    console.print(f"  Barrier: {spline_barrier:.4f} eV (spline)" if has_spline
-                  else f"  Barrier: {barrier:.4f} eV")
-    console.print(f"  Saddle:  image {saddle_idx}/{n_img - 1}" +
-                  (f" (spline: {spline_saddle_x:.2f})" if has_spline else ""))
+    console.print(
+        f"  Barrier: {spline_barrier:.4f} eV (spline)"
+        if has_spline
+        else f"  Barrier: {barrier:.4f} eV"
+    )
+    console.print(
+        f"  Saddle:  image {saddle_idx}/{n_img - 1}"
+        + (f" (spline: {spline_saddle_x:.2f})" if has_spline else "")
+    )
     console.print()

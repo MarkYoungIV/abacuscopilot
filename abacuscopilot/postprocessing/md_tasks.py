@@ -106,13 +106,17 @@ def parse_md_dump(filepath: str | Path) -> list[dict]:
                     in_table = False
                     continue
                 try:
-                    current_frame["atoms"].append({
-                        "index": int(parts[0]),
-                        "label": parts[1],
-                        "xyz": np.array([float(parts[2]), float(parts[3]), float(parts[4])]),
-                        "force": np.array([float(parts[5]), float(parts[6]), float(parts[7])]),
-                        "velocity": np.array([float(parts[8]), float(parts[9]), float(parts[10])]),
-                    })
+                    current_frame["atoms"].append(
+                        {
+                            "index": int(parts[0]),
+                            "label": parts[1],
+                            "xyz": np.array([float(parts[2]), float(parts[3]), float(parts[4])]),
+                            "force": np.array([float(parts[5]), float(parts[6]), float(parts[7])]),
+                            "velocity": np.array(
+                                [float(parts[8]), float(parts[9]), float(parts[10])]
+                            ),
+                        }
+                    )
                 except (ValueError, IndexError):
                     in_table = False
 
@@ -164,15 +168,9 @@ def write_pdb(
             b = np.linalg.norm(cell[1])
             c = np.linalg.norm(cell[2])
             # Compute angles
-            alpha = np.degrees(
-                np.arccos(np.dot(cell[1], cell[2]) / (b * c))
-            )
-            beta = np.degrees(
-                np.arccos(np.dot(cell[0], cell[2]) / (a * c))
-            )
-            gamma = np.degrees(
-                np.arccos(np.dot(cell[0], cell[1]) / (a * b))
-            )
+            alpha = np.degrees(np.arccos(np.dot(cell[1], cell[2]) / (b * c)))
+            beta = np.degrees(np.arccos(np.dot(cell[0], cell[2]) / (a * c)))
+            gamma = np.degrees(np.arccos(np.dot(cell[0], cell[1]) / (a * b)))
             f.write(
                 f"CRYST1{a:9.3f}{b:9.3f}{c:9.3f}"
                 f"{alpha:7.2f}{beta:7.2f}{gamma:7.2f} P 1           1\n"
@@ -232,23 +230,55 @@ def _find_md_dump(args: list[str] | None = None) -> str:
 # =============================================================================
 
 
-@task(3101, category="MD Analysis", name="MD Trajectory → PDB",
-      description="Convert ABACUS MD_dump trajectory to PDB format for VMD")
-def task_md_to_pdb(args: list[str] | None = None, interactive: bool = True) -> None:
-    """Convert ABACUS MD_dump trajectory file to PDB format.
+def _atoms_list_to_frames(atoms_list) -> list[dict]:
+    """Convert a list of ase.Atoms (from an ASE .traj / NEB chain) to the frame
+    dicts used by ``write_pdb`` (ase 3.29 removed the PDB codec entirely)."""
+    frames = []
+    for step, atoms in enumerate(atoms_list, 1):
+        cell = np.array(atoms.get_cell(complete=True))
+        frames.append(
+            {
+                "step": step,
+                "atoms": [
+                    {
+                        "index": i,
+                        "label": sym,
+                        "xyz": np.asarray(pos),
+                        "force": [0.0, 0.0, 0.0],
+                        "velocity": [0.0, 0.0, 0.0],
+                    }
+                    for i, (sym, pos) in enumerate(
+                        zip(atoms.get_chemical_symbols(), atoms.get_positions())
+                    )
+                ],
+                "lattice_vectors": cell,
+                "lattice_constant": 1.0,
+            }
+        )
+    return frames
 
-    PDB files can be loaded directly into VMD/Chimera/PyMOL for
-    visualisation and analysis of the MD trajectory.
+
+@task(
+    3101,
+    category="MD Analysis",
+    name="Trajectory → PDB",
+    description="Convert ABACUS MD_dump or an ASE .traj trajectory/chain to PDB format for VMD",
+)
+def task_md_to_pdb(args: list[str] | None = None, interactive: bool = True) -> None:
+    """Convert an MD trajectory (ABACUS MD_dump or an ASE *.traj) to PDB.
+
+    PDB files can be loaded directly into VMD/Chimera/PyMOL for visualisation.
+    ASE 3.29 removed the PDB codec, so output is written directly.
     """
     console = _get_console()
 
     console.print()
-    console.print("[bold cyan]=== MD Trajectory → PDB ===[/bold cyan]")
+    console.print("[bold cyan]=== Trajectory → PDB ===[/bold cyan]")
     console.print()
 
     md_path = _find_md_dump(args)
     if interactive:
-        inp = _prompt(console, "MD_dump file path", md_path)
+        inp = _prompt(console, "Trajectory file (MD_dump or *.traj)", md_path)
         if inp:
             md_path = inp
 
@@ -256,16 +286,23 @@ def task_md_to_pdb(args: list[str] | None = None, interactive: bool = True) -> N
         console.print(f"[red]File not found: {md_path}[/red]")
         return
 
-    # Parse
+    # Parse — ABACUS MD_dump or an ASE .traj (e.g. converged.traj / neb chain)
     console.print(f"  [dim]Reading: {md_path}[/dim]")
+    is_traj = Path(md_path).suffix.lower() == ".traj"
     try:
-        frames = parse_md_dump(md_path)
+        if is_traj:
+            from ase.io import read as ase_read
+
+            frames = _atoms_list_to_frames(ase_read(md_path, index=":"))
+        else:
+            frames = parse_md_dump(md_path)
     except Exception as e:
-        console.print(f"[red]Failed to parse MD_dump: {e}[/red]")
+        what = "traj" if is_traj else "MD_dump"
+        console.print(f"[red]Failed to parse {what}: {e}[/red]")
         return
 
     if not frames:
-        console.print("[red]No frames found in MD_dump.[/red]")
+        console.print("[red]No frames found in the trajectory.[/red]")
         return
 
     n_frames = len(frames)
@@ -308,6 +345,7 @@ def task_md_to_pdb(args: list[str] | None = None, interactive: bool = True) -> N
     if "all frames" in mode:
         # Multi-model PDB — keep original MD step numbers
         from rich.progress import Progress
+
         with Progress() as progress:
             task = progress.add_task("[cyan]Writing PDB...", total=len(frames))
             for frame in frames:
@@ -381,8 +419,12 @@ def write_md_dump(frames: list[dict], filepath: str | Path) -> None:
 # =============================================================================
 
 
-@task(3102, category="MD Analysis", name="Extract Frames",
-      description="Extract every Nth frame from MD_dump to create a lighter trajectory")
+@task(
+    3102,
+    category="MD Analysis",
+    name="Extract Frames",
+    description="Extract every Nth frame from MD_dump to create a lighter trajectory",
+)
 def task_extract_frames(args: list[str] | None = None, interactive: bool = True) -> None:
     """Extract frames at a regular stride, writing a smaller MD_dump."""
     console = _get_console()
@@ -442,8 +484,12 @@ def _read_md_dt(md_path: str) -> float:
     3. OUT.ABACUS/running_md.log (fallback — md_dt is logged there)
     """
     md_dir = Path(md_path).parent
-    for candidate in (md_dir / "INPUT", md_dir / "INPUT.info",
-                      md_dir.parent / "INPUT", md_dir / "running_md.log"):
+    for candidate in (
+        md_dir / "INPUT",
+        md_dir / "INPUT.info",
+        md_dir.parent / "INPUT",
+        md_dir / "running_md.log",
+    ):
         if not candidate.exists():
             continue
         content = candidate.read_text()
@@ -469,8 +515,12 @@ def _read_md_dumpfreq(md_path: str) -> int:
         frame_dt (fs) = md_dt * md_dumpfreq
     """
     md_dir = Path(md_path).parent
-    for candidate in (md_dir / "INPUT", md_dir / "INPUT.info",
-                      md_dir.parent / "INPUT", md_dir / "running_md.log"):
+    for candidate in (
+        md_dir / "INPUT",
+        md_dir / "INPUT.info",
+        md_dir.parent / "INPUT",
+        md_dir / "running_md.log",
+    ):
         if not candidate.exists():
             continue
         content = candidate.read_text()
@@ -499,19 +549,25 @@ def _resolve_frame_dt(md_path: str | Path, console, interactive: bool = True) ->
         md_dt = _read_md_dt(str(md_path))
         dumpfreq = _read_md_dumpfreq(str(md_path))
         frame_dt = md_dt * dumpfreq
-        console.print(f"  [dim]md_dt = {md_dt:.1f} fs, dumpfreq = {dumpfreq} → frame_dt = {frame_dt:.1f} fs[/dim]")
+        console.print(
+            f"  [dim]md_dt = {md_dt:.1f} fs, dumpfreq = {dumpfreq} → frame_dt = {frame_dt:.1f} fs[/dim]"
+        )
         return frame_dt
     except FileNotFoundError:
         if interactive:
-            frame_dt = float(_prompt(
-                console,
-                "No ABACUS INPUT found — real time between trajectory frames (fs)",
-                "1.0",
-            ))
+            frame_dt = float(
+                _prompt(
+                    console,
+                    "No ABACUS INPUT found — real time between trajectory frames (fs)",
+                    "1.0",
+                )
+            )
             console.print(f"  [dim]frame_dt = {frame_dt:.1f} fs (manual)[/dim]")
             return frame_dt
         console.print("  [yellow]! No ABACUS INPUT found — assuming frame_dt = 1.0 fs.[/yellow]")
-        console.print("  [yellow]  If this trajectory was converted from VASP XDATCAR, the real frame")
+        console.print(
+            "  [yellow]  If this trajectory was converted from VASP XDATCAR, the real frame"
+        )
         console.print("  [yellow]  spacing may differ — re-run interactively to set it.[/yellow]")
         return 1.0
 
@@ -535,8 +591,9 @@ def _prompt_range(console, label: str, prompt_text: str) -> tuple[bool, tuple | 
             )
 
 
-def _plot_msd(data_file: str, species: str, dt_fs: float,
-              console=None, interactive: bool = True) -> None:
+def _plot_msd(
+    data_file: str, species: str, dt_fs: float, console=None, interactive: bool = True
+) -> None:
     """Plot MSD curve(s).
 
     Interactive: after each plot asks "Adjust plot ranges?"; choosing Yes lets
@@ -544,10 +601,12 @@ def _plot_msd(data_file: str, species: str, dt_fs: float,
     redraws immediately.  Choosing No keeps the plot and returns.
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     data = np.loadtxt(data_file)
@@ -559,9 +618,9 @@ def _plot_msd(data_file: str, species: str, dt_fs: float,
     # --- Colour map ---
     _COLORS: dict[str, str] = {
         "total": "#cb5c55",  # warm coral
-        "x":     "#0060a6",  # deep blue
-        "y":     "#969fb5",  # muted purple-grey
-        "z":     "#4b8fc1",  # medium blue
+        "x": "#0060a6",  # deep blue
+        "y": "#969fb5",  # muted purple-grey
+        "z": "#4b8fc1",  # medium blue
     }
     _FALLBACK = ["#cb5c55", "#0060a6", "#969fb5", "#4b8fc1"]
 
@@ -656,12 +715,12 @@ def _compute_msd_fft(
         # Dot-product autocorrelation summed over atoms & components, via FFT.
         x = traj[:, :, comps].reshape(n_frames, -1)  # (N, n_atoms*ncomp)
         X = np.fft.rfft(x, n=n_fft, axis=0)
-        C = np.fft.irfft((X.real ** 2 + X.imag ** 2).sum(axis=1), n=n_fft)[:n_frames]
+        C = np.fft.irfft((X.real**2 + X.imag**2).sum(axis=1), n=n_fft)[:n_frames]
 
         # Cumulative sums of |r|² over time (per atom).
-        sum2 = (traj[:, :, comps] ** 2).sum(axis=2)                 # (N, n_atoms)
+        sum2 = (traj[:, :, comps] ** 2).sum(axis=2)  # (N, n_atoms)
         S_f = np.zeros((n_frames + 1, n_atoms))
-        np.cumsum(sum2, axis=0, out=S_f[1:])                        # S_f[k] = Σ_{t<k}
+        np.cumsum(sum2, axis=0, out=S_f[1:])  # S_f[k] = Σ_{t<k}
         S_r = np.flip(np.cumsum(np.flip(sum2, axis=0), axis=0), axis=0)  # S_r[k] = Σ_{t≥k}
 
         msd = np.zeros(max_lag + 1)
@@ -710,8 +769,7 @@ def compute_msd(
     n_atoms = len(atom_indices)
 
     # Build trajectory array: (n_frames, n_atoms, 3) — vectorized extraction
-    traj = np.array([[frame["atoms"][i]["xyz"] for i in atom_indices]
-                      for frame in frames])
+    traj = np.array([[frame["atoms"][i]["xyz"] for i in atom_indices] for frame in frames])
 
     # ------------------------------------------------------------------
     # PBC unwrapping — remove artificial jumps across periodic boundaries
@@ -720,7 +778,7 @@ def compute_msd(
     # ------------------------------------------------------------------
     if unwrap:
         unwrapped = _unwrap_trajectory(frames, atom_indices)  # (n_atoms, 3, n_frames)
-        traj = unwrapped.transpose(2, 0, 1)                   # → (n_frames, n_atoms, 3)
+        traj = unwrapped.transpose(2, 0, 1)  # → (n_frames, n_atoms, 3)
 
     max_lag = n_frames - 1
     result = {"lag": np.arange(max_lag + 1, dtype=float)}
@@ -748,8 +806,12 @@ def compute_msd(
 # =============================================================================
 
 
-@task(3103, category="MD Analysis", name="MSD",
-      description="Compute Mean Square Displacement from MD_dump trajectory")
+@task(
+    3103,
+    category="MD Analysis",
+    name="MSD",
+    description="Compute Mean Square Displacement from MD_dump trajectory",
+)
 def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None:
     """Calculate mean square displacement (MSD) for selected atomic species.
 
@@ -790,8 +852,9 @@ def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None
     for a in frames[0]["atoms"]:
         if a["label"] not in species_seen:
             species_seen.append(a["label"])
-    species_counts = {s: sum(1 for a in frames[0]["atoms"] if a["label"] == s)
-                      for s in species_seen}
+    species_counts = {
+        s: sum(1 for a in frames[0]["atoms"] if a["label"] == s) for s in species_seen
+    }
 
     console.print(f"  Frames: {n_frames}, Atoms: {n_atoms}")
     console.print(f"  Species: {', '.join(f'{s}({species_counts[s]})' for s in species_seen)}")
@@ -800,11 +863,10 @@ def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None
 
     # --- Choose species ---
     if interactive:
-        species_choices = [
-            f"{s} ({species_counts[s]} atoms)" for s in species_seen
-        ]
-        chosen = _prompt_choice(console, "Select species for MSD", species_choices,
-                                species_choices[0])
+        species_choices = [f"{s} ({species_counts[s]} atoms)" for s in species_seen]
+        chosen = _prompt_choice(
+            console, "Select species for MSD", species_choices, species_choices[0]
+        )
         # Extract element symbol from "Li (24 atoms)"
         species = chosen.split()[0]
     else:
@@ -833,10 +895,7 @@ def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None
     console.print()
 
     # Get atom indices for chosen species
-    atom_indices = [
-        i for i, a in enumerate(selected_frames[0]["atoms"])
-        if a["label"] == species
-    ]
+    atom_indices = [i for i, a in enumerate(selected_frames[0]["atoms"]) if a["label"] == species]
     console.print(f"  {len(atom_indices)} {species} atoms selected for MSD")
     console.print()
 
@@ -879,9 +938,12 @@ def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None
     header = f"# MSD for {species} — frames {start}→{end} step {step}\n"
     header += "# per-atom mean MSD (Å²); D = slope/(2·d·frame_dt) with d = dims\n"
     header += "# lag(frames)  " + "  ".join(f"MSD_{lab}(A^2)" for lab in col_labels)
-    np.savetxt(out_file, np.column_stack(cols),
-               fmt="%8d  " + "  ".join("%.8f" for _ in col_labels),
-               header=header)
+    np.savetxt(
+        out_file,
+        np.column_stack(cols),
+        fmt="%8d  " + "  ".join("%.8f" for _ in col_labels),
+        header=header,
+    )
     console.print(f"  [green]✓ MSD saved to {out_file}[/green]")
 
     # Quick summary
@@ -903,7 +965,11 @@ def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None
             slope, _ = np.polyfit(lag[fit_start:fit_end], arr[fit_start:fit_end], 1)
             # Convert to Å²/fs then to cm²/s
             # D_total = slope / (2d * frame_dt), d=3 → 1/(6*frame_dt); per-direction → 1/(2*frame_dt)
-            diff_cm2_s = abs(slope) / (6.0 * frame_dt) * 1e-1 if lab == "total" else abs(slope) / (2.0 * frame_dt) * 1e-1
+            diff_cm2_s = (
+                abs(slope) / (6.0 * frame_dt) * 1e-1
+                if lab == "total"
+                else abs(slope) / (2.0 * frame_dt) * 1e-1
+            )
             console.print(f"  D_{lab}({species}) = {diff_cm2_s:.4e} cm²/s")
     console.print()
 
@@ -977,6 +1043,7 @@ def compute_rdf(
     hist = np.zeros(n_bins)
 
     from rich.progress import Progress
+
     with Progress() as progress:
         task = progress.add_task("[cyan]Computing RDF...", total=len(frames))
         for frame in frames:
@@ -1001,7 +1068,7 @@ def compute_rdf(
     rho_b = n_b / vol
     for i in range(n_bins):
         shell_vol = 4.0 * np.pi * r[i] ** 2 * dr_bin
-        hist[i] /= (n_frames * n_a * rho_b * shell_vol)
+        hist[i] /= n_frames * n_a * rho_b * shell_vol
 
     return r, hist
 
@@ -1009,10 +1076,12 @@ def compute_rdf(
 def _plot_rdf(r: np.ndarray, g: np.ndarray, species_a: str, species_b: str) -> None:
     """Plot RDF curve."""
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -1036,10 +1105,12 @@ def _plot_rdf(r: np.ndarray, g: np.ndarray, species_a: str, species_b: str) -> N
 def _plot_cn(r: np.ndarray, cn: np.ndarray, species_a: str, species_b: str) -> None:
     """Plot coordination number curve."""
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -1060,15 +1131,20 @@ def _plot_cn(r: np.ndarray, cn: np.ndarray, species_a: str, species_b: str) -> N
 
 
 def _plot_rdf_cn_combined(
-    r: np.ndarray, g: np.ndarray, cn: np.ndarray,
-    species_a: str, species_b: str,
+    r: np.ndarray,
+    g: np.ndarray,
+    cn: np.ndarray,
+    species_a: str,
+    species_b: str,
 ) -> None:
     """Plot RDF and CN on dual Y-axes."""
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     fig, ax1 = plt.subplots(figsize=(8, 6))
@@ -1111,8 +1187,12 @@ def _plot_rdf_cn_combined(
 # =============================================================================
 
 
-@task(3104, category="MD Analysis", name="RDF",
-      description="Compute Radial Distribution Function from MD_dump trajectory")
+@task(
+    3104,
+    category="MD Analysis",
+    name="RDF",
+    description="Compute Radial Distribution Function from MD_dump trajectory",
+)
 def task_md_rdf(args: list[str] | None = None, interactive: bool = True) -> None:
     """Calculate partial radial distribution function g(r)."""
     console = _get_console()
@@ -1144,8 +1224,9 @@ def task_md_rdf(args: list[str] | None = None, interactive: bool = True) -> None
     for a in frames[0]["atoms"]:
         if a["label"] not in species_order:
             species_order.append(a["label"])
-    species_counts = {s: sum(1 for a in frames[0]["atoms"] if a["label"] == s)
-                      for s in species_order}
+    species_counts = {
+        s: sum(1 for a in frames[0]["atoms"] if a["label"] == s) for s in species_order
+    }
 
     console.print(f"  Frames: {n_frames}, Atoms: {len(frames[0]['atoms'])}")
     console.print(f"  Species: {', '.join(f'{s}({species_counts[s]})' for s in species_order)}")
@@ -1154,13 +1235,15 @@ def task_md_rdf(args: list[str] | None = None, interactive: bool = True) -> None
     # --- Choose atom pairs ---
     if interactive:
         central_choices = [f"{s} ({species_counts[s]} atoms)" for s in species_order]
-        cent = _prompt_choice(console, "Central (source) species", central_choices,
-                              central_choices[0])
+        cent = _prompt_choice(
+            console, "Central (source) species", central_choices, central_choices[0]
+        )
         species_a = cent.split()[0]
 
         # For neighbour, show all species again
-        neig = _prompt_choice(console, "Neighbour (target) species", central_choices,
-                              cent)  # default = same as central
+        neig = _prompt_choice(
+            console, "Neighbour (target) species", central_choices, cent
+        )  # default = same as central
         species_b = neig.split()[0]
 
         # Parameters
@@ -1196,8 +1279,7 @@ def task_md_rdf(args: list[str] | None = None, interactive: bool = True) -> None
 
     # Save RDF
     out_file = f"RDF_{species_a}-{species_b}.dat"
-    np.savetxt(out_file, np.column_stack([r, g]),
-               fmt="%.8f  %.8f", header="# r(Ang)  g(r)")
+    np.savetxt(out_file, np.column_stack([r, g]), fmt="%.8f  %.8f", header="# r(Ang)  g(r)")
     console.print(f"  [green]✓ RDF saved to {out_file}[/green]")
 
     # First peak
@@ -1214,8 +1296,7 @@ def task_md_rdf(args: list[str] | None = None, interactive: bool = True) -> None
 
     compute_cn = False
     if interactive:
-        want_cn = _prompt_choice(console, "Compute coordination number?",
-                                  ["Yes", "No"], "Yes")
+        want_cn = _prompt_choice(console, "Compute coordination number?", ["Yes", "No"], "Yes")
         compute_cn = "Yes" in want_cn
 
     if compute_cn:
@@ -1226,15 +1307,16 @@ def task_md_rdf(args: list[str] | None = None, interactive: bool = True) -> None
             cn[i] = cn[i - 1] + g[i] * rho_b * shell_vol
 
         cn_file = f"CN_{species_a}-{species_b}.dat"
-        np.savetxt(cn_file, np.column_stack([r, cn]),
-                   fmt="%.8f  %.8f", header="# r(Ang)  CN(r)")
+        np.savetxt(cn_file, np.column_stack([r, cn]), fmt="%.8f  %.8f", header="# r(Ang)  CN(r)")
         console.print(f"  [green]✓ Coordination number saved to {cn_file}[/green]")
 
         if interactive:
-            plot_mode = _prompt_choice(console, "Plot mode",
-                                        ["Dual Y-axis (g(r) + CN in one figure)",
-                                         "Separate figures"],
-                                        "Dual Y-axis (g(r) + CN in one figure)")
+            plot_mode = _prompt_choice(
+                console,
+                "Plot mode",
+                ["Dual Y-axis (g(r) + CN in one figure)", "Separate figures"],
+                "Dual Y-axis (g(r) + CN in one figure)",
+            )
             combined = "Dual" in plot_mode
         else:
             combined = True
@@ -1333,6 +1415,7 @@ def compute_probability_density(
     cell_inv = np.linalg.inv(cell.T)
     total_count = 0
     from rich.progress import Progress
+
     with Progress() as progress:
         task = progress.add_task("[cyan]Computing density...", total=len(frames))
         for frame in frames:
@@ -1396,8 +1479,12 @@ def write_chgcar(
 # =============================================================================
 
 
-@task(3105, category="MD Analysis", name="Probability Density",
-      description="Compute atomic probability density from MD trajectory, export as CHGCAR + POSCAR")
+@task(
+    3105,
+    category="MD Analysis",
+    name="Probability Density",
+    description="Compute atomic probability density from MD trajectory, export as CHGCAR + POSCAR",
+)
 def task_probability_density(args: list[str] | None = None, interactive: bool = True) -> None:
     """Compute 3-D probability density for a species and export CHGCAR + POSCAR."""
     console = _get_console()
@@ -1429,8 +1516,9 @@ def task_probability_density(args: list[str] | None = None, interactive: bool = 
     for a in frames[0]["atoms"]:
         if a["label"] not in species_order:
             species_order.append(a["label"])
-    species_counts = {s: sum(1 for a in frames[0]["atoms"] if a["label"] == s)
-                      for s in species_order}
+    species_counts = {
+        s: sum(1 for a in frames[0]["atoms"] if a["label"] == s) for s in species_order
+    }
 
     console.print(f"  Frames: {n_frames}, Atoms: {len(frames[0]['atoms'])}")
     console.print(f"  Species: {', '.join(f'{s}({species_counts[s]})' for s in species_order)}")
@@ -1446,8 +1534,9 @@ def task_probability_density(args: list[str] | None = None, interactive: bool = 
     # --- Choose species ---
     if interactive:
         species_choices = [f"{s} ({species_counts[s]} atoms)" for s in species_order]
-        chosen = _prompt_choice(console, "Select species for density", species_choices,
-                                species_choices[0])
+        chosen = _prompt_choice(
+            console, "Select species for density", species_choices, species_choices[0]
+        )
         species = chosen.split()[0]
         grid_in = _prompt(console, "Grid size (nx ny nz)", "80 80 80")
         try:
@@ -1496,8 +1585,10 @@ def task_probability_density(args: list[str] | None = None, interactive: bool = 
 
 
 def _pairwise_dist_mic(
-    pos_a: np.ndarray, pos_b: np.ndarray,
-    cell: np.ndarray | None, cell_inv: np.ndarray | None,
+    pos_a: np.ndarray,
+    pos_b: np.ndarray,
+    cell: np.ndarray | None,
+    cell_inv: np.ndarray | None,
 ) -> np.ndarray:
     """Pairwise distances with minimum-image convention.
 
@@ -1514,16 +1605,15 @@ def _pairwise_dist_mic(
     if pos_a.shape[0] * pos_b.shape[0] > 10000:
         try:
             import torch
-            if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 device = torch.device("mps")
                 # torch.cdist is the fastest way to get pairwise distances on GPU
                 da = torch.from_numpy(pos_a.astype(np.float32)).to(device).unsqueeze(0)
                 db = torch.from_numpy(pos_b.astype(np.float32)).to(device).unsqueeze(0)
                 if cell is not None:
                     # Apply minimum-image in batch on GPU
-                    L = torch.from_numpy(
-                        np.linalg.norm(cell, axis=1).astype(np.float32)
-                    ).to(device)
+                    L = torch.from_numpy(np.linalg.norm(cell, axis=1).astype(np.float32)).to(device)
                     delta = da.squeeze(0)[:, None, :] - db.squeeze(0)[None, :, :]
                     delta -= torch.round(delta / L) * L
                     dist = torch.norm(delta, dim=2)
@@ -1621,13 +1711,11 @@ def compute_van_hove(
         gsz_matrix, gd_matrix, ngp.
     """
     # Find atom indices
-    a_idx = sorted(i for i, a in enumerate(frames[0]["atoms"])
-                   if a["label"] == species_a)
+    a_idx = sorted(i for i, a in enumerate(frames[0]["atoms"]) if a["label"] == species_a)
     n_a = len(a_idx)
 
     if species_b and species_b != species_a:
-        b_idx = sorted(i for i, a in enumerate(frames[0]["atoms"])
-                       if a["label"] == species_b)
+        b_idx = sorted(i for i, a in enumerate(frames[0]["atoms"]) if a["label"] == species_b)
     else:
         b_idx = a_idx
         species_b = species_a
@@ -1669,11 +1757,11 @@ def compute_van_hove(
             frac = delta @ cell_inv
             frac -= np.floor(frac + 0.5)
             delta = frac @ cell0.T
-        r2_per_atom = np.sum(delta ** 2, axis=1)
+        r2_per_atom = np.sum(delta**2, axis=1)
         r2 = np.mean(r2_per_atom)
         if r2 > 1e-12:
-            r4 = np.mean(r2_per_atom ** 2)
-            ngp[k] = (3.0 * r4) / (5.0 * r2 ** 2) - 1.0
+            r4 = np.mean(r2_per_atom**2)
+            ngp[k] = (3.0 * r4) / (5.0 * r2**2) - 1.0
 
     # --- Gs(r,t): self-part ---
     # Sample time lags
@@ -1684,12 +1772,12 @@ def compute_van_hove(
     gsx_matrix = np.zeros((n_r, n_lags), dtype=np.float64)
     gsy_matrix = np.zeros((n_r, n_lags), dtype=np.float64)
     gsz_matrix = np.zeros((n_r, n_lags), dtype=np.float64)
-    shell_vol = 4.0 * np.pi * r_centers ** 2 * dr
+    shell_vol = 4.0 * np.pi * r_centers**2 * dr
 
     print(f"  Computing Gs(r,t) + directional Gs(x/y/z) at {n_lags} time lags...")
     for li, lag in enumerate(lag_indices):
         dr_vec = coords_unwrapped[:, :, lag] - r0_unwrapped  # (n_a, 3)
-        dr_mag = np.linalg.norm(dr_vec, axis=1)             # (n_a,)
+        dr_mag = np.linalg.norm(dr_vec, axis=1)  # (n_a,)
         hist, _ = np.histogram(dr_mag, bins=r_edges)
         gs_matrix[:, li] = hist / (n_a * shell_vol)
         # Directional: 1-D histograms of |Δx|, |Δy|, |Δz|, normalized by
@@ -1709,6 +1797,7 @@ def compute_van_hove(
     gd_matrix = np.zeros((n_r, n_lags), dtype=np.float64)
     print(f"  Computing Gd(r,t) at {n_lags} time lags...")
     from rich.progress import Progress
+
     with Progress() as progress:
         task = progress.add_task("[cyan]Computing Gd(r,t)...", total=n_lags)
         for li, lag in enumerate(lag_indices):
@@ -1740,10 +1829,12 @@ def compute_van_hove(
 def _plot_ngp_only(result: dict, prefix: str, dt_fs: float = 1.0) -> None:
     """Plot NGP curve."""
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     time_ps = result["time_frames"] * dt_fs / 1000.0
@@ -1754,6 +1845,7 @@ def _plot_ngp_only(result: dict, prefix: str, dt_fs: float = 1.0) -> None:
     ax.set_ylabel(r"$\alpha_2(t)$")
     ax.set_title(f"Non-Gaussian Parameter — {result['species_a']}")
     from matplotlib.ticker import MaxNLocator, ScalarFormatter
+
     ax.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
     ax.xaxis.set_major_formatter(ScalarFormatter(useMathText=True))
     ax.ticklabel_format(style="sci", axis="x", scilimits=(-2, 3))
@@ -1770,17 +1862,25 @@ def _plot_ngp_only(result: dict, prefix: str, dt_fs: float = 1.0) -> None:
 def _plot_gs_heatmap(r, gs_matrix, lags_ps, sa, prefix, vmax):
     """Plot Gs heatmap with user-specified color max."""
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     gs_shell = 4.0 * np.pi * r[:, np.newaxis] ** 2 * gs_matrix
     fig, ax = plt.subplots(figsize=(8, 6))
-    im = ax.imshow(gs_shell, extent=[lags_ps[0], lags_ps[-1], r[0], r[-1]],
-                   aspect="auto", origin="lower", cmap="turbo",
-                   vmin=0, vmax=vmax)
+    im = ax.imshow(
+        gs_shell,
+        extent=[lags_ps[0], lags_ps[-1], r[0], r[-1]],
+        aspect="auto",
+        origin="lower",
+        cmap="turbo",
+        vmin=0,
+        vmax=vmax,
+    )
     ax.set_xlabel("Time lag (ps)")
     ax.set_ylabel(r"$r$ (Å)")
     ax.set_title(rf"$4\pi r^2 \cdot G_s(r,t)$ — {sa}")
@@ -1803,19 +1903,27 @@ def _plot_gs_directional_heatmap(r, gs_axis_matrix, lags_ps, sa, prefix, axis, v
     directly (no 4πr² shell factor), matching the reference script.
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     axis_label = {0: "Δx", 1: "Δy", 2: "Δz"}[axis]
     out_tag = {0: "X", 1: "Y", 2: "Z"}[axis]
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    im = ax.imshow(gs_axis_matrix, extent=[lags_ps[0], lags_ps[-1], r[0], r[-1]],
-                   aspect="auto", origin="lower", cmap="turbo",
-                   vmin=0, vmax=vmax)
+    im = ax.imshow(
+        gs_axis_matrix,
+        extent=[lags_ps[0], lags_ps[-1], r[0], r[-1]],
+        aspect="auto",
+        origin="lower",
+        cmap="turbo",
+        vmin=0,
+        vmax=vmax,
+    )
     ax.set_xlabel("Time lag (ps)")
     ax.set_ylabel(f"|{axis_label}| (Å)")
     ax.set_title(f"P(|{axis_label}|,t) — {sa}")
@@ -1834,16 +1942,24 @@ def _plot_gs_directional_heatmap(r, gs_axis_matrix, lags_ps, sa, prefix, axis, v
 def _plot_gd_heatmap(r, gd_matrix, lags_ps, sa, sb, prefix, vmax):
     """Plot Gd heatmap with user-specified color max."""
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    im = ax.imshow(gd_matrix, extent=[lags_ps[0], lags_ps[-1], r[0], r[-1]],
-                   aspect="auto", origin="lower", cmap="turbo",
-                   vmin=0, vmax=vmax)
+    im = ax.imshow(
+        gd_matrix,
+        extent=[lags_ps[0], lags_ps[-1], r[0], r[-1]],
+        aspect="auto",
+        origin="lower",
+        cmap="turbo",
+        vmin=0,
+        vmax=vmax,
+    )
     ax.set_xlabel("Time lag (ps)")
     ax.set_ylabel(r"$r$ (Å)")
     ax.set_title(rf"$G_d(r,t)$ — {sa}–{sb}")
@@ -1869,12 +1985,14 @@ def _plot_gs_slices(r, windows, tick_labels, species, prefix, smooth=0):
         smooth: moving-average window size (0 = no smoothing).
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.cm import turbo
     from matplotlib.colors import Normalize
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     data = np.array(windows)
@@ -1936,18 +2054,26 @@ def _load_van_hove_cache(npz_path: Path) -> dict | None:
     if not _VH_CACHE_REQUIRED.issubset(data.files):
         return None
 
-    species_a = (str(data["species_a"].item())
-                 if "species_a" in data else npz_path.stem.split("_", 1)[1])
-    species_b = (str(data["species_b"].item())
-                 if "species_b" in data else species_a)
+    species_a = (
+        str(data["species_a"].item()) if "species_a" in data else npz_path.stem.split("_", 1)[1]
+    )
+    species_b = str(data["species_b"].item()) if "species_b" in data else species_a
 
-    meta_keys = {"r_max", "dr", "frame_stride", "start_frame", "end_frame",
-                 "frame_step", "frame_dt"}
+    meta_keys = {
+        "r_max",
+        "dr",
+        "frame_stride",
+        "start_frame",
+        "end_frame",
+        "frame_step",
+        "frame_dt",
+    }
     return {
         "r": data["r"],
         "time_lags": np.asarray(data["time_lags"], dtype=int),
-        "time_frames": (data["time_frames"] if "time_frames" in data
-                        else np.arange(len(data["ngp"]))),
+        "time_frames": (
+            data["time_frames"] if "time_frames" in data else np.arange(len(data["ngp"]))
+        ),
         "gs_matrix": data["gs"],
         "gsx_matrix": data["gsx"],
         "gsy_matrix": data["gsy"],
@@ -1965,8 +2091,12 @@ def _load_van_hove_cache(npz_path: Path) -> dict | None:
 # =============================================================================
 
 
-@task(3106, category="MD Analysis", name="van Hove",
-      description="Compute van Hove functions Gs(r,t), directional Gs(x/y/z), Gd(r,t) and NGP from MD trajectory")
+@task(
+    3106,
+    category="MD Analysis",
+    name="van Hove",
+    description="Compute van Hove functions Gs(r,t), directional Gs(x/y/z), Gd(r,t) and NGP from MD trajectory",
+)
 def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> None:
     """Calculate self-part, directional self-part and distinct-part van Hove functions."""
     console = _get_console()
@@ -2002,21 +2132,26 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
             for c, r in reusable:
                 m = r["meta"]
                 if m:
-                    console.print(f"    [dim]{c.name} — {r['species_a']}, r_max={float(m['r_max']):.2f}, "
-                                  f"dr={float(m['dr']):.2f}, stride={int(m['frame_stride'])}, "
-                                  f"frames={int(m['start_frame'])}→{int(m['end_frame'])} "
-                                  f"step {int(m['frame_step'])}[/dim]")
+                    console.print(
+                        f"    [dim]{c.name} — {r['species_a']}, r_max={float(m['r_max']):.2f}, "
+                        f"dr={float(m['dr']):.2f}, stride={int(m['frame_stride'])}, "
+                        f"frames={int(m['start_frame'])}→{int(m['end_frame'])} "
+                        f"step {int(m['frame_step'])}[/dim]"
+                    )
                 else:
                     console.print(f"    [dim]{c.name} — {r['species_a']} (old format)[/dim]")
             reuse_map = {f"Reuse {c.name}": (c, r) for c, r in reusable}
             choices = list(reuse_map) + ["No — recompute"]
-            reuse_choice = _prompt_choice(console, "Reuse cached data (skip reading trajectory)?",
-                                          choices, choices[0])
+            reuse_choice = _prompt_choice(
+                console, "Reuse cached data (skip reading trajectory)?", choices, choices[0]
+            )
             if reuse_choice in reuse_map:
                 cache_path, result = reuse_map[reuse_choice]
                 prefix = cache_path.stem
-                console.print(f"  [green]✓ Loaded cached result for {result['species_a']} "
-                              f"from {cache_path.name}[/green]")
+                console.print(
+                    f"  [green]✓ Loaded cached result for {result['species_a']} "
+                    f"from {cache_path.name}[/green]"
+                )
                 _meta = result.get("meta") or {}
                 if _meta and "frame_dt" in _meta:
                     frame_dt = float(_meta["frame_dt"])
@@ -2037,8 +2172,9 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
         for a in frames[0]["atoms"]:
             if a["label"] not in species_order:
                 species_order.append(a["label"])
-        species_counts = {s: sum(1 for a in frames[0]["atoms"] if a["label"] == s)
-                          for s in species_order}
+        species_counts = {
+            s: sum(1 for a in frames[0]["atoms"] if a["label"] == s) for s in species_order
+        }
 
         console.print(f"  Frames: {n_frames}, Atoms: {len(frames[0]['atoms'])}")
         console.print(f"  Species: {', '.join(f'{s}({species_counts[s]})' for s in species_order)}")
@@ -2047,8 +2183,7 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
         # --- Choose species ---
         if interactive:
             species_choices = [f"{s} ({species_counts[s]} atoms)" for s in species_order]
-            cent = _prompt_choice(console, "Select species", species_choices,
-                                  species_choices[0])
+            cent = _prompt_choice(console, "Select species", species_choices, species_choices[0])
             species_a = cent.split()[0]
 
             r_max = float(_prompt(console, "Max distance r_max (Å)", "8.0"))
@@ -2085,29 +2220,44 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
         console.print(f"  r_max={r_max} Å, dr={dr} Å, time stride={f_stride}")
 
         result = compute_van_hove(
-            selected, species_a,
-            r_max=r_max, dr=dr, frame_stride=f_stride,
+            selected,
+            species_a,
+            r_max=r_max,
+            dr=dr,
+            frame_stride=f_stride,
         )
 
         # Save data (incl. parameters so the .npz can be reused as a cache later)
         prefix = f"vanHove_{species_a}"
-        np.savez(f"{prefix}.npz",
-                 r=result["r"], time_lags=result["time_lags"],
-                 time_frames=result["time_frames"],
-                 gs=result["gs_matrix"],
-                 gsx=result["gsx_matrix"],
-                 gsy=result["gsy_matrix"],
-                 gsz=result["gsz_matrix"],
-                 gd=result["gd_matrix"], ngp=result["ngp"],
-                 species_a=result["species_a"], species_b=result["species_b"],
-                 r_max=r_max, dr=dr, frame_stride=f_stride,
-                 start_frame=start, end_frame=end, frame_step=step,
-                 frame_dt=frame_dt)
+        np.savez(
+            f"{prefix}.npz",
+            r=result["r"],
+            time_lags=result["time_lags"],
+            time_frames=result["time_frames"],
+            gs=result["gs_matrix"],
+            gsx=result["gsx_matrix"],
+            gsy=result["gsy_matrix"],
+            gsz=result["gsz_matrix"],
+            gd=result["gd_matrix"],
+            ngp=result["ngp"],
+            species_a=result["species_a"],
+            species_b=result["species_b"],
+            r_max=r_max,
+            dr=dr,
+            frame_stride=f_stride,
+            start_frame=start,
+            end_frame=end,
+            frame_step=step,
+            frame_dt=frame_dt,
+        )
         console.print(f"  [green]✓ Data saved to {prefix}.npz[/green]")
 
-        np.savetxt(f"{prefix}_NGP.dat",
-                   np.column_stack([result["time_frames"], result["ngp"]]),
-                   fmt="%d  %.8f", header="# frame  NGP")
+        np.savetxt(
+            f"{prefix}_NGP.dat",
+            np.column_stack([result["time_frames"], result["ngp"]]),
+            fmt="%d  %.8f",
+            header="# frame  NGP",
+        )
 
     # species_a must be defined for the shared plotting section (fresh or cached)
     species_a = result["species_a"]
@@ -2128,21 +2278,30 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
     if interactive:
         while True:
             console.print()
-            console.print(f"  [dim]Gs data range: [{np.min(gs_pos):.4e}, {np.max(gs_pos):.4e}][/dim]")
+            console.print(
+                f"  [dim]Gs data range: [{np.min(gs_pos):.4e}, {np.max(gs_pos):.4e}][/dim]"
+            )
             vmax_in = _prompt(console, "  Color max for Gs heatmap (0=auto)", "0")
             try:
                 vmax_gs = float(vmax_in) if float(vmax_in) > 0 else float(np.max(gs_pos)) / 40.0
             except ValueError:
                 vmax_gs = float(np.max(gs_pos)) / 40.0
-            _plot_gs_heatmap(result["r"], result["gs_matrix"], lags_ps,
-                             result["species_a"], prefix, vmax_gs)
+            _plot_gs_heatmap(
+                result["r"], result["gs_matrix"], lags_ps, result["species_a"], prefix, vmax_gs
+            )
             console.print(f"  [green]✓ Gs heatmap → {prefix}_Gs_heatmap.png[/green]")
             redo = _prompt_choice(console, "Redo Gs?", ["No", "Yes"], "No")
             if "No" in redo:
                 break
     else:
-        _plot_gs_heatmap(result["r"], result["gs_matrix"], lags_ps,
-                         result["species_a"], prefix, float(np.max(gs_pos)) / 40.0)
+        _plot_gs_heatmap(
+            result["r"],
+            result["gs_matrix"],
+            lags_ps,
+            result["species_a"],
+            prefix,
+            float(np.max(gs_pos)) / 40.0,
+        )
         console.print(f"  [green]✓ Gs heatmap → {prefix}_Gs_heatmap.png[/green]")
 
     # --- Directional Gs (x/y/z) heatmaps — P(|Δx|,t), P(|Δy|,t), P(|Δz|,t) ---
@@ -2151,8 +2310,9 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
 
     if interactive:
         console.print()
-        do_dir = _prompt_choice(console, "Plot directional Gs (x/y/z) heatmaps?",
-                                ["Yes", "No"], "Yes")
+        do_dir = _prompt_choice(
+            console, "Plot directional Gs (x/y/z) heatmaps?", ["Yes", "No"], "Yes"
+        )
         if "Yes" in do_dir:
             dir_max = max(float(np.max(m[m > 0])) for m in gs_dir_matrices)
             while True:
@@ -2163,20 +2323,23 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
                 except ValueError:
                     vmax_dir = dir_max / 40.0
                 for axis, m in enumerate(gs_dir_matrices):
-                    _plot_gs_directional_heatmap(result["r"], m, lags_ps,
-                                                 result["species_a"], prefix, axis, vmax_dir)
-                    console.print(f"  [green]✓ Directional Gs → "
-                                  f"{prefix}_Gs_{gs_dir_axes[axis]}_heatmap.png[/green]")
+                    _plot_gs_directional_heatmap(
+                        result["r"], m, lags_ps, result["species_a"], prefix, axis, vmax_dir
+                    )
+                    console.print(
+                        f"  [green]✓ Directional Gs → "
+                        f"{prefix}_Gs_{gs_dir_axes[axis]}_heatmap.png[/green]"
+                    )
                 redo = _prompt_choice(console, "Redo directional Gs?", ["No", "Yes"], "No")
                 if "No" in redo:
                     break
     else:
         dir_max = max(float(np.max(m[m > 0])) for m in gs_dir_matrices)
         for axis, m in enumerate(gs_dir_matrices):
-            _plot_gs_directional_heatmap(result["r"], m, lags_ps,
-                                         result["species_a"], prefix, axis, dir_max / 40.0)
-        console.print("  [green]✓ Directional Gs heatmaps → "
-                      f"{prefix}_Gs_X/Y/Z_heatmap.png[/green]")
+            _plot_gs_directional_heatmap(
+                result["r"], m, lags_ps, result["species_a"], prefix, axis, dir_max / 40.0
+            )
+        console.print(f"  [green]✓ Directional Gs heatmaps → {prefix}_Gs_X/Y/Z_heatmap.png[/green]")
 
     # --- Gd heatmap — interactive color range ---
     gd_pos = result["gd_matrix"][result["gd_matrix"] > 0]
@@ -2184,40 +2347,53 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
     if interactive:
         while True:
             console.print()
-            console.print(f"  [dim]Gd data range: [{np.min(gd_pos):.4e}, {np.max(gd_pos):.4e}][/dim]")
+            console.print(
+                f"  [dim]Gd data range: [{np.min(gd_pos):.4e}, {np.max(gd_pos):.4e}][/dim]"
+            )
             vmax_in = _prompt(console, "  Color max for Gd heatmap (0=auto)", "0")
             try:
                 vmax_gd = float(vmax_in) if float(vmax_in) > 0 else float(np.max(gd_pos)) / 40.0
             except ValueError:
                 vmax_gd = float(np.max(gd_pos)) / 40.0
-            _plot_gd_heatmap(result["r"], result["gd_matrix"], lags_ps,
-                             result["species_a"], result["species_b"], prefix, vmax_gd)
+            _plot_gd_heatmap(
+                result["r"],
+                result["gd_matrix"],
+                lags_ps,
+                result["species_a"],
+                result["species_b"],
+                prefix,
+                vmax_gd,
+            )
             console.print(f"  [green]✓ Gd heatmap → {prefix}_Gd_heatmap.png[/green]")
             redo = _prompt_choice(console, "Redo Gd?", ["No", "Yes"], "No")
             if "No" in redo:
                 break
     else:
-        _plot_gd_heatmap(result["r"], result["gd_matrix"], lags_ps,
-                         result["species_a"], result["species_b"], prefix,
-                         float(np.max(gd_pos)) / 40.0)
+        _plot_gd_heatmap(
+            result["r"],
+            result["gd_matrix"],
+            lags_ps,
+            result["species_a"],
+            result["species_b"],
+            prefix,
+            float(np.max(gd_pos)) / 40.0,
+        )
         console.print(f"  [green]✓ Gd heatmap → {prefix}_Gd_heatmap.png[/green]")
 
     # --- Time-window sliced Gs(r) curves ---
     if interactive:
         console.print()
-        do_window = _prompt_choice(console, "Plot time-sliced r^2*Gs(r) curves?",
-                                   ["Yes", "No"], "Yes")
+        do_window = _prompt_choice(
+            console, "Plot time-sliced r^2*Gs(r) curves?", ["Yes", "No"], "Yes"
+        )
         if "Yes" in do_window:
             lags = result["time_lags"]
             n_total = len(result["time_frames"])
 
-            t_start = int(_prompt(console, f"  Start frame (0–{n_total - 1})",
-                                 "0"))
-            t_end = int(_prompt(console, f"  End frame (0–{n_total - 1})",
-                               str(n_total - 1)))
+            t_start = int(_prompt(console, f"  Start frame (0–{n_total - 1})", "0"))
+            t_end = int(_prompt(console, f"  End frame (0–{n_total - 1})", str(n_total - 1)))
             default_intv = max(1, (n_total - 1) // 10)
-            interval = int(_prompt(console, "  Window width (frames)",
-                                  str(default_intv)))
+            interval = int(_prompt(console, "  Window width (frames)", str(default_intv)))
             n_slices = int(_prompt(console, "  Number of windows", "10"))
 
             t_start = max(lags[0], t_start)
@@ -2251,7 +2427,7 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
 
                 windows = []
                 win_starts = []  # formatted start time (ps) of each window
-                win_ends = []    # formatted end time (ps) of each window
+                win_ends = []  # formatted end time (ps) of each window
                 for i in range(n_slices):
                     w0 = t_start + i * (total_span // n_slices)
                     w1 = w0 + interval
@@ -2261,8 +2437,8 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
                     idx1 = np.searchsorted(lags, w1)
                     if idx1 <= idx0:
                         continue
-                    gs_avg = np.mean(result["gs_matrix"][:, idx0:idx1 + 1], axis=1)
-                    r2_gs = r ** 2 * gs_avg
+                    gs_avg = np.mean(result["gs_matrix"][:, idx0 : idx1 + 1], axis=1)
+                    r2_gs = r**2 * gs_avg
                     windows.append(r2_gs)
                     # Time in ps = frame × frame_dt(fs) / 1000
                     win_starts.append(_fmt_ps(w0 * frame_dt / 1000.0))
@@ -2291,7 +2467,9 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
                         except ValueError:
                             break
                         _plot_gs_slices(r, windows, tick_labels, species_a, prefix, smooth=sw)
-                        console.print(f"  [green]✓ Plot: {prefix}_Gs_slices.png (smooth={sw})[/green]")
+                        console.print(
+                            f"  [green]✓ Plot: {prefix}_Gs_slices.png (smooth={sw})[/green]"
+                        )
                         smoothed = True
 
     console.print()
@@ -2301,8 +2479,13 @@ def task_van_hove(args: list[str] | None = None, interactive: bool = True) -> No
 # Task 3107: LAMMPS dump → ABACUS MD_dump
 # =============================================================================
 
-@task(3107, category="MD Analysis", name="LAMMPS→MD_dump",
-      description="Convert LAMMPS trajectory dump to ABACUS MD_dump format")
+
+@task(
+    3107,
+    category="MD Analysis",
+    name="LAMMPS→MD_dump",
+    description="Convert LAMMPS trajectory dump to ABACUS MD_dump format",
+)
 def task_lammps_to_md_dump(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert a LAMMPS dump trajectory to ABACUS MD_dump format.
 
@@ -2393,8 +2576,7 @@ def task_lammps_to_md_dump(args: list[str] | None = None, interactive: bool = Tr
 
                 if s.startswith("ITEM: TIMESTEP"):
                     if frame_lines and len(box_bounds) == 3:
-                        _write_abacus_md_frame(fout, frame_lines, box_bounds,
-                                                type_map, timestep)
+                        _write_abacus_md_frame(fout, frame_lines, box_bounds, type_map, timestep)
                         n_written += 1
                     frame_lines = []
                     in_atoms = False
@@ -2402,8 +2584,9 @@ def task_lammps_to_md_dump(args: list[str] | None = None, interactive: bool = Tr
                     expect_timestep = True
                     expect_bounds = 0
                     n_frames += 1
-                    progress.update(task, advance=1,
-                                    description=f"[cyan]Converting... frame {n_frames}")
+                    progress.update(
+                        task, advance=1, description=f"[cyan]Converting... frame {n_frames}"
+                    )
                     continue
 
                 if expect_timestep:
@@ -2444,9 +2627,11 @@ def task_lammps_to_md_dump(args: list[str] | None = None, interactive: bool = Tr
 
     console.print()
     console.print(f"[green]✓ Converted {n_written} frames → {out_path}[/green]")
-    console.print(f"  Cell: {box_bounds[0][1]-box_bounds[0][0]:.4f} × "
-                  f"{box_bounds[1][1]-box_bounds[1][0]:.4f} × "
-                  f"{box_bounds[2][1]-box_bounds[2][0]:.4f} Å³")
+    console.print(
+        f"  Cell: {box_bounds[0][1] - box_bounds[0][0]:.4f} × "
+        f"{box_bounds[1][1] - box_bounds[1][0]:.4f} × "
+        f"{box_bounds[2][1] - box_bounds[2][0]:.4f} Å³"
+    )
     console.print()
 
 
@@ -2469,22 +2654,24 @@ def _write_abacus_md_frame(
     fout.write(f"   {0:15.10f}  {ly:15.10f}  {0:15.10f}\n")
     fout.write(f"   {0:15.10f}  {0:15.10f}  {lz:15.10f}\n")
     fout.write("\n")
-    fout.write("INDEX   LABEL   X           Y           Z           "
-               "FX   FY   FZ   VX   VY   VZ\n")
+    fout.write("INDEX   LABEL   X           Y           Z           FX   FY   FZ   VX   VY   VZ\n")
 
     # Sort by original LAMMPS ID — ensures consistent atom order across frames
     parsed = []
     for line in atom_lines:
         parts = line.split()
-        parsed.append((int(parts[0]), int(parts[1]),
-                        float(parts[2]), float(parts[3]), float(parts[4])))
+        parsed.append(
+            (int(parts[0]), int(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]))
+        )
     parsed.sort(key=lambda t: t[0])
 
     for idx, (atom_id, lmp_type, x, y, z) in enumerate(parsed, start=1):
         elem = type_map.get(lmp_type, f"X{lmp_type}")
-        fout.write(f"{idx:>4d}  {elem:>4s}  "
-                   f"{x:12.8f}  {y:12.8f}  {z:12.8f}  "
-                   f"0.0  0.0  0.0  0.0  0.0  0.0\n")
+        fout.write(
+            f"{idx:>4d}  {elem:>4s}  "
+            f"{x:12.8f}  {y:12.8f}  {z:12.8f}  "
+            f"0.0  0.0  0.0  0.0  0.0  0.0\n"
+        )
 
     fout.write("\n")
 
@@ -2492,6 +2679,7 @@ def _write_abacus_md_frame(
 # =============================================================================
 # Task 3108: XDATCAR → ABACUS MD_dump
 # =============================================================================
+
 
 def _parse_xdatcar_header(filepath: Path) -> dict:
     """Read XDATCAR header: lattice, species, atom counts, coord type."""
@@ -2505,7 +2693,7 @@ def _parse_xdatcar_header(filepath: Path) -> dict:
     line5_parts = lines[5].split()
     try:
         counts = [int(x) for x in line5_parts]
-        species = [f"X{i+1}" for i in range(len(counts))]
+        species = [f"X{i + 1}" for i in range(len(counts))]
         header_end = 7
     except ValueError:
         species = line5_parts
@@ -2529,8 +2717,12 @@ def _parse_xdatcar_header(filepath: Path) -> dict:
     }
 
 
-@task(3108, category="MD Analysis", name="XDATCAR→MD_dump",
-      description="Convert VASP XDATCAR trajectory to ABACUS MD_dump format")
+@task(
+    3108,
+    category="MD Analysis",
+    name="XDATCAR→MD_dump",
+    description="Convert VASP XDATCAR trajectory to ABACUS MD_dump format",
+)
 def task_xdatcar_to_md_dump(args: list[str] | None = None, interactive: bool = True) -> None:
     """Convert VASP XDATCAR to ABACUS MD_dump format.
 
@@ -2560,11 +2752,13 @@ def task_xdatcar_to_md_dump(args: list[str] | None = None, interactive: bool = T
 
     hdr = _parse_xdatcar_header(xdatcar_path)
     console.print(f"  Atoms: {hdr['total_atoms']}")
-    console.print(f"  Species: {', '.join(f'{s}({c})' for s, c in zip(hdr['species'], hdr['counts']))}")
+    console.print(
+        f"  Species: {', '.join(f'{s}({c})' for s, c in zip(hdr['species'], hdr['counts']))}"
+    )
     console.print(f"  Coord type: {hdr['coord_type']}")
 
     # Detect NPT: look for scale + lattice lines before second "Direct" header
-    config_lines = hdr["all_lines"][hdr["header_lines"]:]
+    config_lines = hdr["all_lines"][hdr["header_lines"] :]
     atoms_per_config = hdr["total_atoms"]
     all_lines = hdr["all_lines"]
 
@@ -2575,7 +2769,7 @@ def task_xdatcar_to_md_dump(args: list[str] | None = None, interactive: bool = T
     probe_start = hdr["header_lines"] + atoms_per_config
     for i in range(probe_start, min(len(all_lines), probe_start + 10)):
         if all_lines[i].lower().startswith(("direct", "cartesian")):
-            is_npt = (i - probe_start > 1)  # >1 gap means sub-header exists
+            is_npt = i - probe_start > 1  # >1 gap means sub-header exists
             break
 
     n_configs = count_xdatcar_configs(all_lines, hdr["header_lines"], atoms_per_config, is_npt)
@@ -2594,24 +2788,26 @@ def task_xdatcar_to_md_dump(args: list[str] | None = None, interactive: bool = T
     out_path = Path(str(xdatcar_path) + ".ABACUS.dump")
 
     if is_npt:
-        _convert_xdatcar_npt(all_lines, hdr, atom_labels, atoms_per_config,
-                             n_configs, out_path, console)
+        _convert_xdatcar_npt(
+            all_lines, hdr, atom_labels, atoms_per_config, n_configs, out_path, console
+        )
     else:
-        _convert_xdatcar_nvt(config_lines, hdr, atom_labels, atoms_per_config,
-                             n_configs, out_path, console)
+        _convert_xdatcar_nvt(
+            config_lines, hdr, atom_labels, atoms_per_config, n_configs, out_path, console
+        )
 
 
 def count_xdatcar_configs(all_lines, header_end, atoms_per_config, is_npt):
     """Count configurations in XDATCAR."""
     count = 1  # first config is always in the header
-    remaining = all_lines[header_end + atoms_per_config:] if is_npt else all_lines[header_end:]
-    count += sum(1 for l in remaining
-                 if l.lower().startswith(("direct", "cartesian")))
+    remaining = all_lines[header_end + atoms_per_config :] if is_npt else all_lines[header_end:]
+    count += sum(1 for l in remaining if l.lower().startswith(("direct", "cartesian")))
     return count
 
 
-def _convert_xdatcar_nvt(config_lines, hdr, atom_labels, atoms_per_config,
-                          n_configs, out_path, console):
+def _convert_xdatcar_nvt(
+    config_lines, hdr, atom_labels, atoms_per_config, n_configs, out_path, console
+):
     """Convert NVT XDATCAR (fixed cell for all configs)."""
     from rich.progress import Progress
 
@@ -2624,27 +2820,38 @@ def _convert_xdatcar_nvt(config_lines, hdr, atom_labels, atoms_per_config,
 
         while config_count < n_configs and line_idx < len(config_lines):
             if line_idx < len(config_lines) and config_lines[line_idx].lower().startswith(
-                ("direct", "cartesian")):
+                ("direct", "cartesian")
+            ):
                 line_idx += 1
 
             if line_idx + atoms_per_config > len(config_lines):
                 break
 
-            _write_md_frame_nvt(fout, config_count + 1, cell, config_lines,
-                                line_idx, atoms_per_config, hdr, atom_labels)
+            _write_md_frame_nvt(
+                fout,
+                config_count + 1,
+                cell,
+                config_lines,
+                line_idx,
+                atoms_per_config,
+                hdr,
+                atom_labels,
+            )
             line_idx += atoms_per_config
             config_count += 1
-            progress.update(task, advance=1,
-                            description=f"[cyan]Converting... config {config_count}")
+            progress.update(
+                task, advance=1, description=f"[cyan]Converting... config {config_count}"
+            )
 
     console.print()
     console.print(f"[green]✓ Converted {config_count} configurations → {out_path}[/green]")
-    console.print(f"  Cell: {cell[0,0]:.4f} × {cell[1,1]:.4f} × {cell[2,2]:.4f} Å³")
+    console.print(f"  Cell: {cell[0, 0]:.4f} × {cell[1, 1]:.4f} × {cell[2, 2]:.4f} Å³")
     console.print()
 
 
-def _convert_xdatcar_npt(all_lines, hdr, atom_labels, atoms_per_config,
-                          n_configs, out_path, console):
+def _convert_xdatcar_npt(
+    all_lines, hdr, atom_labels, atoms_per_config, n_configs, out_path, console
+):
     """Convert NPT XDATCAR (per-config cell vectors)."""
     from rich.progress import Progress
 
@@ -2655,8 +2862,7 @@ def _convert_xdatcar_npt(all_lines, hdr, atom_labels, atoms_per_config,
         task = progress.add_task("[cyan]Converting...", total=n_configs)
 
         # First config: positions are at header_end, cell from first header
-        _write_md_frame_nvt(fout, 1, hdr["cell"], all_lines,
-                            i, atoms_per_config, hdr, atom_labels)
+        _write_md_frame_nvt(fout, 1, hdr["cell"], all_lines, i, atoms_per_config, hdr, atom_labels)
         i += atoms_per_config
         config_count = 1
         progress.update(task, advance=1, description="[cyan]Converting... config 1")
@@ -2665,7 +2871,8 @@ def _convert_xdatcar_npt(all_lines, hdr, atom_labels, atoms_per_config,
         while config_count < n_configs and i < len(all_lines):
             # Skip NPT sub-header (7 lines) to find next "Direct/Cartesian"
             while i < len(all_lines) and not all_lines[i].lower().startswith(
-                ("direct", "cartesian")):
+                ("direct", "cartesian")
+            ):
                 i += 1
             if i >= len(all_lines):
                 break
@@ -2675,8 +2882,9 @@ def _convert_xdatcar_npt(all_lines, hdr, atom_labels, atoms_per_config,
             if i >= 7:
                 try:
                     scale = float(all_lines[i - 6])
-                    lv = np.array([[float(x) for x in all_lines[i - 5 + j].split()]
-                                    for j in range(3)])
+                    lv = np.array(
+                        [[float(x) for x in all_lines[i - 5 + j].split()] for j in range(3)]
+                    )
                     cell = lv * scale
                 except (ValueError, IndexError):
                     cell = hdr["cell"]
@@ -2688,12 +2896,14 @@ def _convert_xdatcar_npt(all_lines, hdr, atom_labels, atoms_per_config,
             if i + atoms_per_config > len(all_lines):
                 break
 
-            _write_md_frame_nvt(fout, config_count + 1, cell, all_lines,
-                                i, atoms_per_config, hdr, atom_labels)
+            _write_md_frame_nvt(
+                fout, config_count + 1, cell, all_lines, i, atoms_per_config, hdr, atom_labels
+            )
             i += atoms_per_config
             config_count += 1
-            progress.update(task, advance=1,
-                            description=f"[cyan]Converting... config {config_count}")
+            progress.update(
+                task, advance=1, description=f"[cyan]Converting... config {config_count}"
+            )
 
     console.print()
     console.print(f"[green]✓ Converted {config_count} configurations → {out_path}[/green]")
@@ -2708,8 +2918,7 @@ def _write_md_frame_nvt(fout, step, cell, lines, start, natoms, hdr, labels):
     for row in cell:
         fout.write(f"   {row[0]:15.10f}  {row[1]:15.10f}  {row[2]:15.10f}\n")
     fout.write("\n")
-    fout.write("INDEX   LABEL   X           Y           Z           "
-               "FX   FY   FZ   VX   VY   VZ\n")
+    fout.write("INDEX   LABEL   X           Y           Z           FX   FY   FZ   VX   VY   VZ\n")
 
     for j in range(natoms):
         if start + j >= len(lines):
@@ -2725,9 +2934,11 @@ def _write_md_frame_nvt(fout, step, cell, lines, start, natoms, hdr, labels):
             x, y, z = cart[0], cart[1], cart[2]
 
         label = labels[j] if j < len(labels) else "X"
-        fout.write(f"{j+1:>4d}  {label:>4s}  "
-                   f"{x:12.8f}  {y:12.8f}  {z:12.8f}  "
-                   f"0.0  0.0  0.0  0.0  0.0  0.0\n")
+        fout.write(
+            f"{j + 1:>4d}  {label:>4s}  "
+            f"{x:12.8f}  {y:12.8f}  {z:12.8f}  "
+            f"0.0  0.0  0.0  0.0  0.0  0.0\n"
+        )
 
     fout.write("\n")
 
@@ -2736,8 +2947,13 @@ def _write_md_frame_nvt(fout, step, cell, lines, start, natoms, hdr, labels):
 # Task 3109: Energy & Temperature vs Time
 # =============================================================================
 
-@task(3109, category="MD Analysis", name="E-T vs Time",
-      description="Extract energy and temperature vs time from running_md.log, plot and save")
+
+@task(
+    3109,
+    category="MD Analysis",
+    name="E-T vs Time",
+    description="Extract energy and temperature vs time from running_md.log, plot and save",
+)
 def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = True) -> None:
     """Read MD step summaries from running_md.log, output energy & temperature
     as a function of time, and produce publication-quality plots.
@@ -2749,6 +2965,7 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
     console.print()
 
     from abacuscopilot.preprocessing.system_tasks import _find_md_log, _parse_md_progress
+
     log_path = _find_md_log()
     if log_path is None:
         console.print("[red]No running_md.log found (OUT.ABACUS/running_md.log).[/red]")
@@ -2771,6 +2988,7 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
     steps = np.array([d["step"] for d in data])
     times = steps * md_dt / 1000.0  # fs -> ps
     from abacuscopilot.core.constants import RY_TO_EV
+
     energies_ry = np.array([d["energy_ry"] for d in data])
     energies = energies_ry * RY_TO_EV  # Ry → eV
     temperatures = np.array([d["temperature_k"] for d in data])
@@ -2788,15 +3006,18 @@ def task_energy_temp_vs_time(args: list[str] | None = None, interactive: bool = 
     console.print(f"  [green]... Data: {out_dat}[/green]")
 
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     from abacuscopilot.plotting.style import load_style_from_config
+
     load_style_from_config()
 
     if interactive:
         mode = _prompt_choice(
-            console, "Plot style",
+            console,
+            "Plot style",
             ["Separate panels (E and T)", "Dual-Y axes (E+T on one plot)"],
             "Separate panels (E and T)",
         )
