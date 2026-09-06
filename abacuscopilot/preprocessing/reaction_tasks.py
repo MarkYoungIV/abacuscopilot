@@ -524,7 +524,10 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
 
     # Resolve pseudo/orbital filenames
     from abacuscopilot.config import load_config
-    from abacuscopilot.preprocessing.system_tasks import _find_file_for_element
+    from abacuscopilot.preprocessing.system_tasks import (
+        _as_dir_list,
+        _find_file_for_element,
+    )
 
     config = load_config()
     libs = config.get("libraries", {})
@@ -559,23 +562,35 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
             else:
                 orb_map[sp] = f"{sp}.orb"
 
-    # Auto-copy missing files
+    # Auto-copy missing files.  Each library may be a single dir or a list of
+    # dirs, and files may be nested (e.g. SG15_ONCV_v1.0_upf/), so search every
+    # configured directory recursively for the exact resolved filename.
     import shutil
+
+    def _locate_in_libs(filename: str, libs: object) -> Path | None:
+        for d in _as_dir_list(libs):
+            root = Path(d)
+            if not root.is_dir():
+                continue
+            for f in root.rglob(filename):
+                if f.is_file():
+                    return f
+        return None
 
     paths_cfg = config.get("paths", {})
     copied = []
     for sp in species:
         pp_file = pp_map.get(sp, f"{sp}.upf")
         if not Path(pp_file).exists() and pseudo_lib:
-            src = Path(pseudo_lib) / pp_file
-            if src.exists():
-                shutil.copy2(src, ".")
+            src = _locate_in_libs(pp_file, pseudo_lib)
+            if src:
+                shutil.copy2(src, pp_file)
                 copied.append(pp_file)
         orb_file = orb_map.get(sp) if is_lcao else None
         if orb_file and not Path(orb_file).exists() and orbital_lib:
-            src = Path(orbital_lib) / orb_file
-            if src.exists():
-                shutil.copy2(src, ".")
+            src = _locate_in_libs(orb_file, orbital_lib)
+            if src:
+                shutil.copy2(src, orb_file)
                 copied.append(orb_file)
     if copied:
         console.print(f"  [green]Copied: {', '.join(copied)}[/green]")
