@@ -662,7 +662,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
             except ValueError:
                 kpt_grid = [nkx, nky, nkz]
         else:
-            kspacing = _prompt(console, "K-spacing (2pi/A)", "0.14")
+            kspacing = _prompt(console, "K-spacing (1/bohr)", "0.14")
         climbing = _prompt_choice(console, "CI-NEB (climbing image)?", ["Yes", "No"], "Yes")
         climb = "Yes" in climbing
         two_stage = _prompt_choice(
@@ -1414,7 +1414,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
                 kpt_grid = [nkx, nky, nkz]
             kspacing_val = 0.14
         else:
-            kspacing_val = float(_prompt(console, "K-spacing (2pi/A)", "0.14"))
+            kspacing_val = float(_prompt(console, "K-spacing (1/bohr)", "0.14"))
             kpt_grid = None
         climbing = _prompt_choice(console, "CI-NEB?", ["Yes", "No"], "Yes")
         climb = "Yes" in climbing

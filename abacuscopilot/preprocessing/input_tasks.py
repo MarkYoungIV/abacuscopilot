@@ -1482,9 +1482,12 @@ def task_kspacing_test(args: list[str] | None = None, interactive: bool = True) 
     pick_library_family(console, _load_config(), basis_type=params.basis_type,
                         interactive=interactive)
 
-    ks_start = float(_prompt(console, "Start kspacing (2pi/A)", "0.30"))
-    ks_end = float(_prompt(console, "End kspacing (2pi/A)", "0.06"))
-    ks_step = float(_prompt(console, "Step (2pi/A)", "-0.02"))
+    # ABACUS kspacing is in 1/bohr (input manual: "unit in 1/bohr", suggest <0.25).
+    # Default sweep 0.40 -> 0.10 (step -0.02) covers the coarsening region where
+    # the auto grid changes, for typical cells of a few Å.
+    ks_start = float(_prompt(console, "Start kspacing (1/bohr)", "0.40"))
+    ks_end = float(_prompt(console, "End kspacing (1/bohr)", "0.10"))
+    ks_step = float(_prompt(console, "Step (1/bohr)", "-0.02"))
 
     ks_values = []
     v = ks_start

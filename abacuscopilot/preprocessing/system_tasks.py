@@ -643,7 +643,7 @@ def task_system_setup(args: list[str] | None = None, interactive: bool = True) -
     console.print()
 
     current = config["defaults"].get("kspacing", 0.04)
-    val = _prompt(console, "Default k-spacing (2π/Å)", str(current))
+    val = _prompt(console, "Default k-spacing (1/bohr, ABACUS unit)", str(current))
     config["defaults"]["kspacing"] = float(val) if val else 0.04
 
     current = config["defaults"].get("ecutwfc", 100.0)

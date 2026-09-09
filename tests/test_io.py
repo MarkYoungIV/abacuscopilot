@@ -283,6 +283,34 @@ Line
         assert kpts.grid is not None
         assert all(n >= 1 for n in kpts.grid)
 
+    def test_auto_mp_kpts_reproduces_abacus(self):
+        """Grids must match what ABACUS actually writes when INPUT sets kspacing.
+
+        ABACUS (module_cell/klist.cpp, v3.x) overwrites the KPT file from
+        kspacing with nk_i = max(1, int(|b_i| * 2π/(kspacing * lat0) + 1)),
+        kspacing in units of 1/bohr and int()-truncation (NOT ceil). Expected
+        grids below reproduce the real KPT produced by ABACUS v3.10.1 runs on
+        an ~(8.85, 8.85, 12.7) Å orthorhombic cell (server transcripts).
+        """
+        lat = Lattice.from_cell_angstrom(np.diag([8.85, 8.85, 12.7]))
+        expected = {
+            0.100: (4, 4, 3), 0.120: (4, 4, 3), 0.140: (3, 3, 2),
+            0.160: (3, 3, 2), 0.180: (3, 3, 2), 0.200: (2, 2, 2),
+            0.220: (2, 2, 2), 0.240: (2, 2, 2), 0.260: (2, 2, 2),
+            0.280: (2, 2, 1), 0.300: (2, 2, 1), 0.320: (2, 2, 1),
+            0.340: (2, 2, 1), 0.360: (2, 2, 1), 0.380: (1, 1, 1),
+            0.400: (1, 1, 1),
+        }
+        for ksp, want in expected.items():
+            assert auto_mp_kpts(lat, kspacing=ksp).grid == want, ksp
+
+    def test_auto_mp_kpts_truncates_not_ceil(self):
+        # For a cubic 8.85 Å axis at kspacing 0.2 (1/bohr):
+        #   2π/(a_Bohr · kspacing) = 6.283/(16.72 · 0.2) ≈ 1.88
+        # ABACUS truncates: int(1.88 + 1) = 2  (ceil would give 3).
+        lat = Lattice.from_cell_angstrom(np.diag([8.85] * 3))
+        assert auto_mp_kpts(lat, kspacing=0.2).grid == (2, 2, 2)
+
     def test_line_mode_from_path(self):
         path = [
             ([0, 0, 0], [0.5, 0, 0], 20),

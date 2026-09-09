@@ -1,6 +1,6 @@
 # AbacusCopilot 使用指南
 
-> **版本**: v0.1.35 (2026-09-08)  
+> **版本**: v0.1.35b (2026-09-09)  
 > **开发者**: Xu Yang (xuyangmark@foxmail.com)、Rong-yu Zhang  
 > **简介**: AbacusCopilot 是 ABACUS DFT 软件的前后处理 CLI 工具包，灵感来源于 VASPKIT。
 
@@ -457,7 +457,7 @@ STRU 文件会自动转换为 POSCAR（临时文件，ASE 不支持 ABACUS 原�
 abacuscopilot -task 301
 ```
 
-默认 kspacing = 0.14 2π/Å，可通过配置修改。
+默认 kspacing = 0.14（单位 1/bohr，ABACUS 约定，值越小 k 点网格越密），可通过配置修改。
 
 ### 302 — KPT (band path)
 

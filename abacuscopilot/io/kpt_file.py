@@ -164,37 +164,46 @@ def auto_mp_kpts(
     kspacing: float = 0.20,
     gamma_centered: bool = True,
 ) -> KPoints:
-    """Generate auto Monkhorst-Pack k-point mesh from k-spacing.
+    """Generate the ABACUS automatic k-point mesh from ``kspacing``.
 
-    The grid dimensions are computed from the reciprocal lattice vectors
-    using the formula: N_i = max(1, ceil(|b_i| / kspacing)).
+    The grid exactly replicates what ABACUS computes at run time whenever INPUT
+    sets ``kspacing > 0`` (``K_Vectors::read_kpoints`` in module_cell/klist.cpp):
+    there the pre-existing KPT file is ignored and overwritten, so this helper
+    must reproduce ABACUS's own rule rather than the naive ``ceil`` one, which
+    yields roughly twice the points for the same number.
 
-    kspacing is in units of 2π/Å (ABACUS v3.x convention).
-    This is equivalent to the VASP rule-of-thumb a·N ≈ 30:
-        kspacing ≈ 2π / 30 ≈ 0.21
+    ABACUS formula (klist.cpp, v3.x)::
+
+        nk_i = max(1, int( |b_i| * 2π / (kspacing_i * lat0) + 1 ))
+
+    where |b_i| is the norm of reciprocal-lattice row i derived from the
+    unitless ``latvec`` and ``lat0`` is the lattice constant in Bohr.
+    Since |b_i| * 2π / lat0 equals the reciprocal length 2π/λ_i expressed in
+    1/Bohr, the same grid follows from the physical (Bohr) cell directly::
+
+        nk_i = max(1, int( (2π/λ_i in 1/Bohr) / kspacing + 1 ))
+
+    ``kspacing`` is therefore in units of 1/Bohr (ABACUS input manual: "the
+    smallest allowed spacing between k points, unit in 1/bohr"; suggested
+    < 0.25). Note the truncation ``int(x + 1)`` — NOT ``ceil``.
 
     Args:
-        lattice: Lattice object.
-        kspacing: Maximum k-point spacing in 2π/Å (default 0.20).
-        gamma_centered: Whether to use Gamma-centered mesh.
+        lattice: Lattice object (real cell = constant * vectors, in Bohr).
+        kspacing: K-point spacing in 1/Bohr (ABACUS convention, default 0.20).
+        gamma_centered: Whether to write a Gamma-centered auto mesh.
 
     Returns:
-        KPoints object with auto MP mesh.
+        KPoints object with the ABACUS auto MP grid.
     """
-    # Reciprocal lattice in 2π/Bohr
+    # Reciprocal rows in 2π/Bohr: |row_i| = 2π/λ_i numerically in 1/Bohr — this
+    # is exactly the |b_i|·2π/lat0 term ABACUS feeds into its kspacing formula.
     recp = lattice.reciprocal_cell  # rows = b1, b2, b3
     recp_lengths = np.linalg.norm(recp, axis=1)  # |b_i| in 2π/Bohr
 
-    # Convert |b_i| from 2π/Bohr to 2π/Å to match kspacing units
-    #   |b| (2π/Å) = 2π / a_Å = 2π / (a_Bohr * BOHR_TO_ANGSTROM)
-    #   |b| (2π/Å) = |b| (2π/Bohr) * ANGSTROM_TO_BOHR
-    from abacuscopilot.core.constants import ANGSTROM_TO_BOHR
-    recp_lengths_ang = recp_lengths * ANGSTROM_TO_BOHR  # → 2π/Å
-
-    # N_i = max(1, ceil(|b_i| / kspacing))
+    # nk_i = max(1, int(|b_i| / kspacing + 1)) — ABACUS klist.cpp semantics
     grid = tuple(
-        max(1, int(np.ceil(length / kspacing)))
-        for length in recp_lengths_ang
+        max(1, int(length / kspacing + 1.0))
+        for length in recp_lengths
     )
 
     return KPoints(

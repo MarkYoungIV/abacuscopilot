@@ -38,7 +38,7 @@ KB_EV = 8.617333262145e-5                 # Boltzmann constant in eV/K
 
 # === Common ABACUS defaults ===
 DEFAULT_ECUTWFC = 100.0                    # Ry
-DEFAULT_KSPACING = 0.14                    # 2π/Å — good balance of accuracy and cost
+DEFAULT_KSPACING = 0.14                    # 1/bohr — ABACUS kspacing unit (manual: suggest < 0.25)
 DEFAULT_SCF_THR = 1e-7                     # Ry
 DEFAULT_FORCE_THR = 0.001                  # eV/Å
 DEFAULT_STRESS_THR = 0.5                   # kbar

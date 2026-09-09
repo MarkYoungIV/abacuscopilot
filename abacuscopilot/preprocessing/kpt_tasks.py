@@ -50,7 +50,7 @@ def task_auto_kpt(args: list[str] | None = None, interactive: bool = True) -> No
                 pass
 
     if interactive:
-        kspacing = float(_prompt(console, "K-spacing (2π/Å)",
+        kspacing = float(_prompt(console, "K-spacing (1/bohr, ABACUS convention)",
                                   defaults.get("kspacing", DEFAULT_KSPACING)))
         gamma_centered_input = _prompt(console, "Gamma-centered? (y/n)", "y")
         gamma_centered = gamma_centered_input.lower() in ("y", "yes", "true", "1")
@@ -70,7 +70,7 @@ def task_auto_kpt(args: list[str] | None = None, interactive: bool = True) -> No
     console.print()
     console.print("[green]✓ KPT file written successfully.[/green]")
     console.print(f"  Mode: {'Gamma' if gamma_centered else 'MP'}-centered")
-    console.print(f"  K-spacing: {kspacing} 2π/Å")
+    console.print(f"  K-spacing: {kspacing} 1/bohr")
     console.print(f"  Grid: {kpts.grid[0]}×{kpts.grid[1]}×{kpts.grid[2]}")
     console.print(f"  Total k-points: {kpts.grid[0] * kpts.grid[1] * kpts.grid[2]}")
     console.print()
