@@ -5,6 +5,15 @@
 # Builds abacuscopilot_v{version}_{date}.tar.gz at the repo's parent dir,
 # bundling the source + the PP-Orb library tree (for out-of-the-box use).
 #
+# PP-Orb/ ships the bundled default SG15 (+ lanthanide) trees; the
+# PP-Orb/README.md placeholder (tracked in git) stays in the archive to guide
+# users who add their own pseudopotential/orbital libraries.
+#
+# Any external series the user registered under libraries.families (APNS,
+# Dojo-NC-FR, ...) and downloaded into PP-Orb/ is NOT bundled into the release
+# (see the "External library families" README section) — those folders are
+# excluded below so they never inflate or leak into the tarball.
+#
 # Excluded from the tarball (users don't need these):
 #   - .git, editor/IDE + OS caches, Claude Code dirs, egg-info
 #   - test/ (local SLURM/DeepMD job scripts — machine-specific)
@@ -43,6 +52,18 @@ EXCLUDES=(
   --exclude='test'
   --exclude='tests'
   --exclude='scripts/bader/bader.x'
+  # External user-registered series downloaded under PP-Orb/ are not bundled
+  # (kept out of the release tarball — the config libraries.families entries
+  # point at them locally; see README "External library families").
+  --exclude='PP-Orb/ABACUS-APNS-PPORBs-v1'
+  --exclude='PP-Orb/Dojo-NC-FR'
+  # Stray archive bundles left at the repo root (e.g. a developer-zipped
+  # PP-Orb.zip / PP-Orb.7z for a manual server transfer) must not ride along
+  # in the release.
+  --exclude='*.zip'
+  --exclude='*.7z'
+  --exclude='*.tar.gz'
+  --exclude='*.tgz'
 )
 
 rm -f "$OUT"

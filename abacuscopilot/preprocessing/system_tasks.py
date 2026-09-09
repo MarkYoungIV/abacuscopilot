@@ -39,15 +39,147 @@ def _prompt(console, question: str, default: Any = None) -> str:
 _DEFAULT_ORB_BASIS = "4s2p2d1f"
 _DEFAULT_ORB_RCUT = 7
 
+# Cutoff-radius selection when a Dojo-NC-FR tier ships several rcut copies of
+# the SAME basis (identical zeta composition — the copies differ only in the
+# real-space radius the numerical orbitals were generated at).  Stored in
+# config['libraries']['rcut_policy']:
+#   "7"    closest to the canonical 7 au of the bundled SG15 standard orbitals
+#          (the recommended default)
+#   "min"  smallest rcut present (most compact / fastest)
+#   "max"  largest rcut present (most diffuse / closest to the PW limit)
+RCUT_POLICY_DEFAULT = "7"
+RCUT_POLICY_MIN = "min"
+RCUT_POLICY_MAX = "max"
+_RCUT_POLICIES = (RCUT_POLICY_DEFAULT, RCUT_POLICY_MIN, RCUT_POLICY_MAX)
 
-def _candidate_rank(name: str, suffix: str) -> tuple:
+
+def _rcut_policy(config: dict | None = None) -> str:
+    """Return the configured orbital cutoff-radius policy (default "7")."""
+    if isinstance(config, dict):
+        libs = config.get("libraries")
+        pol = libs.get("rcut_policy") if isinstance(libs, dict) else None
+        if pol in _RCUT_POLICIES:
+            return pol
+    return RCUT_POLICY_DEFAULT
+
+
+def orbital_rank_mode(
+    family: str | None = None, config: dict | None = None
+) -> str:
+    """Map a config ``libraries.family`` value to an orbital tie-break mode.
+
+    Returns ``"sg15"`` for the bundled default and for unset/custom values,
+    so existing behavior is unchanged unless the user explicitly selected an
+    APNS sub-variant or a Dojo-NC-FR orbital tier.  ``"apns-efficiency"`` /
+    ``"apns-precision"`` and ``dojo-sz`` / ``dojo-dzp`` / ``dojo-tzdp`` make the
+    per-element default deterministic when a directory ships several ``.orb``
+    files for one element (see :func:`_candidate_rank`).
+
+    *config* optionally supplies ``libraries.rcut_policy``; when it selects
+    ``min``/``max`` the Dojo mode gains a ``-min`` / ``-max`` suffix so the
+    resolver picks the smallest / largest rcut copy of the chosen tier instead
+    of the default closest-to-7-au one.
+    """
+    if isinstance(family, str):
+        if family.startswith("apns"):
+            variant = family.split("/", 1)[1] if "/" in family else ""
+            return {
+                "efficiency": "apns-efficiency",
+                "precision": "apns-precision",
+            }.get(variant, "sg15")
+        if family.startswith("dojoncfr"):
+            variant = family.split("/", 1)[1] if "/" in family else ""
+            mode = {
+                "sz": "dojo-sz",
+                "dzp": "dojo-dzp",
+                "tzdp": "dojo-tzdp",
+            }.get(variant, "sg15")
+            if mode == "sg15":
+                return mode
+            # Encode the cutoff-radius policy (config libraries.rcut_policy)
+            # into the mode so it reaches every resolution step untouched.
+            pol = _rcut_policy(config)
+            if pol == RCUT_POLICY_MIN:
+                return f"{mode}-min"
+            if pol == RCUT_POLICY_MAX:
+                return f"{mode}-max"
+            return mode  # default: closest to 7 au
+    return "sg15"
+
+
+# Per-l occupancy regex used to rank orbital completeness, e.g.
+# "4s4p3d2f" / "4s4p4d3f2g" -> (4, 4, 3, 2, 0) / (4, 4, 4, 3, 2).
+_ZETA_RE = re.compile(r"(\d+)s(\d+)p(\d+)d(?:(?:(\d+)f))?(?:(?:(\d+)g))?")
+
+
+def _zeta_counts(base: str) -> tuple:
+    """(ns, np, nd, nf, ng) parsed from an (already-lowered) .orb filename."""
+    m = _ZETA_RE.search(base)
+    if not m:
+        return ()
+    return tuple(int(x) if x else 0 for x in m.groups())
+
+
+def _orbital_tier(mode: str) -> str | None:
+    """Dojo orbital tier ('sz'/'dzp'/'tzdp') a ``dojo-*`` rank mode selects.
+
+    The Dojo-NC-FR package ships one folder per element *and* tier
+    (``Orbitals_v2.0/{El}_{SZ,DZP,TZDP}/``), each folder holding several rcut
+    copies of the same basis.  ``_find_file_in_libraries`` gates the search to
+    the requested tier by the file's parent folder name; returns None for any
+    non-dojo mode so existing behavior is untouched.  The optional rcut-policy
+    suffix (``dojo-dzp-min``) is ignored here — both parse to the same tier.
+    """
+    if not isinstance(mode, str) or not mode.startswith("dojo-"):
+        return None
+    parts = mode.split("-")
+    if len(parts) >= 2 and parts[1] in ("sz", "dzp", "tzdp"):
+        return parts[1]
+    return None
+
+
+def _candidate_rank(name: str, suffix: str, mode: str = "sg15") -> tuple:
     """Deterministic preference key for library files of one element.
 
     Used only when several files match an element; the smallest key wins.
-    Prefers the canonical DZP orbital at 7 au (matches the SG15 convention),
-    then falls back to rcut closest to 7 au, then alphabetical.
+
+    - ``sg15`` (default): prefers the canonical DZP orbital at 7 au (matches
+      the SG15 convention), then rcut closest to 7 au, then alphabetical.
+    - ``apns-efficiency``: prefers the smaller rcut (the APNS Cs pair is
+      otherwise identical at 10 au vs 12 au → 10 au wins), then alphabetical.
+    - ``apns-precision``: prefers the most complete basis (largest per-l zeta
+      counts, e.g. 4s4p3d2f over 3s3p2d1f), then smaller rcut, alphabetical.
+    - ``dojo-sz`` / ``dojo-dzp`` / ``dojo-tzdp``: the caller has already
+      filtered candidates to one Dojo tier folder; among those (all the same
+      basis at different rcut) prefer the rcut closest to the 7 au canonical
+      default, then alphabetical.
+    - ``dojo-<tier>-min`` / ``dojo-<tier>-max``: as above but the ``min`` /
+      ``max`` rcut-policy suffix (config ``libraries.rcut_policy``) picks the
+      smallest / largest rcut copy of that tier instead.
     """
     base = name.lower()
+
+    if mode == "apns-efficiency":
+        m = re.search(r"(\d+)au", base)
+        rcut = int(m.group(1)) if m else 999
+        return (rcut, name)
+
+    if mode == "apns-precision":
+        counts = _zeta_counts(base)
+        neg = tuple(-c for c in counts) if counts else (0,)  # larger basis → smaller key
+        m = re.search(r"(\d+)au", base)
+        rcut = int(m.group(1)) if m else 999
+        return neg + (rcut, name)
+
+    if _orbital_tier(mode) is not None:  # dojo-sz / dojo-dzp / dojo-tzdp [(-min|-max)]
+        m = re.search(r"(\d+)au", base)
+        rcut = int(m.group(1)) if m else 999
+        if mode.endswith(f"-{RCUT_POLICY_MAX}"):
+            return (-rcut, name)          # largest rcut copy wins
+        if mode.endswith(f"-{RCUT_POLICY_MIN}"):
+            return (rcut, name)           # smallest rcut copy wins
+        return (abs(rcut - _DEFAULT_ORB_RCUT), name)
+
     rank = [0, 0]
     if _DEFAULT_ORB_BASIS not in base:
         rank[0] = 1
@@ -65,17 +197,29 @@ def _as_dir_list(value: Any) -> list[str]:
     return [value] if isinstance(value, str) else list(value)
 
 
-def _find_file_in_libraries(library_dirs, element: str, suffix: str) -> Path | None:
+def _find_file_in_libraries(
+    library_dirs, element: str, suffix: str, rank: str = "sg15"
+) -> Path | None:
     """Locate the best file for *element* among the library dirs.
 
     *library_dirs* may be a single path string or a list of paths.  Each dir
     is searched recursively (the APNS lanthanide bundles nest files under
-    element/basis subfolders).  Filenames are matched case-insensitively on a
-    prefix of ``{Element}`` followed by ``_`` or ``.`` (optionally with a
-    charge state such as ``Sm3+_f--core-icmod1.PD04.PBE.UPF``) and the given
-    suffix (also case-insensitive).  Returns the best-matching Path or None.
+    element/basis subfolders; the Dojo-NC-FR orbitals nest under
+    ``{El}_{SZ,DZP,TZDP}`` per-tier folders).  Filenames are matched
+    case-insensitively on a prefix of ``{Element}`` followed by ``_``, ``.``
+    or ``-`` (optionally with a charge state such as
+    ``Sm3+_f--core-icmod1.PD04.PBE.UPF``, and allowing names like
+    ``Hf-sp.PD04.PBE.UPF``), and the given suffix (also case-insensitive).
+    When several files match one element, *rank* selects the deterministic
+    default via :func:`_candidate_rank` (default ``sg15``).  A ``dojo-<tier>``
+    rank additionally restricts ``.orb`` matches to the requested Dojo tier
+    folder, so an SZ/TZDP file is never silently substituted for a missing DZP
+    one (that would mix tiers — the family hard-error machinery relies on a
+    None here).  Pseudopotential lookups are never tier-gated.
+    Returns the best-matching Path or None.
     """
-    pattern = re.compile(rf"^{re.escape(element)}(?:\d+\+)?[_.]", re.IGNORECASE)
+    pattern = re.compile(rf"^{re.escape(element)}(?:\d+\+)?[_.\-]", re.IGNORECASE)
+    tier = _orbital_tier(rank)
     best_path: Path | None = None
     best_key: tuple | None = None
     for d in _as_dir_list(library_dirs):
@@ -89,20 +233,25 @@ def _find_file_in_libraries(library_dirs, element: str, suffix: str) -> Path | N
                 continue
             if not f.name.lower().endswith(suffix):
                 continue
-            key = _candidate_rank(f.name, suffix)
+            if suffix == ".orb" and tier and not f.parent.name.lower().endswith(
+                    f"_{tier}"):
+                continue
+            key = _candidate_rank(f.name, suffix, rank)
             if best_key is None or key < best_key:
                 best_key = key
                 best_path = f
     return best_path
 
 
-def _find_file_for_element(library_dir: Any, element: str, suffix: str) -> str | None:
+def _find_file_for_element(
+    library_dir: Any, element: str, suffix: str, rank: str = "sg15"
+) -> str | None:
     """Return the best-matching filename (not path) for *element*, or None.
 
     Thin wrapper over :func:`_find_file_in_libraries` kept for callers that
     only need the file name.
     """
-    p = _find_file_in_libraries(library_dir, element, suffix)
+    p = _find_file_in_libraries(library_dir, element, suffix, rank)
     return p.name if p else None
 
 
@@ -324,6 +473,7 @@ def prepare_calculation_files(
     orbital_library: Any = "",
     target_dir: str | Path = ".",
     dry_run: bool = False,
+    rank: str = "sg15",
 ) -> dict:
     """Copy pseudopotential (and orbital if LCAO) files to the target directory.
 
@@ -336,6 +486,8 @@ def prepare_calculation_files(
             numerical orbital files.
         target_dir: Where to copy files (default: current directory).
         dry_run: If True, only report what would be done without copying.
+        rank: Orbital tie-break mode (see :func:`_candidate_rank`); normally
+            ``orbital_rank_mode(config['libraries'].get('family'))``.
 
     Returns:
         Dict with keys 'pseudo_files', 'orbital_files', 'errors'.
@@ -354,7 +506,7 @@ def prepare_calculation_files(
 
     for elem in species:
         # --- Pseudopotential ---
-        pp_path = _find_file_in_libraries(pseudo_dirs, elem, ".upf")
+        pp_path = _find_file_in_libraries(pseudo_dirs, elem, ".upf", rank)
         if pp_path:
             dst = target / pp_path.name
             if not dry_run:
@@ -367,7 +519,7 @@ def prepare_calculation_files(
 
         # --- Orbital (LCAO only) ---
         if is_lcao and _as_dir_list(orbital_library):
-            orb_path = _find_file_in_libraries(orbital_library, elem, ".orb")
+            orb_path = _find_file_in_libraries(orbital_library, elem, ".orb", rank)
             if orb_path:
                 dst = target / orb_path.name
                 if not dry_run:
@@ -379,6 +531,51 @@ def prepare_calculation_files(
                 result["errors"].append(msg)
 
     return result
+
+
+def missing_library_files(
+    species: list[str],
+    basis_type: str,
+    pseudo_library: Any,
+    orbital_library: Any = "",
+    rank: str = "sg15",
+) -> list[tuple[str, str]]:
+    """Return (kind, element) pairs the library cannot provide for *species*.
+
+    Mirrors the per-element lookups in :func:`prepare_calculation_files`
+    without copying anything: ``kind`` is ``"pseudopotential"`` or
+    ``"orbital"`` (orbitals are only required for LCAO bases with a configured
+    orbital_library).  Callers use this to hard-stop a user-configured family
+    (e.g. APNS) that cannot cover the structure before any files are copied —
+    see :func:`missing_element_blockers`.
+    """
+    pseudo_dirs = _as_dir_list(pseudo_library)
+    is_lcao = is_lcao_basis(basis_type)
+    missing: list[tuple[str, str]] = []
+    for elem in species:
+        if not _find_file_in_libraries(pseudo_dirs, elem, ".upf", rank):
+            missing.append(("pseudopotential", elem))
+        if is_lcao and _as_dir_list(orbital_library):
+            if not _find_file_in_libraries(orbital_library, elem, ".orb", rank):
+                missing.append(("orbital", elem))
+    return missing
+
+
+def missing_element_blockers(
+    missing: list[tuple[str, str]], cwd: str | Path = "."
+) -> list[tuple[str, str]]:
+    """Filter *missing* (kind, element) pairs to those not covered in *cwd*.
+
+    A pair stays a blocker only when the current directory has no existing file
+    for that element of the right type — the user may already have supplied
+    their own PP/orbital there (self-provided, not a different series).
+    """
+    blockers: list[tuple[str, str]] = []
+    for kind, elem in missing:
+        ext = ".upf" if kind == "pseudopotential" else ".orb"
+        if not _find_file_in_libraries([str(Path(cwd).resolve())], elem, ext):
+            blockers.append((kind, elem))
+    return blockers
 
 
 # =============================================================================

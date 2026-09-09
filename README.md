@@ -30,7 +30,7 @@ abacuscopilot -task 9901    # Configuration wizard
 
 Configures pseudopotential paths, orbital directories, ABACUS binary location, and default calculation parameters. Settings are saved to `~/.abacuscopilot/config.yaml`.
 
-> **Pseudopotential / orbital libraries (PP-Orb/)** are *not* bundled in this git repo (large + third-party redistribution licensing). For out-of-the-box library support, download the full release tarball (`abacuscopilot_v*.tar.gz`, which ships `PP-Orb/`) from the [Releases](../../releases) page and re-run `./setup.sh` from it, or place your own SG15 / lanthanide UPF + orbital files under `PP-Orb/`. The tool warns (but does not fail) when it cannot resolve a species' library files.
+> **Pseudopotential / orbital libraries (PP-Orb/)** are *not* bundled in this git repo (large + third-party redistribution licensing). The repo carries `PP-Orb/README.md` as a placeholder guide. For out-of-the-box library support, download the full release tarball (`abacuscopilot_v*.tar.gz`, which ships `PP-Orb/` with the default SG15 + lanthanide trees) from the [Releases](../../releases) page and re-run `./setup.sh` from it — or drop your own library folders into `PP-Orb/` (each top-level folder holding `*.upf` / `*.orb` is auto-detected; see `PP-Orb/README.md`). The tool warns (but does not fail) when it cannot resolve a species' library files under the bundled SG15 family. To use an **external series** such as `ABACUS-APNS-PPORBs-v1` (pseudopotentials + efficiency/precision orbitals) without bundling it, register its paths under `libraries.families` in the config and pick it from the INPUT flow — see [Configuration](#configuration).
 
 ## Task Reference
 
@@ -162,13 +162,45 @@ Edit `~/.abacuscopilot/config.yaml` or run `abacuscopilot -task 9901`:
 ```yaml
 libraries:
   # Lists of directories, searched in order.  Auto-detected from the
-  # bundled PP-Orb/ folder; stale paths are dropped automatically.
+  # bundled PP-Orb/ folder; stale paths are dropped automatically.  These are
+  # the two lists actually used — they are re-pointed when a "family" below is
+  # activated from the INPUT / STRU flows.
   pseudo_library:
     - /path/to/pseudopotentials/
     - /path/to/lanthanides/
   orbital_library:
     - /path/to/orbitals/
     - /path/to/lanthanides/
+
+  # Library "series" currently in effect: sg15 (default) | apns | apns/<variant>
+  # | dojoncfr | dojoncfr/<sz|dzp|tzdp> | custom.  Chosen interactively in the
+  # INPUT/STRU flows; persists globally.
+  family: sg15
+
+  # Which rcut copy to use when a family ships the SAME basis at several
+  # cutoff radii — e.g. Dojo-NC-FR ships each tier at 6-12 au.  Ask with a
+  # plain "7" / "min" / "max"; only honored by the dojoncfr family.
+  #   "7"   (default)  closest to the canonical 7 au of the bundled SG15 orbitals
+  #   "min"            smallest rcut (fastest / most compact)
+  #   "max"            largest rcut (most complete / closest to the PW limit)
+  rcut_policy: "7"
+
+  # User-supplied external series (NOT bundled).  Add your own downloaded
+  # directories here (or let the INPUT family wizard fill them), then pick the
+  # series when generating files.  abacuscopilot never mixes two series.
+  families:
+    # apns:  # ABACUS-APNS-PPORBs-v1
+    #   pseudo_dir: /path/to/ABACUS-APNS-PPORBs-v1/apns-pseudopotentials-v1
+    #   orbital_dirs:
+    #     efficiency: /path/to/.../apns-orbitals-efficiency-v1
+    #     precision:  /path/to/.../apns-orbitals-precision-v1
+    #
+    # dojoncfr:  # Dojo-NC-FR (fully-relativistic PPs + orbitals — for SOC)
+    #   pseudo_dir: /path/to/Dojo-NC-FR/Pseudopotential
+    #   orbital_dirs:  # all three tiers share the same Orbitals_v2.0 root
+    #     sz: /path/to/Dojo-NC-FR/Orbitals_v2.0
+    #     dzp: /path/to/Dojo-NC-FR/Orbitals_v2.0
+    #     tzdp: /path/to/Dojo-NC-FR/Orbitals_v2.0
 
 defaults:
   kspacing: 0.14
@@ -186,12 +218,43 @@ plotting:
 root (e.g. `PP-Orb/SG15-Version1p0_Pseudopotential`,
 `PP-Orb/SG15-Version1p0__StandardOrbitals-Version2p0`,
 `PP-Orb/lanthanides-f--core.icmod1`). They are auto-detected on first run and
-may be added to/removed freely. `pseudo_library` / `orbital_library` accept a
+may be added to/removed freely — drop your own `*.upf` / `*.orb` library folders
+in as additional top-level entries under `PP-Orb/` (see `PP-Orb/README.md`).
+`pseudo_library` / `orbital_library` accept a
 single directory or a list; each is searched recursively, so the nested APNS
 lanthanide layout (`{Element}/{basis}/{Element}_gga_*.orb`) works as-is.
 Filenames are matched case-insensitively and tolerate charge-state prefixes
-(e.g. `Sm3+_f--core-icmod1.PD04.PBE.UPF`). When a library ships several
-orbitals per element, the DZP basis at 7 au (`4s2p2d1f`, `7au`) is preferred.
+(e.g. `Sm3+_f--core-icmod1.PD04.PBE.UPF`) and semicore `-sp` markers
+(`Hf-sp.PD04.PBE.UPF` / `Os-sp.PD04.PBE.UPF`). When a library ships several
+orbitals per element, a deterministic default is used: the SG15 DZP basis at
+7 au (`4s2p2d1f`, `7au`); for the ABACUS-APNS series, the smaller-`rcut` file
+under `efficiency` (Cs → `10au`) and the most complete basis under `precision`
+(B → `4s4p3d2f`, K/Cs/Na/Rb → `5s4p3d2f`, Sb → `4s4p4d3f2g`); for the
+Dojo-NC-FR series the selected tier (`sz`/`dzp`/`tzdp`, from `family:
+dojoncfr/<tier>`) is honoured — the resolver only looks inside that tier's
+`{Element}_{SZ|DZP|TZDP}` folder, so a missing tier never silently substitutes
+another — and within the tier it takes the rcut closest to 7 au by default
+(DZP Hf → `Hf_DZP/Hf_gga_7au_100Ry_4s2p2d1f.orb`). Because Dojo ships the same
+basis at several cutoff radii, the interactive picker lets you choose which
+copy to use — persisted as `libraries.rcut_policy` (`"7"` | `"min"` | `"max"`,
+above), with the 7-au default marked as recommended.
+
+**External library families (e.g. ABACUS-APNS-PPORBs-v1, Dojo-NC-FR).** Other
+series are *not* bundled into the package. Register their downloaded
+directories under `libraries.families.<id>` (above), then pick the series from
+the Pseudopotential/orbital-library-family prompt shown by the INPUT and full
+calculation-setup flows — it defaults to the bundled SG15 and persists your
+choice as the global default (switch back anytime). **Dojo-NC-FR** provides
+fully-relativistic norm-conserving PPs (`relativistic="full"`, `has_so=1`) with
+matching orbitals — the set to use for spin-orbit coupling runs (`lspinorb 1`);
+they also work for non-SOC runs (ABACUS reduces them to scalar-relativistic
+automatically). When the active family is a registered user series, an element
+the series cannot provide is a **hard error** (the auto-copy/STRU-sync stops
+and suggests switching) rather than a silent cross-series fallback; under SG15
+the legacy soft warning still applies. Even if a registered series' folders
+physically live under `PP-Orb/` (e.g. a local `ABACUS-APNS-PPORBs-v1` copy),
+they are **excluded from the SG15 auto-detected lists**, so switching back to
+SG15 never mixes in the other series.
 
 **Large-core lanthanide PPs.** The APNS `lanthanides-f--core.icmod1` bundle
 contains f-electron-pseudized, +3-valent large-core PPs (frozen f-electrons).

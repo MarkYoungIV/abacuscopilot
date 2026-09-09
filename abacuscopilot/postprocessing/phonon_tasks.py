@@ -1206,9 +1206,8 @@ def task_mlp_sscha_setup(args=None, interactive=True, parsed_args=None):
 
         # --- Functional + D3 (DFT only, skip for DP) ---
         if interactive and basis != "dp":
-            use_func = _pc(console, "Exchange-correlation functional", ["PBEsol", "PBE"], "PBEsol")
-            if "PBEsol" in use_func:
-                params.dft_functional = "pbesol"
+            use_func = _pc(console, "Exchange-correlation functional", ["PBE", "PBEsol"], "PBE")
+            params.dft_functional = "pbesol" if "PBEsol" in use_func else "pbe"
 
             use_d3 = _pc(console, "D3 dispersion correction", ["No", "d3_0 (zero-damping)", "d3_bj (Becke-Johnson)"], "No")
             if "d3_0" in use_d3:

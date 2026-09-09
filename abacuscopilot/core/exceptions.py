@@ -68,3 +68,19 @@ class ASEImportError(AbacusCopilotError):
         if feature:
             msg = f"'{feature}' requires ASE. Install with: pip install ase"
         super().__init__(msg)
+
+
+class LibraryFamilyError(AbacusCopilotError):
+    """Raised when the active user-configured library family cannot provide a
+    required element — the auto-copy / STRU-sync is stopped instead of mixing
+    files across series."""
+
+    def __init__(self, family_label: str, missing_elements: list[str]):
+        self.family_label = family_label
+        self.missing_elements = sorted(set(missing_elements))
+        elem_list = ", ".join(self.missing_elements)
+        super().__init__(
+            f"{family_label} has no files for element(s): {elem_list}. "
+            "The auto-copy/STRU-sync was stopped to avoid mixing different library "
+            "series.  Switch back to SG15 or add the missing files and retry."
+        )

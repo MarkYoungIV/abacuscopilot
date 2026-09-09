@@ -13,7 +13,43 @@ from typing import Any
 import yaml
 
 
-def _detect_library_dirs(ext: str) -> list[str]:
+def _path_within(path: Path, root: Path) -> bool:
+    """True when *path* equals *root* or lives somewhere under it."""
+    try:
+        path.expanduser().resolve().relative_to(root.expanduser().resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _registered_family_dirs(config: dict) -> list[Path]:
+    """Resolved dirs the user registered as external-series roots.
+
+    Walks ``libraries.families.<id>.pseudo_dir`` plus every
+    ``...orbital_dirs.*`` entry.  Used to keep a registered family (e.g. an
+    ABACUS-APNS copy dropped under ``PP-Orb/``) out of the auto-detected
+    "bundled" SG15 lists, so the two series never silently mix.
+    """
+    out: list[Path] = []
+    libs = config.get("libraries", {})
+    fams = libs.get("families", {})
+    if not isinstance(fams, dict):
+        return out
+    for fam in fams.values():
+        if not isinstance(fam, dict):
+            continue
+        for v in (fam.get("pseudo_dir"),):
+            if isinstance(v, str) and v:
+                out.append(Path(v).expanduser())
+        orb = fam.get("orbital_dirs")
+        if isinstance(orb, dict):
+            for v in orb.values():
+                if isinstance(v, str) and v:
+                    out.append(Path(v).expanduser())
+    return out
+
+
+def _detect_library_dirs(ext: str, exclude_containing: object = ()) -> list[str]:
     """Auto-detect library directories inside the package root.
 
     Looks for top-level library folders under ``PP-Orb/`` (preferred) or the
@@ -25,6 +61,11 @@ def _detect_library_dirs(ext: str) -> list[str]:
       PP-Orb/SG15-Version1p0_Pseudopotential/           (has .upf below)
       PP-Orb/SG15-Version1p0__StandardOrbitals-Version2p0/  (has .orb)
       PP-Orb/lanthanides-f--core.icmod1/                (has .UPF *and* .orb)
+
+    *exclude_containing*: iterable of dirs (typically from
+    :func:`_registered_family_dirs`).  A top-level root that *contains* (or
+    equals) one of them is treated as an external-series container and skipped,
+    so a registered family is never absorbed into the bundled lists.
 
     Returns a list of absolute paths (possibly empty).
     """
@@ -40,8 +81,12 @@ def _detect_library_dirs(ext: str) -> list[str]:
             if d.is_dir():
                 roots.append(d)
 
+    exclude = list(exclude_containing or ())
+
     found: list[str] = []
     for root in roots:
+        if any(_path_within(p, root) for p in exclude):
+            continue  # registered external family lives here — don't bundle it
         if any(f.is_file() and f.name.lower().endswith(ext)
                for f in root.rglob("*")):
             found.append(str(root.resolve()))
@@ -85,8 +130,29 @@ DEFAULT_CONFIG = {
         "deepmd_python": "",     # Python binary with deepmd-kit (for Deep Potential batch force calculation)
     },
     "libraries": {
+        # Active pseudopotential/orbital directories, searched in order.
+        # These are the two flat lists every auto-copy/resolution step reads.
         "pseudo_library": _detect_library_dirs(".upf"),
         "orbital_library": _detect_library_dirs(".orb"),
+        # Library "family" currently in effect (which series the active lists
+        # above were derived from).  Values:
+        #   sg15               bundled SG15 (+ lanthanides) auto-detection (default)
+        #   apns / apns/<variant>   a user-configured external series
+        #   custom             hand-edited lists not tied to a known series
+        # A missing/unknown value is treated as "sg15" (legacy behavior).
+        "family": "sg15",
+        # Which rcut copy to use when a family ships several cutoff radii of the
+        # SAME basis (identical zeta) — e.g. Dojo-NC-FR ships each tier at
+        # 6-12 au.  Values: "7" (default; closest to the canonical 7 au of the
+        # bundled SG15 standard orbitals), "min" (smallest rcut), "max"
+        # (largest rcut).  Only honored for the dojoncfr family; ignored by the
+        # bundled SG15 and ABACUS-APNS modes.
+        "rcut_policy": "7",
+        # User-supplied external library series (NOT bundled into the package).
+        # Each known series is keyed by its id (see abacuscopilot/library_families.py);
+        # paths are absolute directories the user downloaded themselves.  These
+        # keys are preserved verbatim by load_config (no sanitization).
+        "families": {},
     },
 }
 
@@ -156,10 +222,16 @@ def load_config() -> dict[str, Any]:
     # Sanitize library paths: drop stale/empty dirs (e.g. the old
     # Pseudopotential/Orbitals locations after a reorg), fall back to the
     # auto-detected defaults.  Result values are always lists of valid dirs.
+    # Re-detection excludes dirs the user registered as external families, so
+    # e.g. an ABACUS-APNS copy under PP-Orb/ never seeps into the bundled lists.
     libs = merged.setdefault("libraries", {})
     for key, ext in (("pseudo_library", ".upf"), ("orbital_library", ".orb")):
         valid = _valid_library_dirs(libs.get(key, ""), ext)
-        libs[key] = valid if valid else DEFAULT_CONFIG["libraries"].get(key, [])
+        if valid:
+            libs[key] = valid
+        else:
+            libs[key] = _detect_library_dirs(
+                ext, exclude_containing=_registered_family_dirs(merged))
     return merged
 
 

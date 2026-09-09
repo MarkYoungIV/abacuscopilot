@@ -160,9 +160,8 @@ def task_phonon_setup(args: list[str] | None = None, interactive: bool = True,
 
     # --- Functional (must come before D3 for parameter injection) ---
     if interactive:
-        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBEsol", "PBE"], "PBEsol")
-        if "PBEsol" in use_func:
-            params.dft_functional = "pbesol"
+        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBE", "PBEsol"], "PBE")
+        params.dft_functional = "pbesol" if "PBEsol" in use_func else "pbe"
 
     if interactive:
         use_d3 = _prompt_choice(console, "D3 dispersion correction", ["No", "d3_0 (zero-damping)", "d3_bj (Becke-Johnson)"], "No")

@@ -40,9 +40,11 @@ def _write_stru_bare(
     """
     from abacuscopilot.config import load_config
     from abacuscopilot.io.stru_file import write_stru
+    from abacuscopilot.library_families import current_family
     from abacuscopilot.preprocessing.system_tasks import (
         _f_core_info_from_structure,
         _find_file_for_element,
+        orbital_rank_mode,
         warn_f_core,
     )
 
@@ -52,10 +54,13 @@ def _write_stru_bare(
         libraries = config.get("libraries", {})
         pseudo_lib = libraries.get("pseudo_library", "")
         orbital_lib = libraries.get("orbital_library", "")
+        # The active family decides the deterministic per-element default when a
+        # directory ships several files for one element (APNS efficiency/precision).
+        rank = orbital_rank_mode(current_family(config), config)
 
         for sp in structure.species_order:
             # Always resolve from library; overwrites bare filenames like "S.upf"
-            actual = _find_file_for_element(pseudo_lib, sp, ".upf") if pseudo_lib else None
+            actual = _find_file_for_element(pseudo_lib, sp, ".upf", rank) if pseudo_lib else None
             if actual:
                 structure.pseudo_files[sp] = actual
             else:
@@ -63,7 +68,7 @@ def _write_stru_bare(
                 structure.pseudo_files[sp] = structure.pseudo_files.get(sp, f"{sp}.upf")
 
             if is_lcao:
-                actual = _find_file_for_element(orbital_lib, sp, ".orb") if orbital_lib else None
+                actual = _find_file_for_element(orbital_lib, sp, ".orb", rank) if orbital_lib else None
                 if actual:
                     structure.orbital_files[sp] = actual
                 else:
@@ -181,23 +186,26 @@ def _choose_coordinate_type(console, structure: Structure) -> Structure:
     return structure
 
 
-def _run_full_calculation_setup(console, structure, cif_path: str | None = None) -> None:
+def _run_full_calculation_setup(console, interactive: bool = True) -> None:
     """After STRU is written, proceed to INPUT generation + file preparation.
 
     This is the "configure full calculation" branch of STRU tasks.
-    It delegates to input_tasks for the INPUT generation logic.
+    It delegates to input_tasks for the INPUT generation logic — per-calculation
+    questions come from the shared input_tasks helpers and the post-INPUT
+    pipeline is _auto_prepare_files, so a full-calc run is byte-identical to the
+    matching INPUT module task (101-105).
     """
-    from abacuscopilot.config import load_config
     from abacuscopilot.core.models import InputParams
     from abacuscopilot.preprocessing.input_tasks import (
         _apply_template,
+        _ask_analysis_outputs,
+        _ask_band_projection,
         _ask_basis_and_calc,
+        _ask_dos_type,
         _ask_lcao_solver,
+        _ask_md_thermo,
+        _ask_xc_and_d3,
         _get_template,
-    )
-    from abacuscopilot.preprocessing.system_tasks import (
-        prepare_calculation_files,
-        read_species_from_stru,
     )
 
     console.print()
@@ -227,33 +235,22 @@ def _run_full_calculation_setup(console, structure, cif_path: str | None = None)
     # Ask CPU/GPU so LCAO gets the correct ks_solver (genelpa/cusolver).
     _ask_lcao_solver(console, params)
 
-    # Large-core (f-electron-pseudized) lanthanide awareness: if the structure
-    # uses such PPs (e.g. APNS 'Sm3+_f--core-icmod1...'), their NAO orbitals have
-    # a 300 Ry cutoff.  Offer to raise ecutwfc to match — otherwise the Sm basis
-    # gets truncated and the result is silently wrong.
-    from abacuscopilot.preprocessing.system_tasks import (
-        adjust_ecutwfc_for_f_core,
-        analyze_f_core,
-    )
-
-    info = analyze_f_core(structure)
-    if info["f_core_species"] and "lcao" in (params.basis_type or ""):
-        adjust_ecutwfc_for_f_core(console, params, info)
-
-    # Override specific params for MD
-    if calc == "md":
-        params.md_type = _prompt_choice(
-            console, "MD ensemble", ["nvt", "npt", "nve", "langevin", "fire", "msst"], "nvt"
-        )
-        params.md_nstep = int(_prompt(console, "Number of MD steps", 10000))
-        params.md_dt = float(_prompt(console, "Time step (fs)", 1.0))
-        params.md_tfirst = float(_prompt(console, "Initial temperature (K)", 300.0))
-        params.md_tlast = float(_prompt(console, "Final temperature (K)", 300.0))
-    elif calc == "dos":
-        dos_type = _prompt_choice(
-            console, "DOS type", ["Total DOS", "Projected DOS (PDOS)"], "Total DOS"
-        )
-        params.out_dos = 2 if "Projected" in dos_type else 1
+    # Ask the per-calculation questions through the SAME shared helpers the INPUT
+    # module (tasks 101-105) uses, so a full-calc INPUT is byte-identical to
+    # running the corresponding INPUT task with the same answers.  (f-core
+    # ecutwfc raise / family pick / file copy / STRU sync happen later in
+    # _auto_prepare_files, the canonical post-INPUT pipeline.)
+    if interactive:
+        if calc in ("cell-relax", "relax"):
+            _ask_xc_and_d3(console, params)
+        elif calc == "scf":
+            _ask_analysis_outputs(console, params, basis)
+        elif calc == "nscf":  # Band (NSCF)
+            _ask_band_projection(console, params)
+        elif calc == "dos":
+            _ask_dos_type(console, params)
+        elif calc == "md":
+            _ask_md_thermo(console, params, basis)
 
     # Write INPUT
     from abacuscopilot.io.input_file import write_input
@@ -264,37 +261,12 @@ def _run_full_calculation_setup(console, structure, cif_path: str | None = None)
     console.print("[green]✓ INPUT file written.[/green]")
     console.print(f"  Calculation: {params.calculation}, Basis: {params.basis_type}")
 
-    # Step 2: fix STRU with resolved upf/orb filenames
-    from abacuscopilot.io.stru_file import read_stru as _read_stru
+    # Canonical post-INPUT pipeline — family pick, f-core ecutwfc raise, PP/orb
+    # copy, STRU upf/orb filename sync, sub.abacus — shared with every INPUT
+    # task.  Reads the STRU the caller already wrote, so it "just works".
+    from abacuscopilot.preprocessing.input_tasks import _auto_prepare_files
+    _auto_prepare_files(console, params, interactive)
 
-    _stru = _read_stru("STRU")
-    _write_stru_bare(
-        _stru, is_lcao=params.basis_type == "lcao", filepath="STRU", suppress_f_core=True
-    )
-
-    # Step 3: copy pseudopotential & orbital files
-    config = load_config()
-    libraries = config.get("libraries", {})
-    pseudo_lib = libraries.get("pseudo_library", "")
-    orbital_lib = libraries.get("orbital_library", "")
-
-    if pseudo_lib:
-        species = read_species_from_stru("STRU")
-        if species:
-            console.print()
-            console.print("[bold]Copying pseudopotential / orbital files...[/bold]")
-            result = prepare_calculation_files(
-                species, params.basis_type, pseudo_lib, orbital_lib, ".", dry_run=False
-            )
-            if result["pseudo_files"]:
-                console.print("  [green]✓ PP:[/green] " + ", ".join(result["pseudo_files"]))
-            if result["orbital_files"]:
-                console.print("  [green]✓ Orb:[/green] " + ", ".join(result["orbital_files"]))
-            if result["errors"]:
-                for e in result["errors"]:
-                    console.print(f"  [yellow]![/yellow] {e}")
-
-    console.print()
     console.print("[bold green]✓ Full calculation setup complete.[/bold green]")
     console.print(f"  Files: STRU + INPUT + {params.basis_type} support files")
     console.print()
@@ -395,7 +367,7 @@ def task_stru_from_cif(args: list[str] | None = None, interactive: bool = True) 
 
     # --- full calculation setup ---
     if "full" in mode.lower() or "configure" in mode.lower():
-        _run_full_calculation_setup(console, structure, str(cif_path))
+        _run_full_calculation_setup(console, interactive=interactive)
 
 
 # =============================================================================
@@ -554,7 +526,7 @@ def task_stru_from_poscar(args: list[str] | None = None, interactive: bool = Tru
     # 3D viewer moved to task 206
 
     if "full" in mode.lower() or "configure" in mode.lower():
-        _run_full_calculation_setup(console, structure)
+        _run_full_calculation_setup(console, interactive=interactive)
 
 
 # =============================================================================
@@ -1660,4 +1632,5 @@ def task_stru_from_pdb(args: list[str] | None = None, interactive: bool = True) 
 
     # --- full calculation setup ---
     if "full" in mode.lower() or "configure" in mode.lower():
-        _run_full_calculation_setup(console, structure, str(pdb_path))
+        _run_full_calculation_setup(console,
+                                interactive=interactive)

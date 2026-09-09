@@ -314,6 +314,126 @@ def _print_summary(console, params: InputParams):
     console.print()
 
 
+# --- shared per-calculation interactive questions ---------------------------------
+# Single source of truth for the INPUT module tasks (101-105, 110, 111) AND the
+# STRU tasks' "configure full calculation" branch — change a default here and
+# every entry point stays consistent.
+
+
+def _ask_xc_functional(console, params: InputParams) -> None:
+    """Ask the exchange-correlation functional (PBE default; PBEsol optional)."""
+    use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBE", "PBEsol"], "PBE")
+    params.dft_functional = "pbesol" if "PBEsol" in use_func else "pbe"
+
+
+def _ask_d3(console, params: InputParams) -> None:
+    """Ask D3 dispersion correction.
+
+    ABACUS D3 only supports dft_functional=pbe — a PBEsol choice is forced back
+    to PBE (PBEsol reuses PBE D3 parameters; same correlation, different
+    exchange), which is standard practice.
+    """
+    use_d3 = _prompt_choice(console, "D3 dispersion correction", ["No", "d3_0 (zero-damping)", "d3_bj (Becke-Johnson)"], "No")
+    if "d3_0" in use_d3:
+        params.vdw_method = "d3_0"
+    elif "d3_bj" in use_d3:
+        params.vdw_method = "d3_bj"
+    if params.vdw_method != "none" and params.dft_functional == "pbesol":
+        console.print("  [bold yellow]⚠  ABACUS D3 does not support dft_functional=pbesol.[/bold yellow]")
+        console.print("  [dim]    Setting dft_functional to 'pbe' for D3 compatibility.[/dim]")
+        console.print("  [dim]    PBEsol reuses PBE D3 parameters — this is standard practice.[/dim]")
+        params.dft_functional = "pbe"
+
+
+def _ensure_xc_in_core(params: InputParams) -> None:
+    """Force non-default dft_functional / vdw_method into the INPUT core group.
+
+    write_input only emits template keys in the core parameter group, so a
+    non-default choice must be registered there (and its hint comment dropped).
+    """
+    for _k, _def in (("dft_functional", "pbe"), ("vdw_method", "none")):
+        if getattr(params, _k) != _def:
+            params.extras.setdefault("_template_keys", []).append(_k)
+            _h = params.extras.get("_comment_hints", {})
+            if isinstance(_h, dict):
+                _h.pop(_k, None)
+
+
+def _ask_xc_and_d3(console, params: InputParams) -> None:
+    """Functional + D3 for relax-style runs, incl. core-group registration."""
+    _ask_xc_functional(console, params)
+    _ask_d3(console, params)
+    _ensure_xc_in_core(params)
+
+
+def _ask_analysis_outputs(console, params: InputParams, basis: str) -> None:
+    """Enable Mulliken / Hirshfeld / CHG outputs for post-processing tasks."""
+    if basis == "lcao":
+        if _abacus_supports_hirshfeld():
+            an_choices = ["none", "Mulliken + CHG", "all (Mulliken + Hirshfeld + CHG)"]
+        else:
+            an_choices = ["none", "Mulliken + CHG"]
+    else:
+        an_choices = ["none", "CHG"]
+    an = _prompt_choice(
+        console, "Enable analysis outputs (Mulliken/Hirshfeld/CHG)?",
+        an_choices, "none",
+    )
+    if an != "none":
+        params.out_chg = True
+    if "Mulliken" in an:
+        params.out_mul = True
+    if "Hirshfeld" in an:
+        params.set_param("out_hirshfeld", 1)
+
+
+def _ask_band_projection(console, params: InputParams) -> None:
+    """Ask whether to output projected bands (Band NSCF)."""
+    want_proj = _prompt_choice(console, "Output projected bands?",
+                               ["No (band only)", "Yes (band + projection)"],
+                               "No (band only)")
+    params.out_proj_band = "Yes" in want_proj
+
+
+def _ask_dos_type(console, params: InputParams) -> None:
+    """Ask total vs projected DOS."""
+    dos_type = _prompt_choice(console, "DOS type",
+                              ["Total DOS", "Projected DOS (PDOS)"],
+                              "Total DOS")
+    params.out_dos = 2 if "Projected" in dos_type else 1
+
+
+def _ask_md_thermo(console, params: InputParams, basis: str) -> None:
+    """Ask MD ensemble (incl. NPT barostat), steps, dt and temperatures.
+
+    ``basis`` gates the dp-only dump-frequency prompt; the dp esolver path is
+    otherwise handled by the MD INPUT task itself.
+    """
+    params.md_type = _prompt_choice(console, "MD ensemble",
+                                    ["nvt", "npt", "nve", "langevin", "fire", "msst"],
+                                    "nvt")
+    if params.md_type == "npt":
+        pmode = _prompt_choice(console, "Pressure control mode",
+                               ["iso (isotropic)", "aniso (anisotropic)", "tri (full)"],
+                               "iso (isotropic)")
+        params.md_pmode = pmode.split()[0]
+        if params.md_pmode == "iso":
+            p = float(_prompt(console, "Target pressure (kbar)", "0.0"))
+            params.press1 = params.press2 = params.press3 = p
+        else:
+            p1 = float(_prompt(console, "  press1 (kbar, x-direction)", "0.0"))
+            p2 = float(_prompt(console, "  press2 (kbar, y-direction)", "0.0"))
+            p3 = float(_prompt(console, "  press3 (kbar, z-direction)", "0.0"))
+            params.press1, params.press2, params.press3 = p1, p2, p3
+    params.md_nstep = int(_prompt(console, "Number of MD steps", 10000))
+    params.md_dt = float(_prompt(console, "Time step (fs)", 1.0))
+    params.md_tfirst = float(_prompt(console, "Initial temperature (K)", 300.0))
+    params.md_tlast = float(_prompt(console, "Final temperature (K)", 300.0))
+    if basis == "dp":
+        freq = int(_prompt(console, "MD_dump output frequency (steps)", "100"))
+        params.md_dumpfreq = freq
+
+
 def _auto_prepare_files(console, params: InputParams, interactive: bool = True) -> None:
     """Optionally copy pseudopotential/orbital files for the current structure.
 
@@ -324,18 +444,55 @@ def _auto_prepare_files(console, params: InputParams, interactive: bool = True) 
     reference e.g. "K.upf" while the copied file is "K_ONCV_PBE-1.0.upf", and
     ABACUS fails to find the pseudopotential (标准规范).
     """
+    from abacuscopilot.core.exceptions import LibraryFamilyError
+    from abacuscopilot.core.standards import is_lcao_basis
+    from abacuscopilot.library_families import (
+        current_family,
+        family_label,
+        hint_no_library_dirs,
+        is_user_family,
+        pick_library_family,
+    )
     from abacuscopilot.preprocessing.system_tasks import (
+        _find_file_in_libraries,
+        missing_element_blockers,
+        missing_library_files,
+        orbital_rank_mode,
         prepare_calculation_files,
         read_species_from_stru,
     )
 
     config = load_config()
+
+    # Offer to switch pseudopotential/orbital library series (SG15 default).
+    # Interactive runs ask once per task; CLI / batch runs keep the persisted
+    # family.  A change updates config's library lists and saves it (global
+    # default, affecting every later auto-copy / STRU-sync).
+    changed_family = pick_library_family(
+        console, config, basis_type=params.basis_type, interactive=interactive
+    )
+
     libraries = config.get("libraries", {})
     pseudo_lib = libraries.get("pseudo_library", "")
     orbital_lib = libraries.get("orbital_library", "")
 
     if not pseudo_lib:
-        return  # not configured, skip silently
+        # Not configured. Interactive runs already got the guidance banner from
+        # the family picker above; CLI runs get it here so a batch task does not
+        # fail confusingly later inside ABACUS for lack of PP files.
+        if not interactive:
+            hint_no_library_dirs(console, config)
+        return  # not configured, skip
+
+    family = current_family(config)
+    rank = orbital_rank_mode(family, config)
+    is_user = is_user_family(family)
+
+    def _cwd_has_file(elem: str, ext: str) -> bool:
+        """True if the current dir already has a usable *ext* file for *elem*."""
+        return _find_file_in_libraries(
+            [str(Path(".").resolve())], elem, ext
+        ) is not None
 
     species = read_species_from_stru("STRU")
     if not species:
@@ -374,27 +531,36 @@ def _auto_prepare_files(console, params: InputParams, interactive: bool = True) 
                 )
                 console.print()
 
-    # Check if files are already present — if so, skip silently
-    all_present = True
-    for elem in species:
-        if not list(Path(".").glob(f"{elem}_*.upf")):
-            all_present = False
-            break
-        if params.basis_type.startswith("lcao") and orbital_lib:
-            if not list(Path(".").glob(f"{elem}_*.orb")):
-                all_present = False
-                break
-
-    if all_present:
+    # If every element already has a usable file here, skip — unless the family
+    # just changed (existing files may be from a different series).
+    need_orb = is_lcao_basis(params.basis_type) and bool(orbital_lib)
+    all_present = all(_cwd_has_file(e, ".upf") for e in species) and (
+        not need_orb or all(_cwd_has_file(e, ".orb") for e in species)
+    )
+    if all_present and not changed_family:
         return  # files already copied
 
     console.print("[bold]Pseudopotential / orbital files:[/bold]")
+    console.print(f"  Family: [dim]{family_label(family)}[/dim]")
     console.print(f"  Library: [dim]{pseudo_lib}[/dim]")
     console.print(f"  Elements: {', '.join(species)}")
     console.print()
 
+    # Registered user families (e.g. APNS): a missing element is a hard error —
+    # never mix series.  Abort before copying anything and suggest a switch.
+    if is_user:
+        missing = missing_library_files(
+            species, params.basis_type, pseudo_lib, orbital_lib, rank
+        )
+        blockers = missing_element_blockers(missing)
+        if blockers:
+            raise LibraryFamilyError(
+                family_label(family), [e for _, e in blockers]
+            )
+
     result = prepare_calculation_files(
-        species, params.basis_type, pseudo_lib, orbital_lib, ".", dry_run=False
+        species, params.basis_type, pseudo_lib, orbital_lib, ".", dry_run=False,
+        rank=rank,
     )
 
     if result["pseudo_files"]:
@@ -556,23 +722,7 @@ def task_scf_input(args: list[str] | None = None, interactive: bool = True,
 
     # Enable analysis outputs for post-processing tasks (Mulliken/Hirshfeld/CHG).
     if interactive:
-        if basis == "lcao":
-            if _abacus_supports_hirshfeld():
-                an_choices = ["none", "Mulliken + CHG", "all (Mulliken + Hirshfeld + CHG)"]
-            else:
-                an_choices = ["none", "Mulliken + CHG"]
-        else:
-            an_choices = ["none", "CHG"]
-        an = _prompt_choice(
-            console, "Enable analysis outputs (Mulliken/Hirshfeld/CHG)?",
-            an_choices, "none",
-        )
-        if an != "none":
-            params.out_chg = True
-        if "Mulliken" in an:
-            params.out_mul = True
-        if "Hirshfeld" in an:
-            params.set_param("out_hirshfeld", 1)
+        _ask_analysis_outputs(console, params, basis)
 
     from abacuscopilot.io.input_file import write_input
     write_input(params)
@@ -630,32 +780,9 @@ def task_relax_input(args: list[str] | None = None, interactive: bool = True,
     elif parsed_args and parsed_args.solver:
         _apply_solver_override(console, params, parsed_args.solver)
 
-    # --- Exchange-correlation functional ---
+    # --- Exchange-correlation functional + D3 (shared with STRU full-calc) ---
     if interactive:
-        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBEsol", "PBE"], "PBEsol")
-        if "PBEsol" in use_func:
-            params.dft_functional = "pbesol"
-
-    # --- D3 dispersion correction ---
-    if interactive:
-        use_d3 = _prompt_choice(console, "D3 dispersion correction", ["No", "d3_0 (zero-damping)", "d3_bj (Becke-Johnson)"], "No")
-        if "d3_0" in use_d3:
-            params.vdw_method = "d3_0"
-        elif "d3_bj" in use_d3:
-            params.vdw_method = "d3_bj"
-        if params.vdw_method != "none" and params.dft_functional == "pbesol":
-            console.print("  [bold yellow]⚠  ABACUS D3 does not support dft_functional=pbesol.[/bold yellow]")
-            console.print("  [dim]    Setting dft_functional to 'pbe' for D3 compatibility.[/dim]")
-            console.print("  [dim]    PBEsol reuses PBE D3 parameters — this is standard practice.[/dim]")
-            params.dft_functional = "pbe"
-
-    # Force dft_functional and vdw_method into INPUT (core group needs template_keys)
-    for _k, _def in (("dft_functional", "pbe"), ("vdw_method", "none")):
-        if getattr(params, _k) != _def:
-            params.extras.setdefault("_template_keys", []).append(_k)
-            _h = params.extras.get("_comment_hints", {})
-            if isinstance(_h, dict):
-                _h.pop(_k, None)
+        _ask_xc_and_d3(console, params)
 
     from abacuscopilot.io.input_file import write_input
     write_input(params)
@@ -725,29 +852,7 @@ def task_md_input(args: list[str] | None = None, interactive: bool = True,
         _apply_template(params, template)
 
     if interactive:
-        params.md_type = _prompt_choice(console, "MD ensemble",
-                                        ["nvt", "npt", "nve", "langevin", "fire", "msst"],
-                                        "nvt")
-        if params.md_type == "npt":
-            pmode = _prompt_choice(console, "Pressure control mode",
-                                   ["iso (isotropic)", "aniso (anisotropic)", "tri (full)"],
-                                   "iso (isotropic)")
-            params.md_pmode = pmode.split()[0]
-            if params.md_pmode == "iso":
-                p = float(_prompt(console, "Target pressure (kbar)", "0.0"))
-                params.press1 = params.press2 = params.press3 = p
-            else:
-                p1 = float(_prompt(console, "  press1 (kbar, x-direction)", "0.0"))
-                p2 = float(_prompt(console, "  press2 (kbar, y-direction)", "0.0"))
-                p3 = float(_prompt(console, "  press3 (kbar, z-direction)", "0.0"))
-                params.press1, params.press2, params.press3 = p1, p2, p3
-        params.md_nstep = int(_prompt(console, "Number of MD steps", 10000))
-        params.md_dt = float(_prompt(console, "Time step (fs)", 1.0))
-        params.md_tfirst = float(_prompt(console, "Initial temperature (K)", 300.0))
-        params.md_tlast = float(_prompt(console, "Final temperature (K)", 300.0))
-        if basis == "dp":
-            freq = int(_prompt(console, "MD_dump output frequency (steps)", "100"))
-            params.md_dumpfreq = freq
+        _ask_md_thermo(console, params, basis)
     elif parsed_args:
         params.md_type = parsed_args.ensemble
         params.md_nstep = parsed_args.nstep
@@ -943,10 +1048,7 @@ def task_band_input(args: list[str] | None = None, interactive: bool = True,
 
     if interactive:
         _ask_lcao_solver(console, params)
-        want_proj = _prompt_choice(console, "Output projected bands?",
-                                   ["No (band only)", "Yes (band + projection)"],
-                                   "No (band only)")
-        params.out_proj_band = "Yes" in want_proj
+        _ask_band_projection(console, params)
     elif parsed_args:
         if parsed_args.solver:
             _apply_solver_override(console, params, parsed_args.solver)
@@ -1005,10 +1107,7 @@ def task_dos_input(args: list[str] | None = None, interactive: bool = True,
         if template:
             _apply_template(params, template)
 
-        dos_type = _prompt_choice(console, "DOS type",
-                                  ["Total DOS", "Projected DOS (PDOS)"],
-                                  "Total DOS")
-        params.out_dos = 2 if "Projected" in dos_type else 1
+        _ask_dos_type(console, params)
     else:
         template = _get_template("lcao", "dos")
         if template:
@@ -1144,9 +1243,31 @@ def _setup_convergence_subdir(
             pseudo_lib = libs.get("pseudo_library", "")
             orbital_lib = libs.get("orbital_library", "")
             if pseudo_lib:
+                from abacuscopilot.core.exceptions import LibraryFamilyError
+                from abacuscopilot.library_families import (
+                    current_family,
+                    family_label,
+                    is_user_family,
+                )
+                from abacuscopilot.preprocessing.system_tasks import (
+                    missing_element_blockers,
+                    missing_library_files,
+                    orbital_rank_mode,
+                )
+                family = current_family(config)
+                rank = orbital_rank_mode(family, config)
+                if is_user_family(family):
+                    missing = missing_library_files(
+                        species, params.basis_type, pseudo_lib, orbital_lib, rank
+                    )
+                    blockers = missing_element_blockers(missing, cwd=dir_path)
+                    if blockers:
+                        raise LibraryFamilyError(
+                            family_label(family), [e for _, e in blockers]
+                        )
                 prepare_calculation_files(
                     species, params.basis_type, pseudo_lib, orbital_lib,
-                    target_dir=str(dir_path), dry_run=False,
+                    target_dir=str(dir_path), dry_run=False, rank=rank,
                 )
 
     return dir_path
@@ -1259,6 +1380,13 @@ def task_ecutwfc_test(args: list[str] | None = None, interactive: bool = True) -
     if basis == "lcao" and interactive:
         _ask_lcao_solver(console, params)
 
+    # Library family (series) — ask once; persists as the global default used
+    # by every generated sub-directory.
+    from abacuscopilot.config import load_config as _load_config
+    from abacuscopilot.library_families import pick_library_family
+    pick_library_family(console, _load_config(), basis_type=params.basis_type,
+                        interactive=interactive)
+
     kpts = None
     if Path("STRU").exists():
         from abacuscopilot.io.stru_file import read_stru
@@ -1346,6 +1474,13 @@ def task_kspacing_test(args: list[str] | None = None, interactive: bool = True) 
 
     if interactive:
         _ask_lcao_solver(console, params)
+
+    # Library family (series) — ask once; persists as the global default used
+    # by every generated sub-directory.
+    from abacuscopilot.config import load_config as _load_config
+    from abacuscopilot.library_families import pick_library_family
+    pick_library_family(console, _load_config(), basis_type=params.basis_type,
+                        interactive=interactive)
 
     ks_start = float(_prompt(console, "Start kspacing (2pi/A)", "0.30"))
     ks_end = float(_prompt(console, "End kspacing (2pi/A)", "0.06"))
@@ -1655,28 +1790,11 @@ def task_eos_setup(args: list[str] | None = None, interactive: bool = True,
     elif parsed_args and parsed_args.solver:
         _apply_solver_override(console, params, parsed_args.solver)
 
-    # --- Exchange-correlation functional ---
+    # --- Exchange-correlation functional + D3 (shared with STRU full-calc) ---
     if interactive:
-        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBEsol", "PBE"], "PBEsol")
-        if "PBEsol" in use_func:
-            params.dft_functional = "pbesol"
+        _ask_xc_functional(console, params)
+        _ask_d3(console, params)
     _use_pbesol_eos = (params.dft_functional == "pbesol")
-
-    # --- D3 dispersion correction ---
-    if interactive:
-        use_d3 = _prompt_choice(console, "D3 dispersion correction", ["No", "d3_0 (zero-damping)", "d3_bj (Becke-Johnson)"], "No")
-        if "d3_0" in use_d3:
-            params.vdw_method = "d3_0"
-        elif "d3_bj" in use_d3:
-            params.vdw_method = "d3_bj"
-        if params.vdw_method != "none" and params.dft_functional == "pbesol":
-            # ABACUS D3 module crashes with dft_functional=pbesol.
-            # PBEsol reuses PBE D3 parameters (same correlation, different exchange).
-            # Workaround: force dft_functional to pbe when D3 is active.
-            console.print("  [bold yellow]⚠  ABACUS D3 does not support dft_functional=pbesol.[/bold yellow]")
-            console.print("  [dim]    Setting dft_functional to 'pbe' for D3 compatibility.[/dim]")
-            console.print("  [dim]    PBEsol reuses PBE D3 parameters — this is standard practice.[/dim]")
-            params.dft_functional = "pbe"
 
     # --- Read and prepare STRU ---
     from abacuscopilot.io.stru_file import read_stru, write_stru
@@ -1921,28 +2039,11 @@ def task_elastic_setup(args: list[str] | None = None, interactive: bool = True,
     elif parsed_args and parsed_args.solver:
         _apply_solver_override(console, params, parsed_args.solver)
 
-    # --- Exchange-correlation functional ---
+    # --- Exchange-correlation functional + D3 (shared with STRU full-calc) ---
     if interactive:
-        use_func = _prompt_choice(console, "Exchange-correlation functional", ["PBEsol", "PBE"], "PBEsol")
-        if "PBEsol" in use_func:
-            params.dft_functional = "pbesol"
+        _ask_xc_functional(console, params)
+        _ask_d3(console, params)
     _use_pbesol = (params.dft_functional == "pbesol")
-
-    # --- D3 dispersion correction ---
-    if interactive:
-        use_d3 = _prompt_choice(console, "D3 dispersion correction", ["No", "d3_0 (zero-damping)", "d3_bj (Becke-Johnson)"], "No")
-        if "d3_0" in use_d3:
-            params.vdw_method = "d3_0"
-        elif "d3_bj" in use_d3:
-            params.vdw_method = "d3_bj"
-        if params.vdw_method != "none" and params.dft_functional == "pbesol":
-            # ABACUS D3 module crashes with dft_functional=pbesol.
-            # PBEsol reuses PBE D3 parameters (same correlation, different exchange).
-            # Workaround: force dft_functional to pbe when D3 is active.
-            console.print("  [bold yellow]⚠  ABACUS D3 does not support dft_functional=pbesol.[/bold yellow]")
-            console.print("  [dim]    Setting dft_functional to 'pbe' for D3 compatibility.[/dim]")
-            console.print("  [dim]    PBEsol reuses PBE D3 parameters — this is standard practice.[/dim]")
-            params.dft_functional = "pbe"
 
     # --- Read STRU ---
     from abacuscopilot.io.stru_file import read_stru, write_stru

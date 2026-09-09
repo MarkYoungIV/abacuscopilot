@@ -524,15 +524,18 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
 
     # Resolve pseudo/orbital filenames
     from abacuscopilot.config import load_config
+    from abacuscopilot.library_families import current_family
     from abacuscopilot.preprocessing.system_tasks import (
         _as_dir_list,
         _find_file_for_element,
+        orbital_rank_mode,
     )
 
     config = load_config()
     libs = config.get("libraries", {})
     pseudo_lib = libs.get("pseudo_library", "")
     orbital_lib = libs.get("orbital_library", "")
+    rank = orbital_rank_mode(current_family(config), config)
 
     pp_map = {}
     orb_map = {}
@@ -546,7 +549,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
             if upfs:
                 pp_map[sp] = upfs[0].name
             elif pseudo_lib:
-                found = _find_file_for_element(pseudo_lib, sp, ".upf")
+                found = _find_file_for_element(pseudo_lib, sp, ".upf", rank)
                 pp_map[sp] = found if found else f"{sp}.upf"
             else:
                 pp_map[sp] = f"{sp}.upf"
@@ -557,7 +560,7 @@ def task_atst_neb_config(args: list[str] | None = None, interactive: bool = True
             if orbs:
                 orb_map[sp] = orbs[0].name
             elif orbital_lib:
-                found = _find_file_for_element(orbital_lib, sp, ".orb")
+                found = _find_file_for_element(orbital_lib, sp, ".orb", rank)
                 orb_map[sp] = found if found else f"{sp}.orb"
             else:
                 orb_map[sp] = f"{sp}.orb"
@@ -1222,12 +1225,16 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
             return
 
     from abacuscopilot.config import load_config
+    from abacuscopilot.library_families import current_family
 
     config = load_config()
     libs = config.get("libraries", {})
     paths_cfg = config.get("paths", {})
     pseudo_lib = libs.get("pseudo_library", "")
     orbital_lib = libs.get("orbital_library", "")
+    from abacuscopilot.preprocessing.system_tasks import orbital_rank_mode
+
+    rank = orbital_rank_mode(current_family(config), config)
     abacus_bin = paths_cfg.get("abacus_binary", "abacus")
     # Resolve abacus binary to absolute path (same search as mpirun below).
     import shutil
@@ -1303,7 +1310,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
             if upfs:
                 pp_map[sp] = upfs[0].name
             elif pseudo_lib:
-                found = _find_file_for_element(pseudo_lib, sp, ".upf")
+                found = _find_file_for_element(pseudo_lib, sp, ".upf", rank)
                 pp_map[sp] = found if found else f"{sp}.upf"
             else:
                 pp_map[sp] = f"{sp}.upf"
@@ -1312,7 +1319,7 @@ def task_ase_neb_script(args: list[str] | None = None, interactive: bool = True)
             if orbs:
                 orb_map[sp] = orbs[0].name
             elif orbital_lib:
-                found = _find_file_for_element(orbital_lib, sp, ".orb")
+                found = _find_file_for_element(orbital_lib, sp, ".orb", rank)
                 orb_map[sp] = found if found else f"{sp}.orb"
             else:
                 orb_map[sp] = f"{sp}.orb"

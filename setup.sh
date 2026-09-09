@@ -218,18 +218,31 @@ fi
 
 # --- 4b. Library availability ---
 # Pseudopotential/orbital libraries (PP-Orb/) are NOT bundled in the git repo
-# (large + third-party redistribution licensing). A fresh clone has none, while
-# the full release tarball ships them. Hint the user instead of failing silently.
-if [ ! -d "$SCRIPT_DIR/PP-Orb" ] || [ -z "$(ls -A "$SCRIPT_DIR/PP-Orb" 2>/dev/null)" ]; then
+# (large + third-party redistribution licensing): a fresh clone only ships the
+# PP-Orb/README.md placeholder, while the full release tarball additionally
+# ships the bundled SG15 / lanthanide trees. "No libraries" therefore means no
+# actual *.upf / *.orb under PP-Orb/, not merely a non-empty directory.
+# Hint the user instead of failing silently.
+HAS_PPORB_LIBS=0
+if [ -d "$SCRIPT_DIR/PP-Orb" ] && \
+   find "$SCRIPT_DIR/PP-Orb" \( -iname '*.upf' -o -iname '*.orb' \) -print -quit 2>/dev/null | grep -q .; then
+    HAS_PPORB_LIBS=1
+fi
+
+if [ "${HAS_PPORB_LIBS}" != "1" ]; then
     echo ""
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${YELLOW}  Pseudopotential/orbital libraries (PP-Orb/) not found.${NC}"
+    echo -e "  ${YELLOW}  Pseudopotential/orbital libraries not found under PP-Orb/.${NC}"
     echo -e "  ${YELLOW}  They are NOT bundled in the git repo. Options:${NC}"
     echo -e "  ${YELLOW}    1. Download the full release tarball (abacuscopilot_v*.tar.gz)${NC}"
-    echo -e "  ${YELLOW}       from the GitHub Releases page — it contains PP-Orb/ — and${NC}"
-    echo -e "  ${YELLOW}       re-run ./setup.sh from that extracted directory; or${NC}"
-    echo -e "  ${YELLOW}    2. Place your SG15 / lanthanide UPF + orbital files under${NC}"
-    echo -e "  ${YELLOW}       PP-Orb/ yourself.${NC}"
+    echo -e "  ${YELLOW}       from the GitHub Releases page — it ships PP-Orb/ with the${NC}"
+    echo -e "  ${YELLOW}       default SG15 (+ lanthanide) libraries — and re-run${NC}"
+    echo -e "  ${YELLOW}       ./setup.sh from that extracted directory; or${NC}"
+    echo -e "  ${YELLOW}    2. Drop your own UPF + orbital library folders under${NC}"
+    echo -e "  ${YELLOW}       PP-Orb/ (each top-level folder is auto-detected). See${NC}"
+    echo -e "  ${YELLOW}       PP-Orb/README.md in the package root for details; or${NC}"
+    echo -e "  ${YELLOW}    3. Register an external series (e.g. ABACUS-APNS-PPORBs-v1)${NC}"
+    echo -e "  ${YELLOW}       under libraries.families in ~/.abacuscopilot/config.yaml${NC}"
     echo -e "  ${YELLOW}  AbacusCopilot still installs and runs without them, but warns${NC}"
     echo -e "  ${YELLOW}  when generating INPUT/STRU for elements it cannot resolve.${NC}"
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

@@ -21,9 +21,13 @@
 #      verified the new version, then delete).
 #   3. Extract the new tarball to the SAME path (so the editable link still
 #      points at it).
-#   4. Preserve scripts/bader/bader.x — the tarball deliberately excludes the
+#   4. Restore extra libraries the user had dropped into the old install's
+#      PP-Orb/ — the release tarball ships only the bundled default series
+#      (SG15 + lanthanides), so external series downloaded by hand (e.g.
+#      Dojo-NC-FR, ABACUS-APNS-PPORBs-v1) are merged back from the backup.
+#   5. Preserve scripts/bader/bader.x — the tarball deliberately excludes the
 #      platform binary; it would otherwise be lost on a full dir swap.
-#   5. Refresh pip metadata with an offline reinstall, verify the version.
+#   6. Refresh pip metadata with an offline reinstall, verify the version.
 #
 # Notes:
 #   - `~/.abacuscopilot/config.yaml` lives outside the source dir → survives.
@@ -124,7 +128,32 @@ if [ "$PARENT/$TOPDIR" != "$PKG_ROOT" ]; then
     mv "$PARENT/$TOPDIR" "$PKG_ROOT"
 fi
 
-# ---- 6. Preserve platform-compiled Bader binary ------------------------------
+# ---- 6. Restore extra libraries the user dropped into the old PP-Orb/ --------
+# The release tarball deliberately ships only the bundled default series
+# (SG15 + lanthanides + PP-Orb/README.md). Any external family the user
+# downloaded into the previous install's PP-Orb/ (e.g. Dojo-NC-FR for the
+# library-family auto-detection, ABACUS-APNS-PPORBs-v1, custom dirs) is NOT in
+# the new release — merge it back from the backup. Only top-level entries that
+# are MISSING from the new PP-Orb/ are copied, so the bundled SG15 / lanthanide
+# trees that ship in the tarball stay authoritative (never overwritten or
+# duplicated by an older backup copy).
+if [ -d "$BACKUP/PP-Orb" ]; then
+    RESTORED=0
+    for entry in "$BACKUP"/PP-Orb/*; do
+        [ -e "$entry" ] || continue
+        name="$(basename "$entry")"
+        if [ ! -e "$PKG_ROOT/PP-Orb/$name" ]; then
+            mkdir -p "$PKG_ROOT/PP-Orb"
+            cp -a "$entry" "$PKG_ROOT/PP-Orb/$name"
+            RESTORED=$((RESTORED + 1))
+        fi
+    done
+    if [ "$RESTORED" -gt 0 ]; then
+        echo -e "        ${GREEN}✓${NC} restored ${RESTORED} extra PP-Orb library/libraries from the old install"
+    fi
+fi
+
+# ---- 7. Preserve platform-compiled Bader binary ------------------------------
 if [ -x "$BACKUP/scripts/bader/bader.x" ]; then
     mkdir -p "$PKG_ROOT/scripts/bader"
     cp -f "$BACKUP/scripts/bader/bader.x" "$PKG_ROOT/scripts/bader/bader.x"
@@ -132,7 +161,7 @@ if [ -x "$BACKUP/scripts/bader/bader.x" ]; then
     echo -e "        ${GREEN}✓${NC} preserved platform bader binary"
 fi
 
-# ---- 7. Refresh editable pip registration ------------------------------------
+# ---- 8. Refresh editable pip registration ------------------------------------
 cd "$PKG_ROOT"
 if [ "$INSTALL_DEPS" = "1" ]; then
     echo -e "  Installing with dependencies (needs a reachable PyPI mirror)..."
@@ -142,7 +171,7 @@ else
     conda run -n "$ENV_NAME" pip install -e . --no-build-isolation --no-deps --upgrade
 fi
 
-# ---- 8. Verify ---------------------------------------------------------------
+# ---- 9. Verify ---------------------------------------------------------------
 echo -e "  Verifying..."
 VER="$(cd "$PKG_ROOT" && conda run -n "$ENV_NAME" python -c \
   "import abacuscopilot; print('v' + abacuscopilot.__version__)" 2>&1 || echo "unknown")"

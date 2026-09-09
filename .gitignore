@@ -16,8 +16,10 @@ build/
 # Test data
 abacuscopilot/test/
 
-# Large library files (auto-detected by config under PP-Orb/)
-PP-Orb/
+# Large library files (auto-detected by config under PP-Orb/).
+# Keep the placeholder guide tracked; ignore the actual library trees.
+PP-Orb/*
+!PP-Orb/README.md
 
 # Bundled Bader build artifacts (source is in scripts/bader/bader/)
 scripts/bader/bader/*.o

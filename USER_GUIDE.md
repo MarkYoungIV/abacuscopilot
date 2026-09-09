@@ -1,6 +1,6 @@
 # AbacusCopilot 使用指南
 
-> **版本**: v0.1.34b (2026-09-06)  
+> **版本**: v0.1.35 (2026-09-08)  
 > **开发者**: Xu Yang (xuyangmark@foxmail.com)、Rong-yu Zhang  
 > **简介**: AbacusCopilot 是 ABACUS DFT 软件的前后处理 CLI 工具包，灵感来源于 VASPKIT。
 
@@ -61,12 +61,43 @@ abacuscopilot
 ```yaml
 libraries:
   # 支持单个目录或目录列表(按序查找,自动检测 PP-Orb/ 下的库,失效路径自动剔除)
+  # 这两个列表是“当前生效”的目录:当你在下面选定某个系列(family)时会自动重指。
   pseudo_library:
     - /path/to/pseudopotentials
     - /path/to/lanthanides
   orbital_library:
     - /path/to/orbitals
     - /path/to/lanthanides
+
+  # 当前生效的赝势/轨道“系列”: sg15(默认) | apns | apns/<variant>
+  # | dojoncfr | dojoncfr/<sz|dzp|tzdp> | custom。
+  # 在 INPUT / 全计算配置流程中交互选择,持久化为全局默认(可随时切回 SG15)。
+  family: sg15
+
+  # 当某系列把“同一套基组”按多个截断半径发行时(如 Dojo-NC-FR 每个 tier
+  # 提供 6-12 au),选哪个 rcut 副本。交互选择时会被问一次,值持久化在这里;
+  # 仅 dojoncfr 系列生效。
+  #   "7"   (默认,推荐) 最接近内置 SG15 轨道通行的 7 au
+  #   "min"              最小 rcut(最快/最紧凑)
+  #   "max"              最大 rcut(最完备/最接近平面波极限)
+  rcut_policy: "7"
+
+  # 用户自配的外部系列(不打进软件包)。把你自己下载的目录填到下面
+  # (或让 INPUT 的“库家族”向导帮你填写),生成文件时选该系列即可。
+  # abacuscopilot 不会跨系列混用文件。
+  families:
+    # apns:  # ABACUS-APNS-PPORBs-v1
+    #   pseudo_dir: /path/to/ABACUS-APNS-PPORBs-v1/apns-pseudopotentials-v1
+    #   orbital_dirs:
+    #     efficiency: /path/to/.../apns-orbitals-efficiency-v1
+    #     precision:  /path/to/.../apns-orbitals-precision-v1
+    #
+    # dojoncfr:  # Dojo-NC-FR(全相对论 NC 赝势+轨道, 用于 SOC)
+    #   pseudo_dir: /path/to/Dojo-NC-FR/Pseudopotential
+    #   orbital_dirs:  # 三个 tier(SZ/DZP/TZDP)共用一个 Orbitals_v2.0 根目录
+    #     sz:   /path/to/Dojo-NC-FR/Orbitals_v2.0
+    #     dzp:  /path/to/Dojo-NC-FR/Orbitals_v2.0
+    #     tzdp: /path/to/Dojo-NC-FR/Orbitals_v2.0
 paths:
   abacus_binary: abacus
   mpirun: mpirun
@@ -80,9 +111,30 @@ defaults:
 
 赝势/轨道库放在项目根目录 `PP-Orb/` 下(如 `SG15-Version1p0_Pseudopotential`、
 `SG15-Version1p0__StandardOrbitals-Version2p0`、`lanthanides-f--core.icmod1`),
-首次运行自动检测。文件名大小写不敏感,容忍 `Sm3+_…` 这种带价态前缀的命名;
-库支持递归查找(APNS 镧系包的 `{元素}/{基组}/` 嵌套布局可直接用)。当一个元素
-有多个轨道时默认优先 DZP 基组 `4s2p2d1f` @ 7 au。
+首次运行自动检测。`PP-Orb/` 内附 `README.md`:把你的库(含 `*.upf` / `*.orb` 的
+顶层文件夹)整体放进去即可被自动检测——发布版 tarball 会随包内置 SG15 默认库,
+git 仓库只保留这份说明文件。文件名大小写不敏感,容忍 `Sm3+_…` 这种带价态前缀的命名,
+也支持 APNS 里 Hf/Os 的半芯命名 `Hf-sp.PD04.PBE.UPF` / `Os-sp.PD04.PBE.UPF`
+(`-sp` 分隔符)。库支持递归查找(APNS 镧系包的 `{元素}/{基组}/` 嵌套布局可直接用)。
+当一个元素有多个轨道时,按所在系列取**确定性默认档**: SG15 优先 DZP `4s2p2d1f` @
+7 au;ABACUS-APNS 的 `efficiency` 取更小 rcut(Cs→`10au`),`precision` 取最完备基组
+(B→`4s4p3d2f`,K/Cs/Na/Rb→`5s4p3d2f`,Sb→`4s4p4d3f2g`);Dojo-NC-FR 尊重所选
+tier(`family: dojoncfr/<tier>`),只在对应 `{元素}_{SZ|DZP|TZDP}` 子目录里查找,
+某 tier 缺失时**绝不**静默拿其它 tier 顶替;同一 tier 内默认取最接近 7 au 的 rcut
+(DZP Hf→`Hf_DZP/Hf_gga_7au_100Ry_4s2p2d1f.orb`)。由于 Dojo 把同一基组按多个
+rcut 发行,选择 Dojo 家族时会被问一句“用哪个 rcut 副本”——选择结果存为
+`libraries.rcut_policy`(`"7"`|`"min"`|`"max"`,见上),7 au 那档标为推荐。
+
+**外部库系列(如 ABACUS-APNS-PPORBs-v1、Dojo-NC-FR)。** 其它系列**不随软件包分发**。
+把下载好的目录登记到 `libraries.families.<id>`(见上,或交给向导填写),然后在 INPUT /
+全计算配置流程开头的“赝势/轨道库家族”提示里选择——默认回车保持 SG15(内置),选中后
+该选择持久化为全局默认,可随时切回。**Dojo-NC-FR** 提供全相对论(NC,`relativistic="full"`,
+`has_so=1`)赝势及配套轨道——做自旋轨道耦合(SOC,`lspinorb 1`)就该用它;普通非 SOC
+计算同样可用(ABACUS 会自动退化为标量相对论)。当生效的是已登记的外部系列而某元素在其
+库中缺失时,会**报错终止并提示换用其它系列**(绝不跨系列混用文件);SG15 下仍沿用原有
+的黄字软提醒。即使把该系列的目录放在 `PP-Orb/` 下(比如本地 `ABACUS-APNS-PPORBs-v1`
+拷贝),凡是登记在 `libraries.families` 里的目录都会被自动从 SG15 检测中**排除**——
+切回 SG15 绝不会混入其它系列。
 
 ---
 
@@ -154,6 +206,14 @@ abacuscopilot --clean         # 清理目录 (保留 STRU/INPUT/KPT)
 ## 5. INPUT 文件生成
 
 任务号 101–109，放在 `INPUT` 菜单下。
+
+> **库系列选择。** 交互式生成 INPUT (101–109) 时，开头会询问"赝势/轨道库家族"
+> (当前 SG15 内置)。回车保持当前系列;输入序号可切换到已在 config
+> `libraries.families` 登记的其它系列 (如 ABACUS-APNS-PPORBs-v1——选中后再选
+> efficiency/precision 轨道档;Dojo-NC-FR——SOC 用,选中后再选 SZ/DZP/TZDP)。
+> 选择持久化为全局默认，可随时切回 SG15。
+> 若当前系列缺少某元素，自动补文件会**报错终止**并建议换系列 (绝不跨库混用);
+> SG15 下仍为黄字软提醒。详见 §1。
 
 ### 101 — SCF INPUT
 
@@ -910,6 +970,29 @@ libraries:
   orbital_library:
     - /home/user/Orb/SG15_StandardOrbitals_v2.0
     - /home/user/PP/lanthanides-f--core.icmod1
+
+  # 当前生效的库“系列”: sg15(默认, 内置) | apns | apns/<variant>
+  # | dojoncfr | dojoncfr/<sz|dzp|tzdp> | custom
+  family: sg15
+
+  # 同一套基组有多个 rcut 副本时(如 Dojo-NC-FR 每 tier 6-12 au)选哪个:
+  # "7"(默认/推荐)| "min" | "max"。仅 dojoncfr 生效。
+  rcut_policy: "7"
+
+  # 用户自备的外部系列(不随包分发); 也可在 INPUT 向导里选择并自动填入
+  families:
+    # apns:  # ABACUS-APNS-PPORBs-v1
+    #   pseudo_dir: /path/to/ABACUS-APNS-PPORBs-v1/apns-pseudopotentials-v1
+    #   orbital_dirs:
+    #     efficiency: /path/to/.../apns-orbitals-efficiency-v1
+    #     precision:  /path/to/.../apns-orbitals-precision-v1
+    #
+    # dojoncfr:  # Dojo-NC-FR(全相对论 NC 赝势+轨道, 用于 SOC)
+    #   pseudo_dir: /path/to/Dojo-NC-FR/Pseudopotential
+    #   orbital_dirs:  # SZ/DZP/TZDP 共用一个 Orbitals_v2.0 根目录
+    #     sz:   /path/to/Dojo-NC-FR/Orbitals_v2.0
+    #     dzp:  /path/to/Dojo-NC-FR/Orbitals_v2.0
+    #     tzdp: /path/to/Dojo-NC-FR/Orbitals_v2.0
 
 user_presets: {}
 ```

@@ -3,6 +3,8 @@
 import numpy as np
 
 from abacuscopilot.core.models import Atom, Structure
+from abacuscopilot.preprocessing import input_tasks as it
+from abacuscopilot.preprocessing import stru_tasks as st
 from abacuscopilot.preprocessing.stru_tasks import _write_stru_bare
 
 
@@ -125,3 +127,125 @@ END
         pos = atoms.get_positions()
         # bounding box centered at the box center (7.5, 7.5, 7.5)
         assert np.allclose((pos.min(axis=0) + pos.max(axis=0)) / 2.0, 7.5, atol=1e-6)
+
+
+class _FullCalcConsole:
+    def __init__(self):
+        self.out: list[str] = []
+
+    def print(self, *args, **kwargs):
+        self.out.append(" ".join(str(a) for a in args))
+
+
+class _FullCalcAnswers:
+    """Pop answers for _prompt_choice in call order; else use default."""
+
+    def __init__(self, choices):
+        self.choices = list(choices)
+
+    def choice(self, console, question, options, default):
+        return self.choices.pop(0) if self.choices else default
+
+
+class TestFullCalcSharedInput:
+    """Full-calc (201/202/207) must route per-calculation questions AND the
+    post-INPUT pipeline through the shared input_tasks machinery, so its INPUT
+    is consistent with running the matching INPUT-module task."""
+
+    def test_relax_default_pbe_calls_auto_prepare(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        console = _FullCalcConsole()
+        # basis, calc, server; XC/D3 fall back to defaults → PBE + No.
+        a = _FullCalcAnswers(
+            ["lcao", "relax (atoms only)", "CPU (genelpa)"]
+        )
+        monkeypatch.setattr(it, "_prompt_choice", a.choice)
+        monkeypatch.setattr(
+            it, "_prompt",
+            lambda c, q, default=None: default,
+        )
+
+        captured: dict = {}
+
+        def _fake_auto_prepare(console_, params, interactive=True):
+            captured["params"] = params
+
+        monkeypatch.setattr(it, "_auto_prepare_files", _fake_auto_prepare)
+
+        st._run_full_calculation_setup(console, interactive=True)
+
+        assert "params" in captured
+        params = captured["params"]
+        assert params.calculation == "relax"
+        assert params.basis_type == "lcao"
+        # Default PBE → no functional override; vdw stays none.
+        assert params.dft_functional == "pbe"
+        assert params.vdw_method == "none"
+        assert "dft_functional" not in params.extras.get("_template_keys", [])
+
+        # INPUT must NOT carry an active dft_functional line (ABACUS PBE default),
+        # but must keep the pbesol hint comment.
+        input_text = (tmp_path / "INPUT").read_text()
+        active = [ln for ln in input_text.splitlines() if ln.startswith("dft_functional")]
+        assert active == []
+        assert "#dft_functional" in input_text
+
+    def test_relax_pbesol_writes_override(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        console = _FullCalcConsole()
+        # Explicit PBEsol, D3 default No.
+        a = _FullCalcAnswers(
+            ["lcao", "relax (atoms only)", "CPU (genelpa)", "PBEsol", "No"]
+        )
+        monkeypatch.setattr(it, "_prompt_choice", a.choice)
+        monkeypatch.setattr(
+            it, "_prompt",
+            lambda c, q, default=None: default,
+        )
+
+        captured: dict = {}
+
+        def _fake_auto_prepare(console_, params, interactive=True):
+            captured["params"] = params
+
+        monkeypatch.setattr(it, "_auto_prepare_files", _fake_auto_prepare)
+
+        st._run_full_calculation_setup(console, interactive=True)
+
+        params = captured["params"]
+        assert params.dft_functional == "pbesol"
+        assert "dft_functional" in params.extras.get("_template_keys", [])
+
+        # INPUT carries an active pbesol line; the pbesol hint is dropped.
+        input_text = (tmp_path / "INPUT").read_text()
+        active = [ln for ln in input_text.splitlines() if ln.startswith("dft_functional")]
+        assert active and active[0].endswith("pbesol")
+        assert "#dft_functional" not in input_text
+
+    def test_md_branch_dispatches_to_md_thermo(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        console = _FullCalcConsole()
+        # basis, calc=MD, server, then MD ensemble default nvt.
+        a = _FullCalcAnswers(
+            ["lcao", "MD", "CPU (genelpa)"]
+        )
+        monkeypatch.setattr(it, "_prompt_choice", a.choice)
+        monkeypatch.setattr(
+            it, "_prompt",
+            lambda c, q, default=None: default,
+        )
+
+        captured: dict = {}
+
+        def _fake_auto_prepare(console_, params, interactive=True):
+            captured["params"] = params
+
+        monkeypatch.setattr(it, "_auto_prepare_files", _fake_auto_prepare)
+
+        st._run_full_calculation_setup(console, interactive=True)
+
+        params = captured["params"]
+        assert params.calculation == "md"
+        assert params.md_type == "nvt"
+        assert params.md_nstep == 10000
+        assert params.md_dt == 1.0

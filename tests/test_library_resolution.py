@@ -36,6 +36,36 @@ class TestMatcherNaming:
         assert _find_file_for_element(str(tmp_path), "Sm", ".upf") is None
 
 
+class TestMatcherHyphenNames:
+    """ABACUS-APNS names Hf/Os with a '-sp' semicore marker, e.g.
+    'Hf-sp.PD04.PBE.UPF'.  The element prefix must allow '-', and a short
+    element (O) must never match a longer one (Os)."""
+
+    def test_hafnium_sp_semicore_upf(self, tmp_path):
+        (tmp_path / "Hf-sp.PD04.PBE.UPF").write_text("dummy")
+        assert _find_file_for_element(str(tmp_path), "Hf", ".upf") == \
+            "Hf-sp.PD04.PBE.UPF"
+
+    def test_osmium_sp_semicore_upf(self, tmp_path):
+        (tmp_path / "Os-sp.PD04.PBE.UPF").write_text("dummy")
+        assert _find_file_for_element(str(tmp_path), "Os", ".upf") == \
+            "Os-sp.PD04.PBE.UPF"
+
+    def test_oxygen_does_not_match_osmium(self, tmp_path):
+        """O must not resolve to an Os file (anchor + separator class)."""
+        (tmp_path / "Os-sp.PD04.PBE.UPF").write_text("dummy")
+        assert _find_file_for_element(str(tmp_path), "O", ".upf") is None
+
+    def test_hyphen_variant_survives_sg15_tiebreak(self, tmp_path):
+        """Even under the default (sg15) rank, the lone Hf '-sp' file is found."""
+        (tmp_path / "Hf-sp.PD04.PBE.UPF").write_text("dummy")
+        (tmp_path / "Si_ONCV_PBE-1.0.upf").write_text("dummy")
+        assert _find_file_for_element(str(tmp_path), "Hf", ".upf") == \
+            "Hf-sp.PD04.PBE.UPF"
+        assert _find_file_for_element(str(tmp_path), "Si", ".upf") == \
+            "Si_ONCV_PBE-1.0.upf"
+
+
 class TestMatcherMultipleDirs:
     def test_searches_dir_list_in_order(self, tmp_path):
         d1 = tmp_path / "sg15"
