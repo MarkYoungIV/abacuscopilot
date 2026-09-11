@@ -753,6 +753,19 @@ abacuscopilot -task 1102   # 周期双窗口宏观平均法功函数
 # --period 可指定平滑周期（Å）；默认使用 c 轴长度的四分之一
 ```
 
+### 真实 ABACUS 输出验证
+
+仓库提供了一个不携带大体积计算结果的可选端到端测试。准备一个已经完成的
+ABACUS SCF 目录（需要 `OUT.ABACUS/ElecStaticPot.cube` 和
+`OUT.ABACUS/running_scf.log`），然后设置目录并运行：
+
+```bash
+set ABACUS_WORKFUNC_CASE=D:\path\to\completed_scf
+python -m pytest -q tests/test_workfunc_real_case.py
+```
+
+该测试会同时检查原始 cube 真空能级路径和 1102 周期宏观平均路径；未设置环境变量时自动跳过。
+
 ---
 
 ## 16. 力学性质
