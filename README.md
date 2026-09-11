@@ -103,8 +103,8 @@ Configures pseudopotential paths, orbital directories, ABACUS binary location, a
 | 1001 | 1D Planar Avg Charge | Planar-averaged charge density |
 | 1002 | Export Cube/XSF | Export for VESTA visualization |
 | 1003 | Diff. Charge Density | Δρ = ρ_AB − ρ_A − ρ_B |
-| 1101 | Work Function | ⏳ 待开发 (coming soon) — Φ = V_vacuum − E_Fermi |
-| 1102 | Macroscopic Avg | ⏳ 待开发 (coming soon) — Double-averaged potential |
+| 1101 | Work Function | Work function from `E_vacuum.out` and final SCF `E_Fermi` |
+| 1102 | Macroscopic Avg | Periodic double-averaged potential and work function |
 | 1201 | Elastic Constants | Parse elastic tensor, VRH moduli |
 | 1202 | EOS Fitting | Birch-Murnaghan equation of state |
 | 1301 | Mulliken Analysis | Mulliken population |

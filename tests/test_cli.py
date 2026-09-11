@@ -194,14 +194,11 @@ class TestTaskDiscovery:
             "Band Structure", "Batch", "Charge Density", "DOS/PDOS",
             "INPUT", "KPT", "Mechanics", "Population",
             "SCF Analysis", "STRU", "Structure Editing", "Symmetry",
-            "System",
+            "System", "Work Function",
         ]
         for cat in expected:
             assert cat in categories, f"Category '{cat}' not found"
-        # "Work Function" is a coming-soon module (tasks 1101/1102 hidden
-        # until their functionality is verified) — it must NOT be a registered
-        # category yet, but the interactive menu still lists it as such.
-        assert "Work Function" not in categories
+        assert "Work Function" in categories
 
     def test_task_count(self):
         """At least 40 tasks are registered."""
@@ -226,6 +223,8 @@ class TestTaskDiscovery:
             1201: "Elastic Constants",
             601: "PBS Script",
             602: "SLURM Script",
+            1101: "Work Function",
+            1102: "Macroscopic Avg",
         }
         for tid, name in key_tasks.items():
             t = registry.get_task(tid)

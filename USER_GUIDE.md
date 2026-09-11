@@ -734,20 +734,22 @@ abacuscopilot -task 1003   # 差分电荷密度
 
 ## 15. 功函数
 
-> ⏳ **待开发 (coming soon)**：任务 1101–1102 功能可用性尚未验证，当前已隐藏（交互菜单进入 `11) Work Function Analysis` 会显示"此模块待开发"）。验证通过后重新开放。
-
-任务号 1101–1102（预留）。
+任务号 1101–1102 已开放。两项任务读取 ABACUS `ElecStaticPot.cube`；若目录中存在
+zstar 生成的 `E_vacuum.out`，直接使用其中的真空能级，并从 `running_scf.log`
+读取最终 `E_Fermi`，按 `Φ = V_vacuum − E_Fermi` 计算功函数。
 
 ### 1101 — Work Function
 
 ```bash
-abacuscopilot -task 1101   # 功函数计算（待开发）
+abacuscopilot -task 1101   # 功函数计算
+# 也可显式指定：--file ElecStaticPot.cube --vacuum-file E_vacuum.out --log OUT.ABACUS/running_scf.log
 ```
 
 ### 1102 — Macroscopic Avg
 
 ```bash
-abacuscopilot -task 1102   # 宏观平均法功函数（待开发）
+abacuscopilot -task 1102   # 周期双窗口宏观平均法功函数
+# --period 可指定平滑周期（Å）；默认使用 c 轴长度的四分之一
 ```
 
 ---
