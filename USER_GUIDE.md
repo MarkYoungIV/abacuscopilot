@@ -734,15 +734,16 @@ abacuscopilot -task 1003   # 差分电荷密度
 
 ## 15. 功函数
 
-任务号 1101–1102 已开放。两项任务读取 ABACUS `ElecStaticPot.cube`；若目录中存在
-zstar 生成的 `E_vacuum.out`，直接使用其中的真空能级，并从 `running_scf.log`
-读取最终 `E_Fermi`，按 `Φ = V_vacuum − E_Fermi` 计算功函数。
+任务号 1101–1102 已开放。两项任务直接读取 ABACUS 原始
+`ElecStaticPot.cube`：从 cube 中的原子坐标识别最大的周期性无原子真空间隙，
+在排除表面邻近区域后得到 `V_vacuum`；再从 `running_scf.log` 读取最终
+`E_Fermi`，按 `Φ = V_vacuum − E_Fermi` 计算功函数。整个流程不依赖 zstar。
 
 ### 1101 — Work Function
 
 ```bash
 abacuscopilot -task 1101   # 功函数计算
-# 也可显式指定：--file ElecStaticPot.cube --vacuum-file E_vacuum.out --log OUT.ABACUS/running_scf.log
+# 也可显式指定：--file ElecStaticPot.cube --log OUT.ABACUS/running_scf.log
 ```
 
 ### 1102 — Macroscopic Avg

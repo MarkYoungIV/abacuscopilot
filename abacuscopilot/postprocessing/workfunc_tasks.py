@@ -51,45 +51,12 @@ def _find_potential_file(root: str | Path = ".") -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def _find_vacuum_file(
-    root: str | Path = ".",
-    potential_path: str | Path | None = None,
-    explicit: str | Path | None = None,
-) -> Path | None:
-    """Find zstar/ABACUS's scalar vacuum-level report.
-
-    ``E_vacuum.out`` is preferred over the two-sided diagnostic because it is
-    already a single vacuum reference suitable for ``Phi = V_vacuum - E_F``.
-    """
-    if explicit:
-        path = Path(explicit)
-        return path if path.is_file() else None
-
-    root = Path(root)
-    search_roots = []
-    if potential_path is not None:
-        potential = Path(potential_path)
-        search_roots.extend([potential.parent, potential.parent.parent])
-    search_roots.extend([root, *[p for p in root.glob("OUT.*") if p.is_dir()]])
-
-    seen: set[Path] = set()
-    for directory in search_roots:
-        directory = directory.resolve()
-        if directory in seen:
-            continue
-        seen.add(directory)
-        for name in ("E_vacuum.out", "E_vacuum_sides.out"):
-            path = directory / name
-            if path.is_file():
-                return path
-    return None
-
-
 def read_vacuum_level(filepath: str | Path) -> float | None:
-    """Read a vacuum level in eV from ``E_vacuum.out``-style text.
+    """Read a vacuum level in eV from a precomputed text override.
 
-    zstar writes ``E_VACUUM (eV) = ...``.  The parser also accepts a
-    two-sided report and returns the mean of its lower/upper plateau values.
+    The parser accepts ``E_VACUUM (eV) = ...`` and two-sided reports.  This is
+    only an explicit compatibility override; normal tasks derive the level
+    directly from the raw cube.
     """
     path = Path(filepath)
     if not path.is_file():
@@ -178,11 +145,10 @@ def read_fermi_energy(filepath: str | Path) -> float | None:
 # =============================================================================
 
 
-def read_potential_cube(filepath: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    """Read electrostatic potential from a Cube-format file.
-
-    Returns (data_3d, cell_bohr, origin) or None on failure.
-    """
+def _read_potential_cube_details(
+    filepath: str | Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """Read cube data plus atom coordinates needed for vacuum detection."""
     filepath = Path(filepath)
     if not filepath.exists():
         return None
@@ -223,6 +189,15 @@ def read_potential_cube(filepath: str | Path) -> tuple[np.ndarray, np.ndarray, n
     if data_start >= len(lines):
         return None
 
+    atom_positions = []
+    for line in lines[geometry_index + 4:data_start]:
+        parts = line.split()
+        if len(parts) >= 5:
+            try:
+                atom_positions.append([float(parts[2]), float(parts[3]), float(parts[4])])
+            except ValueError:
+                return None
+
     raw = []
     for line in lines[data_start:]:
         raw.extend(float(x) for x in line.split())
@@ -235,6 +210,21 @@ def read_potential_cube(filepath: str | Path) -> tuple[np.ndarray, np.ndarray, n
     # Gaussian/ABACUS cube data are ordered with the last grid axis varying
     # fastest.  Keeping (x, y, z) here makes the z planar average unambiguous.
     data = np.asarray(raw[:expected], dtype=float).reshape(nx, ny, nz)
+    atoms = np.asarray(atom_positions, dtype=float).reshape((-1, 3))
+    return data, cell, origin, atoms
+
+
+def read_potential_cube(filepath: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Read electrostatic potential from a Cube-format file.
+
+    Returns ``(data_3d, cell_bohr, origin)`` for compatibility with the
+    original helper.  Task 1101/1102 additionally use the internal reader's
+    atom coordinates to locate the vacuum gap directly from the raw cube.
+    """
+    result = _read_potential_cube_details(filepath)
+    if result is None:
+        return None
+    data, cell, origin, _atoms = result
     return data, cell, origin
 
 
@@ -291,6 +281,68 @@ def extract_work_function(
     }
 
 
+def _largest_periodic_gap(atom_coordinates: np.ndarray, cell_length: float) -> tuple[float, float, float] | None:
+    """Return the largest atom-free interval on a periodic one-dimensional cell."""
+    if cell_length <= 0.0 or atom_coordinates.size == 0:
+        return None
+    atoms = np.sort(np.mod(np.asarray(atom_coordinates, dtype=float), cell_length))
+    gaps = np.diff(np.append(atoms, atoms[0] + cell_length))
+    index = int(np.argmax(gaps))
+    start = float(atoms[index])
+    end = float(atoms[(index + 1) % atoms.size])
+    if index == atoms.size - 1:
+        end += cell_length
+    return start, end, float(gaps[index])
+
+
+def estimate_vacuum_level_from_cube(
+    potential_1d: np.ndarray,
+    z_axis: np.ndarray,
+    atom_z: np.ndarray,
+    cell_length: float,
+    *,
+    exclude_distance: float = 3.0,
+) -> dict[str, Any] | None:
+    """Estimate ``V_vacuum`` directly from a planar-averaged ABACUS cube.
+
+    The largest periodic atom-free gap is treated as vacuum.  Surface-adjacent
+    regions are excluded on both sides before averaging the remaining plateau,
+    which avoids assuming that the vacuum is always the last 30% of the cell.
+    """
+    potential_1d = np.asarray(potential_1d, dtype=float)
+    z_axis = np.asarray(z_axis, dtype=float)
+    gap = _largest_periodic_gap(atom_z, cell_length)
+    if gap is None:
+        return None
+    gap_start, gap_end, gap_length = gap
+    trim = max(0.0, float(exclude_distance))
+    if gap_length <= 2.0 * trim:
+        trim = 0.25 * gap_length
+    start, end = gap_start + trim, gap_end - trim
+    if end <= start:
+        return None
+
+    wrapped_z = np.mod(z_axis, cell_length)
+    if end <= cell_length:
+        mask = (wrapped_z >= start) & (wrapped_z <= end)
+    else:
+        mask = (wrapped_z >= start) | (wrapped_z <= end - cell_length)
+    indices = np.where(mask)[0]
+    if indices.size == 0:
+        return None
+    values = potential_1d[indices]
+    return {
+        "vacuum_level": float(np.mean(values)),
+        "vacuum_std": float(np.std(values)),
+        "vacuum_points": int(indices.size),
+        "vacuum_coordinate": float(np.mod(0.5 * (start + end), cell_length)),
+        "vacuum_gap_start": float(np.mod(gap_start, cell_length)),
+        "vacuum_gap_end": float(np.mod(gap_end, cell_length)),
+        "vacuum_gap_length": gap_length,
+        "vacuum_exclude": trim,
+    }
+
+
 def macroscopic_average(potential_1d: np.ndarray, window_points: int) -> np.ndarray:
     """Apply the periodic double-window macroscopic average used by 1102.
 
@@ -337,19 +389,27 @@ def _pick_path(parsed_args, args: list[str] | None, name: str, keywords: tuple[s
     return None
 
 
-def _read_profile(path: Path) -> tuple[np.ndarray, np.ndarray, float, tuple[int, int, int]] | None:
-    """Read a cube and return ``(z, planar_potential, dz, shape)`` in eV/Å."""
-    result = read_potential_cube(path)
+def _read_profile(
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray, float, tuple[int, int, int], np.ndarray, float] | None:
+    """Read a cube and return profile, atom z-coordinates, and cell length."""
+    result = _read_potential_cube_details(path)
     if result is None:
         return None
-    potential, cell, origin = result
+    potential, cell, origin, atoms = result
     nx, ny, nz = potential.shape
     cell_ang = cell * BOHR_TO_ANGSTROM
     c_length = float(np.linalg.norm(cell_ang[2]))
-    z = (origin[2] + np.linspace(0.0, cell[2, 2], nz, endpoint=False)) * BOHR_TO_ANGSTROM
+    z = np.arange(nz, dtype=float) * c_length / nz
     dz = c_length / nz
     profile = _potential_to_ev(np.mean(potential, axis=(0, 1)), path)
-    return z, profile, dz, (nx, ny, nz)
+    if atoms.size:
+        c_vector = cell[2]
+        c_norm = float(np.linalg.norm(c_vector))
+        atom_z = np.dot(atoms - origin, c_vector / c_norm) * BOHR_TO_ANGSTROM
+    else:
+        atom_z = np.empty(0, dtype=float)
+    return z, profile, dz, (nx, ny, nz), atom_z, c_length
 
 
 def _resolve_fermi(
@@ -412,7 +472,8 @@ def _plot_work_function(
     description="Compute work function from V_vacuum and the final SCF E_Fermi",
     cli_args=[
         {"name": "--file", "type": str, "default": None, "help": "Path to electrostatic potential cube file"},
-        {"name": "--vacuum-file", "type": str, "default": None, "help": "Path to E_vacuum.out"},
+        {"name": "--vacuum-file", "type": str, "default": None, "help": "Optional precomputed vacuum-level override"},
+        {"name": "--vacuum-exclude", "type": float, "default": 3.0, "help": "Distance (Å) excluded next to slab atoms"},
         {"name": "--log", "type": str, "default": None, "help": "Path to SCF running log"},
         {"name": "--fermi", "type": float, "default": None, "help": "Override E_Fermi (eV)"},
         {"name": "--no-plot", "action": "store_true", "help": "Write data without a PNG plot"},
@@ -426,18 +487,15 @@ def task_work_function(
 ) -> dict[str, Any] | None:
     """Compute ``Phi = V_vacuum - E_Fermi`` for an ABACUS slab.
 
-    When zstar has already produced ``E_vacuum.out``, that scalar is used
-    directly.  The cube is only needed for the optional planar profile/plot;
-    if the report is absent, the final vacuum fraction is retained as a
-    clearly marked fallback estimate.
+    The vacuum level is derived from the largest atom-free periodic gap in the
+    raw cube.  ``--vacuum-file`` is retained only as an explicit override for
+    users who already have an independently validated scalar reference.
     """
     console = _get_console()
     root = Path.cwd()
     output = Path(output_dir)
     pot_path = _pick_path(parsed_args, args, "file", ("POT", "ELEC", "LOCPOT")) or _find_potential_file(root)
-    vacuum_path = _find_vacuum_file(
-        root, pot_path, getattr(parsed_args, "vacuum_file", None) if parsed_args else None
-    )
+    vacuum_path = Path(parsed_args.vacuum_file) if parsed_args and parsed_args.vacuum_file else None
     fermi, log_path = _resolve_fermi(root, pot_path, parsed_args, args)
 
     console.print()
@@ -455,22 +513,32 @@ def task_work_function(
     if pot_path:
         console.print(f"  [dim]Potential file: {pot_path}[/dim]")
     if profile:
-        z_ang, planar, _dz, shape = profile
+        z_ang, planar, _dz, shape, atom_z, cell_length = profile
         console.print(f"  [bold]Grid:[/bold] {shape[0]} × {shape[1]} × {shape[2]}")
     else:
-        z_ang = planar = None
+        z_ang = planar = atom_z = cell_length = None
 
+    vacuum_info = (
+        estimate_vacuum_level_from_cube(
+            planar, z_ang, atom_z, cell_length,
+            exclude_distance=getattr(parsed_args, "vacuum_exclude", 3.0),
+        )
+        if profile and atom_z.size else None
+    )
     vacuum_level = read_vacuum_level(vacuum_path) if vacuum_path else None
-    if vacuum_level is not None:
+    if vacuum_info is not None:
+        wf = {**vacuum_info, "work_function": vacuum_info["vacuum_level"] - fermi,
+              "e_fermi": fermi, "vacuum_source": "largest atom-free gap in cube"}
+    elif vacuum_level is not None:
         source = str(vacuum_path)
         wf = {"vacuum_level": vacuum_level, "work_function": vacuum_level - fermi,
               "e_fermi": fermi, "vacuum_source": source}
     elif profile:
         fallback = extract_work_function(planar, z_ang, e_fermi=fermi, vacuum_fraction=0.3)
         wf = {**fallback, "vacuum_source": "top 30% planar-average fallback"}
-        console.print("  [yellow]E_vacuum.out not found; using top 30% planar average.[/yellow]")
+        console.print("  [yellow]Atom coordinates were unavailable; using top 30% planar average.[/yellow]")
     else:
-        console.print("[red]No readable potential cube or E_vacuum.out found.[/red]")
+        console.print("[red]No readable electrostatic-potential cube found.[/red]")
         return None
 
     console.print(f"  [bold green]Vacuum Level:[/bold green] {wf['vacuum_level']:.4f} eV")
@@ -499,7 +567,8 @@ def task_work_function(
     description="Compute a periodic double-averaged potential and work function",
     cli_args=[
         {"name": "--file", "type": str, "default": None, "help": "Path to electrostatic potential cube file"},
-        {"name": "--vacuum-file", "type": str, "default": None, "help": "Path to E_vacuum.out"},
+        {"name": "--vacuum-file", "type": str, "default": None, "help": "Optional precomputed vacuum-level override"},
+        {"name": "--vacuum-exclude", "type": float, "default": 3.0, "help": "Distance (Å) excluded next to slab atoms"},
         {"name": "--log", "type": str, "default": None, "help": "Path to SCF running log"},
         {"name": "--fermi", "type": float, "default": None, "help": "Override E_Fermi (eV)"},
         {"name": "--period", "type": float, "default": None, "help": "Averaging period in Å"},
@@ -523,14 +592,13 @@ def task_macro_avg_potential(
     if profile is None:
         console.print("[red]Could not read potential cube file.[/red]")
         return None
-    z_ang, planar, dz, shape = profile
+    z_ang, planar, dz, shape, atom_z, cell_length = profile
     fermi, log_path = _resolve_fermi(root, pot_path, parsed_args, args)
     if fermi is None:
         console.print("[red]Could not find E_Fermi in an SCF log.[/red]")
         console.print("[dim]Pass --log running_scf.log or --fermi <eV>.[/dim]")
         return None
 
-    cell_length = dz * shape[2]
     period = getattr(parsed_args, "period", None) if parsed_args is not None else None
     if period is None and interactive:
         from rich.prompt import Prompt
@@ -542,13 +610,21 @@ def task_macro_avg_potential(
     window_points = max(1, int(round(period / dz)))
     macro = macroscopic_average(planar, window_points)
 
-    vacuum_path = _find_vacuum_file(
-        root, pot_path, getattr(parsed_args, "vacuum_file", None) if parsed_args else None
+    vacuum_path = Path(parsed_args.vacuum_file) if parsed_args and parsed_args.vacuum_file else None
+    vacuum_info = (
+        estimate_vacuum_level_from_cube(
+            macro, z_ang, atom_z, cell_length,
+            exclude_distance=getattr(parsed_args, "vacuum_exclude", 3.0),
+        )
+        if atom_z.size else None
     )
     vacuum_level = read_vacuum_level(vacuum_path) if vacuum_path else None
-    if vacuum_level is None:
+    if vacuum_info is not None:
+        wf = {**vacuum_info, "work_function": vacuum_info["vacuum_level"] - fermi,
+              "e_fermi": fermi, "vacuum_source": "largest atom-free gap in macro profile"}
+    elif vacuum_level is None:
         wf = extract_work_function(macro, z_ang, e_fermi=fermi, vacuum_fraction=0.3)
-        wf["vacuum_source"] = "top 30% macroscopic-average fallback"
+        wf["vacuum_source"] = "top 30% macroscopic-average fallback (no atom coordinates)"
     else:
         wf = {"vacuum_level": vacuum_level, "work_function": vacuum_level - fermi,
               "e_fermi": fermi, "vacuum_source": str(vacuum_path)}
