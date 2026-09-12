@@ -760,7 +760,7 @@ ABACUS SCF 目录（需要 `OUT.ABACUS/ElecStaticPot.cube` 和
 `OUT.ABACUS/running_scf.log`），然后设置目录并运行：
 
 ```bash
-set ABACUS_WORKFUNC_CASE=D:\path\to\completed_scf
+export ABACUS_WORKFUNC_CASE=/path/to/completed_scf
 python -m pytest -q tests/test_workfunc_real_case.py
 ```
 
