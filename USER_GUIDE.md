@@ -734,21 +734,37 @@ abacuscopilot -task 1003   # 差分电荷密度
 
 ## 15. 功函数
 
-> ⏳ **待开发 (coming soon)**：任务 1101–1102 功能可用性尚未验证，当前已隐藏（交互菜单进入 `11) Work Function Analysis` 会显示"此模块待开发"）。验证通过后重新开放。
-
-任务号 1101–1102（预留）。
+任务号 1101–1102 已开放。两项任务直接读取 ABACUS 原始
+`ElecStaticPot.cube`：从 cube 中的原子坐标识别最大的周期性无原子真空间隙，
+在排除表面邻近区域后得到 `V_vacuum`；再从 `running_scf.log` 读取最终
+`E_Fermi`，按 `Φ = V_vacuum − E_Fermi` 计算功函数。整个流程不依赖 zstar。
 
 ### 1101 — Work Function
 
 ```bash
-abacuscopilot -task 1101   # 功函数计算（待开发）
+abacuscopilot -task 1101   # 功函数计算
+# 也可显式指定：--file ElecStaticPot.cube --log OUT.ABACUS/running_scf.log
 ```
 
 ### 1102 — Macroscopic Avg
 
 ```bash
-abacuscopilot -task 1102   # 宏观平均法功函数（待开发）
+abacuscopilot -task 1102   # 周期双窗口宏观平均法功函数
+# --period 可指定平滑周期（Å）；默认使用 c 轴长度的四分之一
 ```
+
+### 真实 ABACUS 输出验证
+
+仓库提供了一个不携带大体积计算结果的可选端到端测试。准备一个已经完成的
+ABACUS SCF 目录（需要 `OUT.ABACUS/ElecStaticPot.cube` 和
+`OUT.ABACUS/running_scf.log`），然后设置目录并运行：
+
+```bash
+set ABACUS_WORKFUNC_CASE=D:\path\to\completed_scf
+python -m pytest -q tests/test_workfunc_real_case.py
+```
+
+该测试会同时检查原始 cube 真空能级路径和 1102 周期宏观平均路径；未设置环境变量时自动跳过。
 
 ---
 
