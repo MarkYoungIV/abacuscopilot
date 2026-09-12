@@ -1,6 +1,6 @@
 # AbacusCopilot 使用指南
 
-> **版本**: v0.1.35b (2026-09-09)  
+> **版本**: v0.1.36 (2026-09-12)  
 > **开发者**: Xu Yang (xuyangmark@foxmail.com)、Rong-yu Zhang  
 > **简介**: AbacusCopilot 是 ABACUS DFT 软件的前后处理 CLI 工具包，灵感来源于 VASPKIT。
 
