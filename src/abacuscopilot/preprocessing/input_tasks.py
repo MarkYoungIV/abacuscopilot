@@ -641,7 +641,6 @@ def _auto_prepare_files(console, params: InputParams, interactive: bool = True) 
     # regardless of basis; in LCAO offer to raise ecutwfc to the highest orbital
     # cutoff (300 Ry for the APNS lanthanide NAOs).  INPUT is re-written if the
     # user confirms — it was written by the caller before species were known.
-    from abacuscopilot.core.standards import is_lcao_basis
     from abacuscopilot.preprocessing.system_tasks import (
         adjust_ecutwfc_for_f_core,
         analyze_f_core,
