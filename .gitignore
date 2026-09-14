@@ -14,12 +14,17 @@ build/
 .idea/
 
 # Test data
-abacuscopilot/test/
+src/abacuscopilot/test/
 
 # Large library files (auto-detected by config under PP-Orb/).
 # Keep the placeholder guide tracked; ignore the actual library trees.
 PP-Orb/*
 !PP-Orb/README.md
+
+# Local archive bundles of those library trees, and developer-made tarballs of
+# the whole release. Convenience copies, not source — 50 MB+ each.
+PP-Orb.7z
+/abacuscopilot_v*.tar.gz
 
 # Bundled Bader build artifacts (source is in scripts/bader/bader/)
 scripts/bader/bader/*.o

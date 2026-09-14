@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from abacuscopilot.config import release_root
 from abacuscopilot.console_utils import _get_console
 from abacuscopilot.core.constants import ANGSTROM_TO_BOHR
 from abacuscopilot.io.stru_file import read_stru
@@ -570,7 +571,7 @@ def _atom_labels(structure) -> list[str]:
 
 def _locate_bader() -> Path | None:
     """Locate the bundled (or system) bader.x binary."""
-    pkg_root = Path(__file__).resolve().parent.parent.parent
+    pkg_root = release_root()
     candidates = [
         pkg_root / "scripts" / "bader" / "bader.x",
         Path("scripts") / "bader" / "bader.x",

@@ -2,11 +2,14 @@
 
 A *family* is a named set of pseudopotential + numerical-orbital directories
 that ABACUS should use for a calculation.  The bundled ``SG15`` (+ lanthanide)
-libraries stay the default and are auto-detected from ``PP-Orb/``; additional
-series such as ``ABACUS-APNS-PPORBs-v1`` are **not** bundled — the user points
-to their own downloaded directories via ``config.yaml``
-(``libraries.families.<id>.pseudo_dir`` etc.) and selects the series from the
-interactive INPUT flow.
+series stay the default and are auto-detected from ``PP-Orb/`` — one top-level
+folder per series, per the layout tables in :mod:`abacuscopilot.config`;
+additional series such as ``ABACUS-APNS-PPORBs-v1`` are **not** bundled — the
+user drops their downloaded directory under ``PP-Orb/`` (which auto-registers it
+here) or points to it via ``config.yaml``
+(``libraries.families.<id>.pseudo_dir`` etc.), and selects the series from the
+interactive INPUT flow.  A folder belonging to one of the known external series
+is never folded into the bundled lists, registered or not.
 
 Known series are registered in :data:`KNOWN_FAMILIES`.  Adding a future series
 only requires a new entry here (a label, its config path keys, and — when the
@@ -25,7 +28,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from abacuscopilot.config import save_config
+from abacuscopilot.config import (
+    _EXTERNAL_SERIES_LAYOUT,
+    release_root,
+    save_config,
+)
 from abacuscopilot.core.standards import is_lcao_basis
 
 # ---------------------------------------------------------------------------
@@ -108,29 +115,18 @@ KNOWN_FAMILIES: dict[str, FamilySpec] = {
 }
 
 
-# PP-Orb/ drop-in layout for each registered family: the top folder a user's
-# own copy of the series lives under when dropped into the package PP-Orb/
-# directory, plus the relative sub-paths to the pseudopotential and (per
-# variant) orbital roots inside it.  Used to auto-register a series that is
-# already physically present, instead of prompting for its paths by hand.
-#   key: family id -> (top folder, pseudo sub-path, {variant: orbital sub-path})
-# A shared orbital root (Dojo keeps SZ/DZP/TZDP all under one Orbitals_v2.0)
-# simply repeats the same sub-path for every variant.
-_PP_ORB_LAYOUT: dict[str, tuple[str, str, dict[str, str]]] = {
-    "apns": (
-        "ABACUS-APNS-PPORBs-v1",
-        "apns-pseudopotentials-v1",
-        {
-            "efficiency": "apns-orbitals-efficiency-v1",
-            "precision": "apns-orbitals-precision-v1",
-        },
-    ),
-    "dojoncfr": (
-        "Dojo-NC-FR",
-        "Pseudopotential",
-        {"sz": "Orbitals_v2.0", "dzp": "Orbitals_v2.0", "tzdp": "Orbitals_v2.0"},
-    ),
-}
+#: PP-Orb/ drop-in layout for each registered family — the top folder a user's
+#: own copy of the series lives under, plus the sub-paths to its pseudo and
+#: (per variant) orbital roots.  Drives :func:`_auto_detect_pp_orb` below, which
+#: auto-registers a series that is already physically present instead of
+#: prompting for its paths by hand.
+#:
+#: It lives in :mod:`abacuscopilot.config` (as ``_EXTERNAL_SERIES_LAYOUT``)
+#: because the *detection* half of the same knowledge — "a known series folder
+#: is never part of the bundled SG15 lists, registered or not" — is needed by
+#: ``config._detect_library_dirs``, and config cannot import this module at that
+#: point without a cycle.  The alias keeps the name this module's readers know.
+_PP_ORB_LAYOUT = _EXTERNAL_SERIES_LAYOUT
 
 
 def _pp_orb_root() -> Path:
@@ -140,7 +136,7 @@ def _pp_orb_root() -> Path:
     the developer's real PP-Orb/ physically contains Dojo-NC-FR / APNS, which
     would otherwise leak into tests that must exercise the prompt path.
     """
-    return Path(__file__).resolve().parent.parent / "PP-Orb"
+    return release_root() / "PP-Orb"
 
 
 def _auto_detect_pp_orb(spec: FamilySpec) -> dict[str, Any] | None:
@@ -216,7 +212,7 @@ def is_user_family(family: str) -> bool:
 def family_label(family: str) -> str:
     """Human label for a family id, e.g. ``apns/precision`` -> APNS label + variant."""
     if not family or family == "sg15":
-        return "SG15 (bundled default)"
+        return "SG15-Version1p0 (bundled default)"
     if family == "custom":
         return "custom (hand-configured lists)"
     head, _, variant = family.partition("/")
@@ -228,15 +224,109 @@ def family_label(family: str) -> str:
     return spec.label
 
 
+#: Display label for each *bundled* series.  They are not in KNOWN_FAMILIES
+#: (nothing to register — they ship with the package), so family_label() has a
+#: label for sg15 only; this covers the rest.
+_BUNDLED_SERIES_LABELS = {
+    "sg15": "SG15-Version1p0 (bundled default)",
+    "lanthanides": "lanthanides-f--core.icmod1",
+}
+
+
+def series_with_file(element: str, ext: str, config: dict) -> list[tuple[str, str]]:
+    """``(series label, filename)`` for each series that can supply *element*.
+
+    Advises only — nothing here switches anything.  When a species file cannot
+    be resolved from the library lists in effect, this names the series that
+    does have it, so the warning can say where to look instead of leaving the
+    user to hunt through PP-Orb/ (the case that prompted it: SG15 has no La
+    orbital, and the only series that has one is ABACUS-APNS-PPORBs-v1).
+
+    Directories already in the active lists are skipped: naming a series whose
+    files were just searched and came up empty would be a lie.  A series is
+    searched where it actually is — under PP-Orb/ if its folder sits there
+    (auto-registration would find it), otherwise at its registered config path.
+
+    The requested extension matters: a series can have the pseudopotential and
+    not the orbital (that is exactly the La case), so a hit for ``.upf`` says
+    nothing about ``.orb``.
+    """
+    from abacuscopilot.config import _BUNDLED_SERIES_LAYOUT, _bundled_series_root
+    from abacuscopilot.preprocessing.system_tasks import (
+        _as_dir_list,
+        _find_file_for_element,
+        orbital_rank_mode,
+    )
+
+    libs = config.get("libraries", {})
+    key = "pseudo_library" if ext == ".upf" else "orbital_library"
+    active = {_same_dir(d) for d in _as_dir_list(libs.get(key, ""))}
+
+    hits: list[tuple[str, str]] = []
+    tried: set[str] = set()
+
+    def probe(directory: Any, label: str, rank: str) -> bool:
+        if not isinstance(directory, str) or not directory:
+            return False
+        shown = _same_dir(directory)
+        if shown in active or shown in tried:
+            return False
+        tried.add(shown)
+        name = _find_file_for_element(directory, element, ext, rank)
+        if name is None:
+            return False
+        hits.append((label, name))
+        return True
+
+    # 1. The bundled series (SG15, and the lanthanide supplement that fills the
+    #    4f gap).  Both are always worth naming — a job on SG15 can still be
+    #    short of an orbital that only the supplement carries, and the reverse.
+    for fid in _BUNDLED_SERIES_LAYOUT:
+        root = _bundled_series_root(_pp_orb_root(), fid, ext)
+        probe(str(root) if root else None,
+              _BUNDLED_SERIES_LABELS.get(fid, fid),
+              orbital_rank_mode(fid, config))
+
+    # 2. Registered external series, in registry order.
+    for fid, spec in KNOWN_FAMILIES.items():
+        detected = _auto_detect_pp_orb(spec) or {}
+        if ext == ".upf":
+            # A family's pseudopotential root is the same for every variant.
+            probe(detected.get("pseudo_dir") or _nested(config, spec.pseudo_key),
+                  spec.label, "sg15")
+            continue
+        # Orbitals: PP-Orb first, then any manually registered variant path.
+        dirs: dict[str, str] = dict(detected.get("orbital_dirs") or {})
+        for vid, variant in spec.variants.items():
+            path = _nested(config, variant.orbital_key)
+            if isinstance(path, str) and path:
+                dirs.setdefault(vid, path)
+        for vid in spec.variants:
+            # The first variant is the interactive default (Enter), so probing
+            # in insertion order reports the file the user would actually get;
+            # each variant gets its own rank, since they are separate dirs.
+            if probe(dirs.get(vid), spec.label,
+                     orbital_rank_mode(f"{fid}/{vid}", config)):
+                break
+
+    return hits
+
+
+def _same_dir(path: Any) -> str:
+    """Canonical key for comparing two library directories."""
+    return str(Path(path).expanduser().resolve())
+
+
 def hint_no_library_dirs(console, config: dict) -> None:
     """Point the user at PP-Orb/ when no pseudopotential/orbital library is usable.
 
     Fires only when the active library lists are empty AND no external series is
     registered (so no family path could cover the structure either).  Guides the
     user to drop their own ``*.upf`` / ``*.orb`` library folders under
-    ``PP-Orb/`` (each top-level folder there is auto-detected; see the shipped
-    ``PP-Orb/README.md``), or to register an external series such as
-    ``ABACUS-APNS-PPORBs-v1`` under ``libraries.families`` and pick it below.
+    ``PP-Orb/`` (each folder there holding those files is auto-detected; see the
+    shipped ``PP-Orb/README.md``), or to pick an external series such as
+    ``ABACUS-APNS-PPORBs-v1`` from the list below — a series folder that is
+    already under ``PP-Orb/`` registers its own paths.
     """
     from abacuscopilot.config import _registered_family_dirs
 
@@ -251,10 +341,11 @@ def hint_no_library_dirs(console, config: dict) -> None:
     console.print("  [yellow]No pseudopotential/orbital libraries are available yet.[/yellow]")
     console.print("    Drop library folders (containing *.upf / *.orb) under:")
     console.print(f"      [bold]{pp_orb}[/bold]")
-    console.print("    Each top-level folder there is auto-detected (searched recursively) —")
-    console.print("    see PP-Orb/README.md in the package root.  Or register an external")
-    console.print("    series (e.g. ABACUS-APNS-PPORBs-v1) under libraries.families in the")
-    console.print("    config and choose it from the list below.")
+    console.print("    Every folder there holding *.upf / *.orb is auto-detected (searched")
+    console.print("    recursively) — see PP-Orb/README.md in the package root.  A known")
+    console.print("    series folder (e.g. Dojo-NC-FR, ABACUS-APNS-PPORBs-v1) is never")
+    console.print("    folded into the bundled libraries: choose it from the list below and")
+    console.print("    it registers its own paths.")
     console.print()
 
 
@@ -358,7 +449,7 @@ def pick_library_family(
     # user where to drop their own libraries before listing the choices.
     hint_no_library_dirs(console, config)
 
-    options: list[tuple[str, str]] = [("sg15", "SG15 (bundled default)")]
+    options: list[tuple[str, str]] = [("sg15", "SG15-Version1p0 (bundled default)")]
     options += [
         (fid, _option_text(config, fid, spec)) for fid, spec in KNOWN_FAMILIES.items()
     ]

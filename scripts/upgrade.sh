@@ -25,6 +25,10 @@
 #      PP-Orb/ — the release tarball ships only the bundled default series
 #      (SG15 + lanthanides), so external series downloaded by hand (e.g.
 #      Dojo-NC-FR, ABACUS-APNS-PPORBs-v1) are merged back from the backup.
+#      A top-level library the new layout has since folded into a series folder
+#      (the old flat `SG15-Version1p0_Pseudopotential` and friends) is left out
+#      — the series now ships it, and restoring the stray copy would put the
+#      same series in the tree twice.
 #   5. Preserve scripts/bader/bader.x — the tarball deliberately excludes the
 #      platform binary; it would otherwise be lost on a full dir swap.
 #   6. Refresh pip metadata with an offline reinstall, verify the version.
@@ -88,8 +92,27 @@ TOPDIR="$(tar tzf "$TARBALL" 2>/dev/null | head -1 | cut -d/ -f1 || true)"
 [ -n "$TOPDIR" ] || { echo -e "  ${RED}Error: empty archive.${NC}"; exit 1; }
 
 # ---- 2. conda env must exist ------------------------------------------------
+# A non-interactive shell does not source ~/.bashrc, so `ssh host 'bash
+# upgrade.sh ...'` starts with no conda on PATH even on machines where it works
+# fine interactively.  Look in the usual install locations before giving up.
+if ! command -v conda >/dev/null 2>&1; then
+    for _conda_sh in \
+        "$HOME/miniconda3/etc/profile.d/conda.sh" \
+        "$HOME/anaconda3/etc/profile.d/conda.sh" \
+        "$HOME/miniconda/etc/profile.d/conda.sh" \
+        /opt/conda/etc/profile.d/conda.sh
+    do
+        if [ -r "$_conda_sh" ]; then
+            # shellcheck disable=SC1090
+            . "$_conda_sh"
+            break
+        fi
+    done
+fi
+
 if ! command -v conda >/dev/null 2>&1; then
     echo -e "  ${RED}Error: 'conda' not found in PATH.${NC}"
+    echo -e "  Source it first, e.g. ${BOLD}. ~/miniconda3/etc/profile.d/conda.sh${NC}"
     exit 1
 fi
 if ! conda run -n "$ENV_NAME" python -c "import sys" >/dev/null 2>&1; then
@@ -99,13 +122,42 @@ if ! conda run -n "$ENV_NAME" python -c "import sys" >/dev/null 2>&1; then
 fi
 
 # ---- 3. Detect current install dir from the live editable install -----------
-# abacuscopilot/__init__.py lives at <install>/abacuscopilot/__init__.py
-PKG_ROOT="$(conda run -n "$ENV_NAME" python -c \
-  "import abacuscopilot, os; print(os.path.dirname(os.path.dirname(os.path.abspath(abacuscopilot.__file__))))" \
-  2>/dev/null || true)"
+# The install dir is the release root: the tree holding pyproject.toml, PP-Orb/
+# and scripts/.  It is found by walking up from the package to that marker, not
+# by counting dirname() calls — the package sits at <root>/src/abacuscopilot
+# under the src layout and at <root>/abacuscopilot before it, so a fixed count
+# silently returns <root>/src, and the script would then swap out the wrong
+# tree.  The marker is layout-independent.
+#
+# `python -I` keeps the cwd off sys.path so the answer cannot depend on where
+# the script was launched from.  Under the old flat layout the install dir's own
+# parent held a directory named abacuscopilot, and importing from there resolved
+# to it as a namespace package — __file__ came back None and this probe died in
+# abspath.  The src layout removes the collision, but the probe should not rely
+# on that.
+PKG_ROOT="$(conda run -n "$ENV_NAME" python -I -c '
+import os, abacuscopilot
+p = os.path.dirname(os.path.abspath(abacuscopilot.__file__))
+while not os.path.isfile(os.path.join(p, "pyproject.toml")):
+    parent = os.path.dirname(p)
+    if parent == p:
+        p = ""
+        break
+    p = parent
+print(p)
+' 2>/dev/null | tail -1 || true)"
 if [ -z "$PKG_ROOT" ] || [ ! -d "$PKG_ROOT" ]; then
-    echo -e "  ${YELLOW}Live install not locatable — defaulting to ./abacuscopilot${NC}"
-    PKG_ROOT="$(pwd)/abacuscopilot"
+    # Last resort, and only when the guess actually looks like an install — a
+    # silent fallback to a directory that happens to exist is how a wrong tree
+    # gets swapped out.
+    if [ -f "$(pwd)/abacuscopilot/pyproject.toml" ]; then
+        PKG_ROOT="$(pwd)/abacuscopilot"
+        echo -e "  ${YELLOW}Probe failed; falling back to ./abacuscopilot — check the path below.${NC}"
+    else
+        echo -e "  ${RED}Error: cannot locate the live install directory.${NC}"
+        echo -e "  Run this from the install dir's parent, or set ABACUS_ENV."
+        exit 1
+    fi
 fi
 PKG_ROOT="$(cd "$PKG_ROOT" 2>/dev/null && pwd || echo "$PKG_ROOT")"
 [ -d "$PKG_ROOT" ] || { echo -e "  ${RED}Error: install dir $PKG_ROOT not found.${NC}"; exit 1; }
@@ -142,6 +194,29 @@ if [ -d "$BACKUP/PP-Orb" ]; then
     for entry in "$BACKUP"/PP-Orb/*; do
         [ -e "$entry" ] || continue
         name="$(basename "$entry")"
+        # A top-level library that the NEW layout folded into a series folder is
+        # not an extra library — it is that series' own old copy.  Without this,
+        # an upgrade from the flat layout restores
+        # `SG15-Version1p0_Pseudopotential` beside
+        # `SG15-Version1p0/SG15-Version1p0_Pseudopotential`: the install then
+        # holds one series twice, the stray copy belonging to none.  Skipped only
+        # when the new location EXISTS, so a release that one day drops a series
+        # cannot take away the user's only copy of it.  `case`, not an
+        # associative array — macOS ships bash 3.2.
+        case "$name" in
+            SG15-Version1p0_Pseudopotential)
+                superseded="$PKG_ROOT/PP-Orb/SG15-Version1p0/SG15-Version1p0_Pseudopotential" ;;
+            SG15-Version1p0__StandardOrbitals-Version2p0)
+                superseded="$PKG_ROOT/PP-Orb/SG15-Version1p0/SG15-Version1p0__StandardOrbitals-Version2p0" ;;
+            PD04.3+f--core.icmod1)
+                superseded="$PKG_ROOT/PP-Orb/lanthanides-f--core.icmod1/PD04.3+f--core.icmod1" ;;
+            *)
+                superseded="" ;;
+        esac
+        if [ -n "$superseded" ] && [ -e "$superseded" ]; then
+            echo -e "        ${YELLOW}-${NC} ${name}: SKIPPED (superseded, now at PP-Orb/${superseded#"$PKG_ROOT/PP-Orb/"})"
+            continue
+        fi
         if [ ! -e "$PKG_ROOT/PP-Orb/$name" ]; then
             mkdir -p "$PKG_ROOT/PP-Orb"
             cp -a "$entry" "$PKG_ROOT/PP-Orb/$name"
@@ -172,15 +247,36 @@ else
 fi
 
 # ---- 9. Verify ---------------------------------------------------------------
+# The version is read from the extracted tree, never parsed out of the tarball
+# name. A name-parsing regex over [0-9.] looked fine but silently failed to match
+# any letter-suffixed release (v0.1.35b, v0.1.35c): it left the comparison
+# against the whole filename, so correctly packaged releases were reported as
+# "did you forget to bump?" mismatches. The filename is only a label now — a
+# stale one is worth a note, not an accusation.
 echo -e "  Verifying..."
-VER="$(cd "$PKG_ROOT" && conda run -n "$ENV_NAME" python -c \
-  "import abacuscopilot; print('v' + abacuscopilot.__version__)" 2>&1 || echo "unknown")"
-echo -e "        ${GREEN}✓${NC} Installed version: ${BOLD}${VER}${NC}"
+# -I again, so this reads the *registered* install rather than whatever the cwd
+# happens to shadow it with — the point of the check is the editable link.
+VER="$(cd "$PKG_ROOT" && conda run -n "$ENV_NAME" python -I -c \
+  "import abacuscopilot; print(abacuscopilot.__version__)" 2>/dev/null | tail -1 || true)"
+[ -n "$VER" ] || VER="unknown"
+# What pip registered the install as — must agree with __init__.py.
+PYVER="$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' "$PKG_ROOT/pyproject.toml")"
+[ -n "$PYVER" ] || PYVER="unknown"
 
-EXPECTED="$(basename "$TARBALL" | sed -E 's/^abacuscopilot_(v[0-9][0-9.]*)_.*/\1/')"
-if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$VER" ]; then
-    echo -e "  ${YELLOW}! Tarball name says ${EXPECTED}, but installed version is ${VER}.${NC}"
-    echo -e "  ${YELLOW}  Did you bump __init__.py / pyproject.toml before packaging?${NC}"
+echo -e "        ${GREEN}✓${NC} Installed version: ${BOLD}v${VER}${NC}"
+
+if [ "$VER" != "$PYVER" ]; then
+    echo -e "  ${YELLOW}! __init__.py says v${VER}, but pyproject.toml says v${PYVER}.${NC}"
+    echo -e "  ${YELLOW}  Bump both before packaging.${NC}"
+    exit 1
+fi
+
+# Advisory only: the archive's name is a convenience for the user, and a
+# mismatch here says nothing about whether the upgrade itself worked.
+NAMEVER="$(basename "$TARBALL" | sed -nE 's/^abacuscopilot_v?([0-9][0-9A-Za-z.]*)_.*$/\1/p')"
+if [ -n "$NAMEVER" ] && [ "$NAMEVER" != "$VER" ]; then
+    echo -e "  ${YELLOW}! Tarball name says v${NAMEVER}, the tree says v${VER}.${NC}"
+    echo -e "  ${YELLOW}  Install is fine — only the archive's name is stale.${NC}"
 fi
 
 echo ""

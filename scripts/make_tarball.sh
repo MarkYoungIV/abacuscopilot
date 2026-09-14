@@ -5,6 +5,11 @@
 # Builds abacuscopilot_v{version}_{date}.tar.gz at the repo's parent dir,
 # bundling the source + the PP-Orb library tree (for out-of-the-box use).
 #
+# VERSION MUST BE PEP 440 CLEAN — "0.1.35.3", not "0.1.35c". pip reads a
+# trailing letter as a pre-release alias ("c" == "rc"), so 0.1.35c installs as
+# 0.1.35rc0 and sorts *before* 0.1.35. Use a 4th number for follow-up releases
+# off the same version.
+#
 # PP-Orb/ ships the bundled default SG15 (+ lanthanide) trees; the
 # PP-Orb/README.md placeholder (tracked in git) stays in the archive to guide
 # users who add their own pseudopotential/orbital libraries.
@@ -31,8 +36,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # repo root
 PARENT="$(dirname "$ROOT")"                              # dir that holds the repo dir
 cd "$PARENT"
 
-VERSION=$(grep -m1 '__version__ *=' "$ROOT/abacuscopilot/__init__.py" | sed -E 's/.*"([^"]+)".*/\1/')
-VDATE=$(grep -m1 '__version_date__ *=' "$ROOT/abacuscopilot/__init__.py" | sed -E 's/.*"([^"]+)".*/\1/')
+VERSION=$(grep -m1 '__version__ *=' "$ROOT/src/abacuscopilot/__init__.py" | sed -E 's/.*"([^"]+)".*/\1/')
+VDATE=$(grep -m1 '__version_date__ *=' "$ROOT/src/abacuscopilot/__init__.py" | sed -E 's/.*"([^"]+)".*/\1/')
 OUT="$PARENT/abacuscopilot_v${VERSION}_${VDATE//-/}.tar.gz"
 
 echo "Packaging AbacusCopilot v${VERSION} (${VDATE}) -> ${OUT}"
@@ -51,12 +56,19 @@ EXCLUDES=(
   --exclude='.DS_Store'
   --exclude='test'
   --exclude='tests'
-  --exclude='scripts/bader/bader.x'
+  # The leading '*/' on every slash-bearing pattern is load-bearing.  bsdtar
+  # (macOS, what this project is built on) matches a pattern as a path suffix,
+  # so the bare form works there and the exclusion looks correct.  GNU tar
+  # anchors the pattern at the START of the member name and cannot match '/'
+  # with '*', so on a Linux build the bare form matches nothing and the archive
+  # silently ships the third-party series (tens of MB) and a platform binary.
+  # With the prefix both implementations match, in every branch layout.
+  --exclude='*/scripts/bader/bader.x'
   # External user-registered series downloaded under PP-Orb/ are not bundled
   # (kept out of the release tarball — the config libraries.families entries
   # point at them locally; see README "External library families").
-  --exclude='PP-Orb/ABACUS-APNS-PPORBs-v1'
-  --exclude='PP-Orb/Dojo-NC-FR'
+  --exclude='*/PP-Orb/ABACUS-APNS-PPORBs-v1'
+  --exclude='*/PP-Orb/Dojo-NC-FR'
   # Stray archive bundles left at the repo root (e.g. a developer-zipped
   # PP-Orb.zip / PP-Orb.7z for a manual server transfer) must not ride along
   # in the release.

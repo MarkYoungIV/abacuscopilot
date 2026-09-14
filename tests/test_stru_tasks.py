@@ -1,7 +1,10 @@
 """Tests for STRU-writing helpers: library resolution and missing-species warnings."""
 
+from pathlib import Path
+
 import numpy as np
 
+from abacuscopilot import library_families as lf
 from abacuscopilot.core.models import Atom, Structure
 from abacuscopilot.preprocessing import input_tasks as it
 from abacuscopilot.preprocessing import stru_tasks as st
@@ -17,6 +20,24 @@ def _make_structure(species: list[str]) -> Structure:
 
 def _fake_config(upf_dir, orb_dir) -> dict:
     return {"libraries": {"pseudo_library": str(upf_dir), "orbital_library": str(orb_dir)}}
+
+
+def _fake_pp_orb(tmp_path: Path, *, apns_orb: str | None = None) -> Path:
+    """A minimal PP-Orb/ tree; returns its root.
+
+    The SG15 orbital root always exists but holds no element — the real
+    situation for La (SG15 ships a La pseudopotential and no La orbital).
+    *apns_orb* is the filename to plant under the APNS orbitals, if any.
+    """
+    root = tmp_path / "PP-Orb"
+    (root / "SG15-Version1p0" / "SG15-Version1p0__StandardOrbitals-Version2p0").mkdir(
+        parents=True
+    )
+    if apns_orb:
+        d = root / "ABACUS-APNS-PPORBs-v1" / "apns-orbitals-efficiency-v1"
+        d.mkdir(parents=True)
+        (d / apns_orb).write_text("dummy")
+    return root
 
 
 class TestWriteStruLibraryResolution:
@@ -88,6 +109,76 @@ class TestWriteStruLibraryResolution:
         assert structure.pseudo_files["Sm"].startswith("Sm_")
         assert structure.orbital_files["Sm"].startswith("Sm_")
         assert "not found" not in capsys.readouterr().out
+
+
+class TestMissingSpeciesNamesTheSeriesThatHasIt:
+    """The warning should point at the series that *does* have the file.
+
+    Prompted by La on SG15: SG15 has the La pseudopotential but no La orbital,
+    and the only series carrying one is ABACUS-APNS-PPORBs-v1.  The tip only
+    advises — switching is a whole-series decision made at the family prompt,
+    since one element's PP and orbital cannot come from different series.
+    """
+
+    APNS_ORB = "La_gga_9au_100Ry_4s2p2d1f.orb"
+
+    def _run(self, tmp_path, monkeypatch, capsys, *, apns_orb, active_orb=None):
+        root = _fake_pp_orb(tmp_path, apns_orb=apns_orb)
+        monkeypatch.setattr(lf, "_pp_orb_root", lambda: root)
+
+        upf_dir = tmp_path / "upf"
+        orb_dir = tmp_path / "orb"
+        upf_dir.mkdir()
+        orb_dir.mkdir()
+        (upf_dir / "La_ONCV_PBE-1.0.upf").write_text("dummy")
+
+        monkeypatch.setattr(
+            "abacuscopilot.config.load_config",
+            lambda: _fake_config(upf_dir, active_orb or orb_dir),
+        )
+
+        structure = _make_structure(["La"])
+        _write_stru_bare(structure, is_lcao=True, filepath=str(tmp_path / "STRU"))
+
+        # La's pseudopotential resolved, so only the orbital is missing.
+        assert structure.pseudo_files["La"] == "La_ONCV_PBE-1.0.upf"
+        assert structure.orbital_files["La"] == "La.orb"
+        return capsys.readouterr().out
+
+    def test_tip_names_the_series_that_has_the_missing_orbital(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        out = self._run(tmp_path, monkeypatch, capsys, apns_orb=self.APNS_ORB)
+
+        assert "Tip:" in out
+        assert "ABACUS-APNS-PPORBs-v1" in out
+        assert self.APNS_ORB in out
+        # SG15 was probed and has no La orbital, so it must not be named.
+        assert "SG15" not in out
+        # The original warning is untouched.
+        assert "not found" in out and "La orbital" in out
+
+    def test_no_tip_when_no_other_series_has_it(self, tmp_path, monkeypatch, capsys):
+        out = self._run(tmp_path, monkeypatch, capsys, apns_orb=None)
+
+        assert "Tip:" not in out
+        assert "not found" in out and "La orbital" in out
+
+    def test_a_dir_already_being_searched_is_not_named(self, tmp_path, monkeypatch):
+        """Naming a series whose files were just searched would be a lie."""
+        root = _fake_pp_orb(tmp_path, apns_orb=self.APNS_ORB)
+        monkeypatch.setattr(lf, "_pp_orb_root", lambda: root)
+        apns_dir = root / "ABACUS-APNS-PPORBs-v1" / "apns-orbitals-efficiency-v1"
+
+        config = {"libraries": {"orbital_library": str(apns_dir)}}
+
+        # The file is there and would otherwise be reported — the active list
+        # already covers this directory, so there is nothing to advise.
+        assert lf.series_with_file("La", ".orb", config) == []
+        # Same tree, series not in the active list → it is named.
+        assert lf.series_with_file("La", ".orb", {"libraries": {}}) == [
+            ("ABACUS-APNS-PPORBs-v1", self.APNS_ORB)
+        ]
 
 
 class TestPdbToStru:

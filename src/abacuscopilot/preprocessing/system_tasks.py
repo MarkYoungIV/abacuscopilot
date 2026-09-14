@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from abacuscopilot.config import load_config, save_config
+from abacuscopilot.config import DEFAULT_CONFIG, load_config, save_config
 from abacuscopilot.console_utils import _get_console, _prompt, _prompt_choice
 from abacuscopilot.core.standards import is_lcao_basis
 from abacuscopilot.tasks import task
@@ -583,15 +583,20 @@ def missing_element_blockers(
 # =============================================================================
 
 @task(9901, category="System", name="System Setup",
-      description="Configure abacuscopilot: pseudopotential paths, orbital paths, and defaults")
+      description="Configure abacuscopilot: ABACUS binary paths and calculation defaults")
 def task_system_setup(args: list[str] | None = None, interactive: bool = True) -> None:
     """Interactive setup wizard for abacuscopilot configuration.
 
     Configures:
-    - Pseudopotential directory paths (by functional: PBE, LDA, etc.)
-    - Numerical orbital directory paths (LCAO calculations)
-    - ABACUS binary path
+    - ABACUS binary / MPI launcher paths
     - Default calculation parameters
+
+    Pseudopotential and orbital *libraries* are deliberately not asked for: the
+    bundled PP-Orb/ series are auto-detected (see ``config._detect_library_dirs``)
+    and an external series is picked, once, from the library-family prompt of the
+    INPUT / STRU flows.  ``defaults.pseudo_dir`` / ``orbital_dir`` keep ``"./"``,
+    the ABACUS value meaning "the job directory", into which the matching files
+    are copied automatically.
     """
     console = _get_console()
 
@@ -606,22 +611,14 @@ def task_system_setup(args: list[str] | None = None, interactive: bool = True) -
 
     config = load_config()
 
-    # Global pseudo dir
-    current = config["defaults"].get("pseudo_dir", "./")
-    path = _prompt(console, "Default pseudopotential directory", current)
-    config["defaults"]["pseudo_dir"] = path if path else "./"
-
-    console.print()
-
-    # === Orbital paths (LCAO) ===
-    console.print("[bold yellow]--- Numerical Orbital Paths (LCAO) ---[/bold yellow]")
-    console.print("[dim]Numerical atomic orbital files for LCAO basis[/dim]")
-    console.print()
-
-    current = config["defaults"].get("orbital_dir", "./")
-    path = _prompt(console, "Default orbital directory", current)
-    config["defaults"]["orbital_dir"] = path if path else "./"
-
+    # Pseudopotentials / orbitals are not asked for here.  The bundled series
+    # under PP-Orb/ are auto-detected, an external series is picked from the
+    # library-family prompt of the INPUT flow, and defaults.pseudo_dir /
+    # orbital_dir stay "./" — the job directory the matching files are copied
+    # into.  Kept as a printed note so the wizard does not look like it dropped
+    # a step.
+    console.print("[dim]Pseudopotential / orbital directories are auto-detected from PP-Orb/[/dim]")
+    console.print("[dim]and chosen as a library family in the INPUT flow — nothing to enter here.[/dim]")
     console.print()
 
     # === ABACUS binary ===
@@ -642,29 +639,29 @@ def task_system_setup(args: list[str] | None = None, interactive: bool = True) -
     console.print("[bold yellow]--- Default Calculation Parameters ---[/bold yellow]")
     console.print()
 
-    current = config["defaults"].get("kspacing", 0.04)
-    val = _prompt(console, "Default k-spacing (1/bohr, ABACUS unit)", str(current))
-    config["defaults"]["kspacing"] = float(val) if val else 0.04
+    # Every fallback is read from the schema rather than written as a literal,
+    # so a prompt can never again show (or store) a default that disagrees with
+    # DEFAULT_CONFIG — the old code carried three: kspacing 0.04 vs 0.14,
+    # basis_type "pw" vs "lcao", and a force threshold of 0.001 under a
+    # "force_thr" key that no reader of the config ever looked at.
+    schema = DEFAULT_CONFIG["defaults"]
 
-    current = config["defaults"].get("ecutwfc", 100.0)
-    val = _prompt(console, "Default ecutwfc (Ry)", str(current))
-    config["defaults"]["ecutwfc"] = float(val) if val else 100.0
+    for key, question in (
+        ("kspacing", "Default k-spacing (1/bohr, ABACUS unit)"),
+        ("ecutwfc", "Default ecutwfc (Ry)"),
+        ("scf_thr", "Default SCF convergence threshold (Ry)"),
+        ("force_thr_ev", "Default force convergence threshold (eV/Å)"),
+    ):
+        current = config["defaults"].get(key, schema[key])
+        val = _prompt(console, question, str(current))
+        config["defaults"][key] = float(val) if val else schema[key]
 
-    current = config["defaults"].get("scf_thr", 1e-7)
-    val = _prompt(console, "Default SCF convergence threshold (Ry)", str(current))
-    config["defaults"]["scf_thr"] = float(val) if val else 1e-7
-
-    current = config["defaults"].get("force_thr", 0.001)
-    val = _prompt(console, "Default force convergence threshold (eV/Å)", str(current))
-    config["defaults"]["force_thr"] = float(val) if val else 0.001
-
-    current = config["defaults"].get("basis_type", "pw")
-    val = _prompt(console, "Default basis type (pw / lcao)", current)
-    config["defaults"]["basis_type"] = val if val else "pw"
-
-    current = config["defaults"].get("dft_functional", "pbe")
-    val = _prompt(console, "Default DFT functional", current)
-    config["defaults"]["dft_functional"] = val if val else "pbe"
+    for key, question in (
+        ("basis_type", "Default basis type (lcao / pw)"),
+        ("dft_functional", "Default DFT functional"),
+    ):
+        current = config["defaults"].get(key, schema[key])
+        config["defaults"][key] = _prompt(console, question, current) or schema[key]
 
     console.print()
 
@@ -708,7 +705,7 @@ def task_show_config(args: list[str] | None = None, interactive: bool = True) ->
     console.print("[bold]Calculation Defaults:[/bold]")
     defaults = config.get("defaults", {})
     for key in ("pseudo_dir", "orbital_dir", "basis_type", "ecutwfc",
-                "kspacing", "dft_functional", "scf_thr", "force_thr",
+                "kspacing", "dft_functional", "scf_thr", "force_thr_ev",
                 "calculation"):
         val = defaults.get(key, "—")
         console.print(f"  {key}: {val}")

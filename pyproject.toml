@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "abacuscopilot"
-version = "0.1.36"
+version = "0.1.37"
 description = "Your AI copilot for the ABACUS DFT software — pre- and post-processing made simple"
 readme = "README.md"
 license = {text = "GPL-3.0"}
@@ -56,6 +56,10 @@ dev = [
 abacuscopilot = "abacuscopilot.cli:main"
 
 [tool.setuptools.packages.find]
+# src layout: the importable package lives in src/, so the release root — which
+# holds pyproject.toml, PP-Orb/ and scripts/ — can never be mistaken for the
+# package by an import that merely has it on sys.path.
+where = ["src"]
 include = ["abacuscopilot*"]
 
 [tool.ruff]
@@ -109,4 +113,8 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+# With the src layout the package is not importable from the repo root, so
+# `pytest tests/` needs src/ on the path. Same source tree the editable install
+# points at, so tests still exercise what a local run would.
+pythonpath = ["src"]
 addopts = ["-v", "--tb=short", "--strict-markers"]

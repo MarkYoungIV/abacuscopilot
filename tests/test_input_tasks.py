@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from abacuscopilot.preprocessing import input_tasks as it
 
 
@@ -221,3 +223,128 @@ class TestSharedCalcHelpers:
         assert p.md_pmode == "iso"
         assert (p.press1, p.press2, p.press3) == (2.5, 2.5, 2.5)
         assert p.md_tfirst == 400.0
+
+
+def _healthy_pb(path: Path) -> Path:
+    """A graph ABACUS will actually load: type map *and* version node."""
+    path.write_bytes(b"descrpt_attr/ntypes" + b"model_attr/model_type"
+                     + b"model_attr/tmap" + b"Li Ge P S"
+                     + b"model_attr/model_versionConstvalue1.1")
+    return path
+
+
+def _broken_pb(path: Path) -> Path:
+    """The same graph with its ``model_attr/tmap`` lost — unreadable by ABACUS."""
+    path.write_bytes(b"descrpt_attr/ntypes" + b"model_attr/model_type")
+    return path
+
+
+def _uncompressed_pb(path: Path) -> Path:
+    """A never-compressed download: type map present, model_version absent.
+
+    DeePMD-kit reads the missing node as version 0.0 and aborts the run.
+    """
+    path.write_bytes(b"descrpt_attr/ntypes" + b"model_attr/model_type"
+                     + b"model_attr/tmap" + b"Li Ge P S")
+    return path
+
+
+class TestResolveDpModel:
+    """Task 103 must not require a model literally named graph-compress.pb.
+
+    Plenty of models are never compressed, so the generator looks at what is
+    actually in the directory and asks, instead of demanding a rename.
+    """
+
+    def test_loadable_default_is_kept_without_prompting(
+            self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _healthy_pb(tmp_path / "graph-compress.pb")
+        a = _Answers(choices=["SHOULD NOT BE ASKED"])
+        monkeypatch.setattr(it, "_prompt_choice", a.choice)
+        p = it.InputParams()
+        p.set_param("pot_file", "graph-compress.pb")
+
+        assert it._resolve_dp_model(_FakeConsole(), p, True) == "graph-compress.pb"
+        assert len(a.choices) == 1  # untouched — no prompt was consumed
+
+    def test_arbitrary_name_is_discovered_and_recorded(
+            self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _healthy_pb(tmp_path / "LiGePS-SSE-PBE-model.pb")
+        monkeypatch.setattr(it, "_prompt_choice", _Answers().choice)
+        console = _FakeConsole()
+        p = it.InputParams()
+        p.set_param("pot_file", "graph-compress.pb")  # template default, absent
+
+        assert it._resolve_dp_model(console, p, True) == "LiGePS-SSE-PBE-model.pb"
+        assert p.get_param("pot_file") == "LiGePS-SSE-PBE-model.pb"
+        assert any("pot_file 设置为" in line for line in console.out)
+
+    def test_user_choice_wins_when_several_models(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _healthy_pb(tmp_path / "a.pb")
+        _healthy_pb(tmp_path / "b.pb")
+        monkeypatch.setattr(it, "_prompt_choice", _Answers(choices=["b.pb"]).choice)
+        p = it.InputParams()
+        p.set_param("pot_file", "graph-compress.pb")
+
+        assert it._resolve_dp_model(_FakeConsole(), p, True) == "b.pb"
+
+    def test_healthy_sibling_beats_a_broken_default(self, tmp_path, monkeypatch):
+        """The 192.168.8.27 shape: the default is the damaged file, and a good
+        model sits next to it under the training run's own name."""
+        monkeypatch.chdir(tmp_path)
+        _broken_pb(tmp_path / "graph-compress.pb")
+        _healthy_pb(tmp_path / "LiGePS-SSE-PBE-model.pb")
+        monkeypatch.setattr(it, "_prompt_choice", _Answers().choice)  # take default
+        p = it.InputParams()
+        p.set_param("pot_file", "graph-compress.pb")
+
+        assert (it._resolve_dp_model(_FakeConsole(), p, True)
+                == "LiGePS-SSE-PBE-model.pb")
+
+    def test_non_interactive_takes_best_candidate(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _broken_pb(tmp_path / "broken.pb")
+        _healthy_pb(tmp_path / "good.pb")
+        monkeypatch.setattr(it, "_prompt_choice",
+                            lambda *a, **k: pytest.fail("must not prompt when"
+                                                        " there is no TTY"))
+        p = it.InputParams()
+        p.set_param("pot_file", "graph-compress.pb")
+
+        assert it._resolve_dp_model(_FakeConsole(), p, False) == "good.pb"
+
+    def test_uncompressed_download_loses_to_a_loadable_model(
+            self, tmp_path, monkeypatch):
+        """The 192.168.8.27 shape exactly: the freshly downloaded, never-
+        compressed model has its type map and would sort first on name alone,
+        but DeePMD-kit refuses it — prefer the one that will actually run."""
+        monkeypatch.chdir(tmp_path)
+        _uncompressed_pb(tmp_path / "LiGePS-SSE-PBEsol-model.pb")
+        _healthy_pb(tmp_path / "graph-compress.pb")
+        monkeypatch.setattr(it, "_prompt_choice", _Answers().choice)
+        p = it.InputParams()
+        p.set_param("pot_file", "graph-compress.pb")
+
+        assert it._resolve_dp_model(_FakeConsole(), p, True) == "graph-compress.pb"
+
+    def test_lone_uncompressed_model_is_still_offered(
+            self, tmp_path, monkeypatch):
+        """Nothing better exists, so hand it over — _check_dp_model will then
+        say what's wrong and how to fix it."""
+        monkeypatch.chdir(tmp_path)
+        _uncompressed_pb(tmp_path / "LiGePS-SSE-PBEsol-model.pb")
+        monkeypatch.setattr(it, "_prompt_choice", _Answers().choice)
+        p = it.InputParams()
+        p.set_param("pot_file", "graph-compress.pb")
+
+        assert (it._resolve_dp_model(_FakeConsole(), p, True)
+                == "LiGePS-SSE-PBEsol-model.pb")
+
+    def test_no_model_anywhere_returns_none(self, tmp_path, monkeypatch):
+        """None means "report it and stop" — the caller still owns that message."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "case.md").write_text("# notes")
+        assert it._resolve_dp_model(_FakeConsole(), it.InputParams(), True) is None

@@ -50,7 +50,7 @@ def test_completed_abacus_scf_supports_raw_cube_workfunc_pipeline():
     assert np.isfinite(raw_vacuum["vacuum_level"])
     assert np.isfinite(raw_vacuum["vacuum_level"] - fermi)
 
-    window = max(1, int(round(3.0 / dz)))
+    window = max(1, round(3.0 / dz))
     macro = macroscopic_average(planar, window)
     macro_vacuum = estimate_vacuum_level_from_cube(
         macro, z_ang, atom_z, cell_length, exclude_distance=3.0

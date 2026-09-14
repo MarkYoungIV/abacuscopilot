@@ -632,8 +632,12 @@ class TestPicker:
         text = "\n".join(console.out)
         assert "Dojo-NC-FR" in text
         assert "found in PP-Orb" in text
-        # The Dojo option specifically no longer claims it will prompt.
-        dojo_line = next(ln for ln in console.out if "Dojo-NC-FR" in ln)
+        # The Dojo option specifically no longer claims it will prompt.  Match
+        # the menu entry, which quotes the family's full label — the hint above
+        # the menu also names Dojo-NC-FR, as the example of a folder that is
+        # never folded into the bundled libraries.
+        dojo_line = next(ln for ln in console.out
+                         if "Dojo-NC-FR (fully-relativistic" in ln)
         assert "found in PP-Orb — will auto-register" in dojo_line
 
     def test_reselect_dojo_blank_keeps_current_tier(self, tmp_path, monkeypatch):

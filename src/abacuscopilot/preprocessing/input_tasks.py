@@ -74,6 +74,135 @@ def _abacus_supports_hirshfeld() -> bool:
     return False
 
 
+def _check_dp_model(console, params: InputParams, model: str, interactive: bool) -> None:
+    """Diagnose the DP model against the configured ABACUS binary.
+
+    This never modifies the model file.  An earlier implementation renamed the
+    model to ``*_original`` and ran ``dp convert-from`` whenever a
+    ``deepmd.infer.DeepPot`` probe raised — but that probe raises for *any*
+    ``.pb`` when the active env lacks tensorflow (DeepMD v3 dispatches ``.pb``
+    to its TensorFlow backend).  So a perfectly good model was silently
+    replaced by one ABACUS could not read, producing an empty type map at run
+    time.  Diagnosing and reporting is the whole job here.
+
+    The binary side is the compile-time truth (DeepMD is linked into ABACUS at
+    build time, not taken from the active conda env); see
+    :mod:`abacuscopilot.dp_capability`.
+    """
+    from abacuscopilot.dp_capability import (
+        INCOMPATIBLE,
+        WARN,
+        assess_compatibility,
+        check_runtime_env_hint,
+        fingerprint_model,
+        get_abacus_dp_capability,
+    )
+
+    fp = fingerprint_model(model)
+    console.print(f"  [dim]{fp.describe()}[/dim]")
+
+    cap = get_abacus_dp_capability()
+    if cap.resolved is None:
+        console.print(f"  [dim]未找到 abacus 二进制 ({cap.binary}) —— 跳过二进制能力检测。"
+                      "可在 config 的 paths.abacus_dp_binary 指定。[/dim]")
+    else:
+        console.print(f"  [dim]abacus: {cap.describe()}[/dim]")
+
+    verdict = assess_compatibility(fp, cap)
+    # Without a binary we can still tell whether the *file* is broken, but not
+    # whether the build would accept a healthy one — so drop the soft warning.
+    if cap.resolved is None and verdict.status == WARN:
+        verdict = None
+
+    if verdict is not None:
+        if not verdict.is_problem:
+            console.print("  [green]✓ 模型与当前 abacus 匹配。[/green]")
+        else:
+            style = "bold red" if verdict.status == INCOMPATIBLE else "yellow"
+            console.print(f"  [{style}]! {verdict.message}[/{style}]")
+            if verdict.guidance:
+                console.print(f"  [dim]    {verdict.guidance}[/dim]")
+
+        hint = check_runtime_env_hint(cap)
+        if hint:
+            console.print(f"  [yellow]! {hint}[/yellow]")
+
+    # Offer a backup only when the *file* is the problem — a healthy model with
+    # an uncertain binary verdict has nothing to fall back from.
+    if interactive and fp.exists and not fp.usable and cap.has_dp is not False:
+        _offer_model_fallback(console, params, model)
+
+
+def _resolve_dp_model(console, params: InputParams, interactive: bool) -> str | None:
+    """Settle which DP model file this INPUT should point at.
+
+    The template default is ``graph-compress.pb``, but that is only a default:
+    plenty of models are never compressed, and are simply called whatever the
+    training run named them.  So instead of demanding a particular filename,
+    whatever is already set is kept when it is loadable, and otherwise the
+    models found in the current directory are offered.
+
+    Returns the resolved filename, or None when the directory holds no model at
+    all (the caller reports that — it is still fatal for a DP run).
+    """
+    from abacuscopilot.dp_capability import discover_models, fingerprint_model
+
+    current = str(params.get_param("pot_file") or "").strip()
+    if current and fingerprint_model(current).usable:
+        return current  # already decided; nothing to ask
+
+    found = discover_models()
+    if not found:
+        return None
+
+    names = [fp.path for fp in found]
+    choice = names[0]
+    # Ask unless the only candidate is the one already set (a prompt with no
+    # decision behind it).  Non-interactive runs take the best-ranked file.
+    if interactive and (len(names) > 1 or choice != current):
+        console.print("  [dim]当前目录下发现的模型文件:[/dim]")
+        for fp in found:
+            console.print(f"    [dim]{fp.describe()}[/dim]")
+        choice = _prompt_choice(console, "  用哪个作为 pot_file?", names, names[0])
+
+    params.set_param("pot_file", choice)
+    if choice != current:
+        console.print(f"  [green]✓ pot_file 设置为 {choice}[/green]")
+    return choice
+
+
+def _offer_model_fallback(console, params: InputParams, model: str) -> None:
+    """Point INPUT at a sibling backup when the current file is unusable.
+
+    The recovery path for a model an older version of this task mangled: the
+    broken file is left exactly where it is (so it can be inspected), and only
+    the INPUT's ``pot_file`` is redirected.
+    """
+    from abacuscopilot.dp_capability import fingerprint_model
+
+    path = Path(model)
+    candidates = [f"{model}_original"]
+    candidates += sorted(
+        str(p) for p in path.parent.glob(f"{path.name}.broken*") if p.is_file())
+    # `usable`, not `is_dp2_tf`: a backup missing its model_version node aborts
+    # ABACUS just as surely as the file it would replace.
+    healthy = [c for c in candidates
+               if Path(c).is_file() and fingerprint_model(c).usable]
+    if not healthy:
+        return
+
+    keep = f"保持 {model}"
+    choice = _prompt_choice(
+        console,
+        "  发现可用的模型备份,是否改用它?",
+        [*healthy, keep],
+        healthy[0],
+    )
+    if choice in healthy:
+        params.set_param("pot_file", choice)
+        console.print(f"  [green]✓ pot_file 改为 {choice}(原文件未改动)[/green]")
+
+
 def _apply_template(params: InputParams, template: dict) -> InputParams:
     """Apply a template dict to an InputParams object.
 
@@ -882,69 +1011,13 @@ def task_md_input(args: list[str] | None = None, interactive: bool = True,
         _apply_solver_override(console, params, parsed_args.solver)
 
     if params.esolver_type == "dp":
-        model = params.get_param("pot_file")
-        console.print(f"  Deep Potential model: {model}")
-        if not Path(model).exists():
-            console.print(f"  [bold red]! Model file '{model}' not found in current directory![/bold red]")
-            console.print("  [bold red]  This file is REQUIRED for DP-MD — place it here before running.[/bold red]")
+        model = _resolve_dp_model(console, params, interactive)
+        if model is None:
+            console.print("  [bold red]! 当前目录下没有找到 Deep Potential 模型文件[/bold red]")
+            console.print("  [bold red]  该文件是 DP-MD 必需的 —— 请先把模型 (.pb / .pt) 放到这里再运行。[/bold red]")
         else:
-            # Check model compatibility and auto-convert if needed
-            try:
-                from deepmd.infer import DeepPot
-                DeepPot(model)
-            except Exception:
-                console.print("  [bold yellow]⚠  DP model version mismatch detected.[/bold yellow]")
-                console.print("  [dim]    Auto-converting model (original will be backed up)...[/dim]")
-                import subprocess as _sp
-                original_model = model + "_original"
-
-                # Resolve the 'dp' command — try direct PATH first, then ask user
-                dp_cmd = None
-                try:
-                    _sp.run(["dp", "--version"], capture_output=True, check=True, timeout=10)
-                    dp_cmd = ["dp"]
-                except (FileNotFoundError, Exception):
-                    if interactive:
-                        console.print()
-                        console.print("  [yellow]'dp' CLI not found in current PATH.[/yellow]")
-                        console.print("  [dim]  I'll run the conversion for you — just tell me where dp is.[/dim]")
-                        user_env = _prompt(
-                            console,
-                            "  Deepmd-kit conda env name (or full path to dp)",
-                            ""
-                        ).strip()
-                        if user_env:
-                            if "/" in user_env or user_env.endswith("dp"):
-                                dp_cmd = [user_env]
-                            else:
-                                dp_cmd = ["conda", "run", "-n", user_env, "dp"]
-                    else:
-                        console.print("  [yellow]! 'dp' CLI not found. Run manually with your deepmd-kit env:[/yellow]")
-                        console.print(f"  [dim]    conda activate <your-deepmd-env> && dp convert-from auto -i {model} -o {model}[/dim]")
-
-                if dp_cmd:
-                    try:
-                        # Rename original → backup, then convert to original name
-                        Path(model).rename(original_model)
-                        result = _sp.run(dp_cmd + ["convert-from", "auto",
-                                         "-i", original_model, "-o", model],
-                                        capture_output=True, text=True, timeout=120)
-                        if result.returncode == 0 and Path(model).exists():
-                            console.print(f"  [green]✓ Model converted: {model} (original → {original_model})[/green]")
-                        else:
-                            # Restore original on failure
-                            console.print("  [yellow]! Auto-conversion failed.[/yellow]")
-                            if not Path(model).exists():
-                                Path(original_model).rename(model)
-                            else:
-                                console.print(f"  [dim]    Original preserved as {original_model}[/dim]")
-                    except Exception as _e:
-                        console.print(f"  [yellow]! dp convert-from failed: {_e}[/yellow]")
-                        console.print("  [dim]    Original model unchanged. Run manually:[/dim]")
-                        console.print(f"  [dim]    conda activate <your-deepmd-env> && dp convert-from auto -i {model} -o {model}[/dim]")
-                        # Restore original if rename happened
-                        if not Path(model).exists() and Path(original_model).exists():
-                            Path(original_model).rename(model)
+            console.print(f"  Deep Potential model: {model}")
+            _check_dp_model(console, params, model, interactive)
 
     from abacuscopilot.io.input_file import write_input
     write_input(params)

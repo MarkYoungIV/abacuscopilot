@@ -607,7 +607,7 @@ def task_macro_avg_potential(
     period = float(period if period is not None else cell_length / 4)
     if period <= 0.0:
         raise ValueError("Averaging period must be positive")
-    window_points = max(1, int(round(period / dz)))
+    window_points = max(1, round(period / dz))
     macro = macroscopic_average(planar, window_points)
 
     vacuum_path = Path(parsed_args.vacuum_file) if parsed_args and parsed_args.vacuum_file else None

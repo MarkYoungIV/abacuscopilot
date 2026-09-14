@@ -30,7 +30,7 @@ abacuscopilot -task 9901    # Configuration wizard
 
 Configures pseudopotential paths, orbital directories, ABACUS binary location, and default calculation parameters. Settings are saved to `~/.abacuscopilot/config.yaml`.
 
-> **Pseudopotential / orbital libraries (PP-Orb/)** are *not* bundled in this git repo (large + third-party redistribution licensing). The repo carries `PP-Orb/README.md` as a placeholder guide. For out-of-the-box library support, download the full release tarball (`abacuscopilot_v*.tar.gz`, which ships `PP-Orb/` with the default SG15 + lanthanide trees) from the [Releases](../../releases) page and re-run `./setup.sh` from it — or drop your own library folders into `PP-Orb/` (each top-level folder holding `*.upf` / `*.orb` is auto-detected; see `PP-Orb/README.md`). The tool warns (but does not fail) when it cannot resolve a species' library files under the bundled SG15 family. To use an **external series** such as `ABACUS-APNS-PPORBs-v1` (pseudopotentials + efficiency/precision orbitals) without bundling it, register its paths under `libraries.families` in the config and pick it from the INPUT flow — see [Configuration](#configuration).
+> **Pseudopotential / orbital libraries (PP-Orb/)** are *not* bundled in this git repo (large + third-party redistribution licensing). The repo carries `PP-Orb/README.md` as a placeholder guide. For out-of-the-box library support, download the full release tarball (`abacuscopilot_v*.tar.gz`, which ships `PP-Orb/` with the default SG15 + lanthanide *series*) from the [Releases](../../releases) page and re-run `./setup.sh` from it — or drop your own library folders into `PP-Orb/` (every folder there holding `*.upf` / `*.orb` is auto-detected, **except** the two known external series `ABACUS-APNS-PPORBs-v1` / `Dojo-NC-FR`, which are never folded into the default SG15 lists; see `PP-Orb/README.md`). The tool warns (but does not fail) when it cannot resolve a species' library files under the bundled SG15 family. To use an **external series** such as `ABACUS-APNS-PPORBs-v1` (pseudopotentials + efficiency/precision orbitals) without bundling it, drop its folder under `PP-Orb/` and pick it from the INPUT family prompt (which registers it), or register its paths under `libraries.families` by hand — see [Configuration](#configuration).
 
 ## Task Reference
 
@@ -38,7 +38,7 @@ Configures pseudopotential paths, orbital directories, ABACUS binary location, a
 
 | ID | Name | Description |
 |----|------|-------------|
-| 9901 | System Setup | Configure pseudopotential paths, defaults |
+| 9901 | System Setup | Configure ABACUS binary paths and calculation defaults |
 | 9902 | Show Config | Display current configuration |
 | 9903 | Check Environment | Verify tools and dependencies |
 | 9904 | Clean Directory | Clean up calculation directory |
@@ -157,20 +157,25 @@ abacuscopilot -task 801 --erange=-5,5 --bands BANDS.dat
 
 ## Configuration
 
-Edit `~/.abacuscopilot/config.yaml` or run `abacuscopilot -task 9901`:
+Edit `~/.abacuscopilot/config.yaml` or run `abacuscopilot -task 9901`. The
+generated file carries a one-line note to the right of each value (VASPKIT's
+`~/.vaspkit` style — a note never takes a line of its own); every key is
+described in full in `USER_GUIDE.md`, section 20:
 
 ```yaml
 libraries:
-  # Lists of directories, searched in order.  Auto-detected from the
-  # bundled PP-Orb/ folder; stale paths are dropped automatically.  These are
-  # the two lists actually used — they are re-pointed when a "family" below is
-  # activated from the INPUT / STRU flows.
+  # Lists of directories, searched in order.  Auto-detected from the series
+  # declared under the bundled PP-Orb/ folder; a stale entry (a directory that no
+  # longer exists — e.g. after an upgrade moved it) re-detects from PP-Orb/ and
+  # merges with the entries that survived, rather than losing the whole list.
+  # These two are the lists actually used — they are re-pointed when a "family"
+  # below is activated from the INPUT / STRU flows.
   pseudo_library:
-    - /path/to/pseudopotentials/
-    - /path/to/lanthanides/
+    - .../PP-Orb/SG15-Version1p0/SG15-Version1p0_Pseudopotential
+    - .../PP-Orb/lanthanides-f--core.icmod1/PD04.3+f--core.icmod1
   orbital_library:
-    - /path/to/orbitals/
-    - /path/to/lanthanides/
+    - .../PP-Orb/SG15-Version1p0/SG15-Version1p0__StandardOrbitals-Version2p0
+    - .../PP-Orb/lanthanides-f--core.icmod1/PD04.3+f--core.icmod1
 
   # Library "series" currently in effect: sg15 (default) | apns | apns/<variant>
   # | dojoncfr | dojoncfr/<sz|dzp|tzdp> | custom.  Chosen interactively in the
@@ -215,12 +220,20 @@ plotting:
 ```
 
 **PP/orbital libraries.** Bundled libraries live under `PP-Orb/` in the project
-root (e.g. `PP-Orb/SG15-Version1p0_Pseudopotential`,
-`PP-Orb/SG15-Version1p0__StandardOrbitals-Version2p0`,
-`PP-Orb/lanthanides-f--core.icmod1`). They are auto-detected on first run and
-may be added to/removed freely — drop your own `*.upf` / `*.orb` library folders
-in as additional top-level entries under `PP-Orb/` (see `PP-Orb/README.md`).
-`pseudo_library` / `orbital_library` accept a
+root, arranged as **one top-level folder per *series*** — the default
+`PP-Orb/SG15-Version1p0/` (holding both
+`SG15-Version1p0_Pseudopotential/` and
+`SG15-Version1p0__StandardOrbitals-Version2p0/`) and the 4f supplement
+`PP-Orb/lanthanides-f--core.icmod1/PD04.3+f--core.icmod1/`. The two series have
+no element in common (SG15 stops short of Ce–Lu; the supplement holds only those
+14), so carrying the supplement in the default lists never takes an element away
+from SG15. They are auto-detected on first run and may be added to/removed freely
+— drop your own `*.upf` / `*.orb` library folders in as additional top-level
+entries under `PP-Orb/` (see `PP-Orb/README.md`). A configured entry that no
+longer exists triggers a re-detect that *merges* with the surviving entries; as
+long as every configured path is still valid the config is left untouched, so a
+newly dropped-in top-level folder is picked up on the next family re-selection
+(or after adding it to the config by hand). `pseudo_library` / `orbital_library` accept a
 single directory or a list; each is searched recursively, so the nested APNS
 lanthanide layout (`{Element}/{basis}/{Element}_gga_*.orb`) works as-is.
 Filenames are matched case-insensitively and tolerate charge-state prefixes
@@ -240,24 +253,34 @@ copy to use — persisted as `libraries.rcut_policy` (`"7"` | `"min"` | `"max"`,
 above), with the 7-au default marked as recommended.
 
 **External library families (e.g. ABACUS-APNS-PPORBs-v1, Dojo-NC-FR).** Other
-series are *not* bundled into the package. Register their downloaded
-directories under `libraries.families.<id>` (above), then pick the series from
-the Pseudopotential/orbital-library-family prompt shown by the INPUT and full
-calculation-setup flows — it defaults to the bundled SG15 and persists your
-choice as the global default (switch back anytime). **Dojo-NC-FR** provides
+series are *not* bundled into the package. Drop the downloaded folder under
+`PP-Orb/` and pick the series from the Pseudopotential/orbital-library-family
+prompt shown by the INPUT and full calculation-setup flows (that registers it
+under `libraries.families.<id>`, above) — or register its directories by hand
+first. The prompt defaults to the bundled SG15 and persists your choice as the
+global default (switch back anytime). **Dojo-NC-FR** provides
 fully-relativistic norm-conserving PPs (`relativistic="full"`, `has_so=1`) with
 matching orbitals — the set to use for spin-orbit coupling runs (`lspinorb 1`);
 they also work for non-SOC runs (ABACUS reduces them to scalar-relativistic
 automatically). When the active family is a registered user series, an element
 the series cannot provide is a **hard error** (the auto-copy/STRU-sync stops
 and suggests switching) rather than a silent cross-series fallback; under SG15
-the legacy soft warning still applies. Even if a registered series' folders
-physically live under `PP-Orb/` (e.g. a local `ABACUS-APNS-PPORBs-v1` copy),
-they are **excluded from the SG15 auto-detected lists**, so switching back to
-SG15 never mixes in the other series.
+the legacy soft warning still applies. A registered series' folders are
+**excluded from the SG15 auto-detected lists by path**, so switching back to
+SG15 never mixes in the other series — and the two known external series
+(`ABACUS-APNS-PPORBs-v1`, `Dojo-NC-FR`) are excluded **by name, before any
+registration**, because their files are named exactly like SG15's (Dojo ships a
+bare `Li.upf`, which even sorts ahead of SG15's `Li_ONCV_PBE-1.0.upf`). A copy
+of either sitting under `PP-Orb/` is therefore inert for an SG15 job rather than
+a silent source of wrong pseudopotentials.
 
-**Large-core lanthanide PPs.** The APNS `lanthanides-f--core.icmod1` bundle
-contains f-electron-pseudized, +3-valent large-core PPs (frozen f-electrons).
+**Large-core lanthanide PPs.** The bundled `lanthanides-f--core.icmod1` series
+(`PP-Orb/lanthanides-f--core.icmod1/PD04.3+f--core.icmod1/`) contains
+f-electron-pseudized, +3-valent large-core PPs (frozen f-electrons), shipped with
+their matching orbitals. It covers Ce–Lu and is consulted automatically when a
+structure contains one of those 14 elements; note that `La`, which does have an
+SG15 pseudopotential, has no orbital in either series and is reported as missing
+under LCAO rather than served from some other series.
 When a structure uses one, abacuscopilot prints a warning stating what these
 PPs are suited for (structure relaxation / MD / ionic transport; Li3MCl6-type
 halides) and NOT suited for (f-electron magnetism/spectroscopy, unaries, which
@@ -289,7 +312,7 @@ def my_task(args=None, interactive=True):
     # task logic here
 ```
 
-Tasks are auto-discovered from `abacuscopilot/preprocessing/` and `abacuscopilot/postprocessing/` packages.
+Tasks are auto-discovered from the `preprocessing/` and `postprocessing/` packages under `src/abacuscopilot/`.
 
 ## License
 

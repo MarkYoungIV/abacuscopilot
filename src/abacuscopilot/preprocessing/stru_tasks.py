@@ -40,7 +40,7 @@ def _write_stru_bare(
     """
     from abacuscopilot.config import load_config
     from abacuscopilot.io.stru_file import write_stru
-    from abacuscopilot.library_families import current_family
+    from abacuscopilot.library_families import current_family, series_with_file
     from abacuscopilot.preprocessing.system_tasks import (
         _f_core_info_from_structure,
         _find_file_for_element,
@@ -89,9 +89,20 @@ def _write_stru_bare(
             console.print(
                 f"  [red]{sp} {kind}[/red] → '{fallback}'  [dim](library: {libs_shown})[/dim]"
             )
+            # Name the series that does have it.  Advises only — the switch has
+            # to happen at the family prompt, because mixing one element's PP
+            # and orbital across series is not self-consistent.
+            ext = ".upf" if kind == "pseudopotential" else ".orb"
+            for label, filename in series_with_file(sp, ext, config):
+                console.print(
+                    f"    [dim]Tip: {label} has {filename} — pick that series at the "
+                    '"Pseudopotential / orbital library family" prompt at the start of '
+                    "the INPUT flow; it switches the whole structure.[/dim]"
+                )
         console.print(
-            "[yellow]Add the missing PP/orbital files to a library directory, or configure "
-            "another library (System & Configuration, task 9901/9902).[/yellow]"
+            "[yellow]Add the missing PP/orbital files to a library directory, or switch to a "
+            'series that already has them (the "Pseudopotential / orbital library family" '
+            "prompt at the start of the INPUT flow).[/yellow]"
         )
 
     if not suppress_f_core:

@@ -6,7 +6,7 @@ mode for generating ABACUS input files, analyzing calculation outputs, and
 producing publication-quality figures.
 """
 
-__version__ = "0.1.36"
+__version__ = "0.1.37"
 __version_date__ = "2026-09-12"
 __author__ = "AbacusCopilot Developers"
 __license__ = "GPL-3.0"
