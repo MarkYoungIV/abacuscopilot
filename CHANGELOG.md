@@ -19,9 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Redefined.STRU` was not a supercell of the input crystal at all. The
   fractional-coordinate transform was transposed to match
   (`f' = f @ M⁻¹`). Volume ratio and atom count were correct either way, which
-  is why the bug stayed silent — VASPKIT, given the same matrix, produced a
-  different (correct) cell for the same input. The convention now matches
-  VASPKIT's TRANSMAT, so integer matrices can be copied across verbatim.
+  is why the bug stayed silent — an independent reference implementation,
+  given the same matrix, produced a different (correct) cell for the same
+  input. The convention now matches the standard TRANSMAT convention, so
+  integer matrices can be copied across verbatim.
 
 - **Supercell construction (task 401) had the same defect** and is fixed to
   `scale @ L`. For an orthogonal cell the two orders coincide, so only
@@ -39,9 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Regression tests for both tasks (`tests/test_structure_editing.py`): the new
   vectors must be integer combinations of the old, fractional coordinates must
-  match VASPKIT's `SUPERCELL.vasp` for the same input, and every replica must
-  land on an original lattice site — checked on a non-orthogonal cell too,
-  where an orthogonal-only shortcut cannot pass.
+  match an independent reference supercell output for the same input, and
+  every replica must land on an original lattice site — checked on a
+  non-orthogonal cell too, where an orthogonal-only shortcut cannot pass.
 
 ## [0.1.38c] - 2026-09-22
 
