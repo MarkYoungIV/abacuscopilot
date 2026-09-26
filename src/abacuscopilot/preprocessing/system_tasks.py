@@ -33,9 +33,12 @@ def _prompt(console, question: str, default: Any = None) -> str:
 # =============================================================================
 
 
-# Canonical DZP basis used as the default when a library ships several
-# orbitals per element (e.g. the APNS lanthanide bundles offer 2s1p1d /
-# 4s2p2d1f / 6s3p3d2f at rcut 6-10 au).  Kept in sync with the SG15 default.
+# Canonical DZP basis used as the first choice when a library ships several
+# orbitals per element (e.g. the lanthanide supplement offers 2s1p1d /
+# 4s2p2d1f / 6s3p3d2f at rcut 6-10 au, where 4s2p2d1f is the SG15 default).
+# Other elements' canonical bases differ (Si: 2s2p1d), so this string is only
+# the top tier: any other parseable DZP-like basis (a d channel is present)
+# ranks above unparseable/minimal names such as Dojo SZ "1s1p".
 _DEFAULT_ORB_BASIS = "4s2p2d1f"
 _DEFAULT_ORB_RCUT = 7
 
@@ -143,8 +146,9 @@ def _candidate_rank(name: str, suffix: str, mode: str = "sg15") -> tuple:
 
     Used only when several files match an element; the smallest key wins.
 
-    - ``sg15`` (default): prefers the canonical DZP orbital at 7 au (matches
-      the SG15 convention), then rcut closest to 7 au, then alphabetical.
+    - ``sg15`` (default): prefers the canonical ``4s2p2d1f`` DZP first, then
+      any other parseable DZP-like basis, then unparseable/minimal names;
+      within a tier, rcut closest to 7 au, then alphabetical.
     - ``apns-efficiency``: prefers the smaller rcut (the APNS Cs pair is
       otherwise identical at 10 au vs 12 au → 10 au wins), then alphabetical.
     - ``apns-precision``: prefers the most complete basis (largest per-l zeta
@@ -180,14 +184,25 @@ def _candidate_rank(name: str, suffix: str, mode: str = "sg15") -> tuple:
             return (rcut, name)           # smallest rcut copy wins
         return (abs(rcut - _DEFAULT_ORB_RCUT), name)
 
-    rank = [0, 0]
-    if _DEFAULT_ORB_BASIS not in base:
-        rank[0] = 1
+    # Generic (sg15 / custom) fallback: the canonical 4s2p2d1f first, then any
+    # parseable DZP-like basis (a d channel is present), then everything whose
+    # basis cannot be parsed -- SZ names like Dojo's "1s1p", and every .upf.
+    # Ties break on rcut closest to 7 au, then alphabetical.  Keying on the
+    # 4s2p2d1f string alone (the previous rule) tied every main-group candidate
+    # -- Si has no 4s2p2d1f file -- and the alphabetical fallback then picked
+    # the *smallest* basis: Dojo SZ "1s1p" sorts before DZP "2s2p1d".
+    if _DEFAULT_ORB_BASIS in base:
+        basis_rank = 0
+    elif suffix == ".orb" and _zeta_counts(base):
+        basis_rank = 1
+    else:
+        basis_rank = 2
+    rcut_rank = 0
     if suffix == ".orb":
         m = re.search(r"(\d+)au", base)
         rcut = int(m.group(1)) if m else None
-        rank[1] = abs(rcut - _DEFAULT_ORB_RCUT) if rcut is not None else 99
-    return tuple(rank) + (name,)
+        rcut_rank = abs(rcut - _DEFAULT_ORB_RCUT) if rcut is not None else 99
+    return (basis_rank, rcut_rank, name)
 
 
 def _as_dir_list(value: Any) -> list[str]:

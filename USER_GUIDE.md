@@ -1,6 +1,6 @@
 # AbacusCopilot 使用指南
 
-> **版本**: v0.1.37 (2026-09-12)  
+> **版本**: v0.1.38.4 (2026-09-23)  
 > **开发者**: Xu Yang (xuyangmark@foxmail.com)、Rong-yu Zhang  
 > **简介**: AbacusCopilot 是 ABACUS DFT 软件的前后处理 CLI 工具包，灵感来源于 VASPKIT。
 
@@ -62,7 +62,9 @@ abacuscopilot
 libraries:
   # 支持单个目录或目录列表,按序查找。自动检测 PP-Orb/ 下声明的系列;任一路径
   # 失效(如升级后目录搬家)会重新探测并与幸存的路径合并,不会整表丢失。
-  # 这两个列表是“当前生效”的目录:当你在下面选定某个系列(family)时会自动重指。
+  # 这两个列表是“当前生效”的目录:当你在下面选定某个系列(family)时会自动重指;
+  # family 为 sg15(默认)时,列表每次读取都按 PP-Orb 的 SG15+镧系重新确定——
+  # 配置里残留的其它系列目录不会参与解析(custom 除外,它保留你手配的列表)。
   pseudo_library:
     - .../PP-Orb/SG15-Version1p0/SG15-Version1p0_Pseudopotential
     - .../PP-Orb/lanthanides-f--core.icmod1/PD04.3+f--core.icmod1
@@ -130,12 +132,15 @@ PP-Orb/
 系列,git 仓库只保留这份说明文件。**两个系列的化学元素零重叠**(SG15 覆盖不到 Ce–Lu,
 镧系只有那 14 个),所以镧系常驻检测范围也不会抢 SG15 的任何元素。配置里登记的库路径
 **任何一条失效**(例如升级换了布局)都会自动重新探测并与幸存的路径合并——不会让整个
-SG15 列表静默消失;反过来,全部路径仍然有效时你的配置一个字都不动,此时新丢进来的顶层
-库需要重选一次家族才会纳入。文件名大小写不敏感,容忍 `Sm3+_…` 这种带价态前缀的命名,
+SG15 列表静默消失;反过来,`family: custom` 时全部路径仍然有效就一个字都不动(新丢进来的
+顶层库需重选一次家族才会纳入),而默认的 `sg15` 始终以内置 SG15+镧系为准,配置里残留的
+其它系列目录会被忽略。文件名大小写不敏感,容忍 `Sm3+_…` 这种带价态前缀的命名,
 也支持 APNS 里 Hf/Os 的半芯命名 `Hf-sp.PD04.PBE.UPF` / `Os-sp.PD04.PBE.UPF`
 (`-sp` 分隔符)。库支持递归查找(APNS 镧系包的 `{元素}/{基组}/` 嵌套布局可直接用)。
-当一个元素有多个轨道时,按所在系列取**确定性默认档**: SG15 优先 DZP `4s2p2d1f` @
-7 au;ABACUS-APNS 的 `efficiency` 取更小 rcut(Cs→`10au`),`precision` 取最完备基组
+当一个元素有多个轨道时,按所在系列取**确定性默认档**: SG15 优先 DZP(`4s2p2d1f`;
+主族元素如 Si 为 `2s2p1d`)@ 7 au,其次任何可解析出 d 通道的 DZP 档,最后才轮到
+SZ `1s1p` 这类最小基组——字母序不会再把最小基组顶上来;ABACUS-APNS 的
+`efficiency` 取更小 rcut(Cs→`10au`),`precision` 取最完备基组
 (B→`4s4p3d2f`,K/Cs/Na/Rb→`5s4p3d2f`,Sb→`4s4p4d3f2g`);Dojo-NC-FR 尊重所选
 tier(`family: dojoncfr/<tier>`),只在对应 `{元素}_{SZ|DZP|TZDP}` 子目录里查找,
 某 tier 缺失时**绝不**静默拿其它 tier 顶替;同一 tier 内默认取最接近 7 au 的 rcut

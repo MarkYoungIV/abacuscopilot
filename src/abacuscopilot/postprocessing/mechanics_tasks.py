@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -30,7 +31,7 @@ from abacuscopilot.tasks import task
 # =============================================================================
 
 
-def compute_mechanical_properties(C: np.ndarray) -> dict[str, float]:
+def compute_mechanical_properties(C: np.ndarray) -> dict[str, Any]:
     """Compute mechanical properties from the 6×6 elastic tensor (Voigt, GPa).
 
     Uses the Voigt-Reuss-Hill (VRH) approximation for polycrystalline averages.
@@ -39,7 +40,8 @@ def compute_mechanical_properties(C: np.ndarray) -> dict[str, float]:
         C: 6×6 elastic tensor in Voigt notation (GPa).
 
     Returns:
-        Dict with Voigt/Reuss/Hill moduli, Poisson ratio, Pugh ratio.
+        Dict with Voigt/Reuss/Hill moduli, Poisson ratio, Pugh ratio, and Born
+        stability data (matrix eigenvalues, minimum eigenvalue, softest mode).
     """
     C = np.array(C)
     if C.shape != (6, 6):
@@ -84,11 +86,15 @@ def compute_mechanical_properties(C: np.ndarray) -> dict[str, float]:
     # Universal anisotropy index (Ranganathan & Ostoja-Starzewski)
     A_universal = 5 * G_V / G_R + B_V / B_R - 6 if G_R > 1e-10 else 0.0
 
-    # Born stability criteria (cubic)
-    born_1 = C[0, 0] - C[0, 1]  # C11 - C12 > 0
-    born_2 = C[0, 0] + 2 * C[0, 1]  # C11 + 2C12 > 0
-    born_3 = C[3, 3]  # C44 > 0
-    born_stable = born_1 > 0 and born_2 > 0 and born_3 > 0
+    # Born stability: the (relaxed-ion) elastic matrix must be positive
+    # definite — all eigenvalues > 0.  This is the general criterion, valid for
+    # any crystal system; the cubic-only inequalities C11-C12>0, C11+2C12>0,
+    # C44>0 must not be applied to lower-symmetry crystals.
+    # See Mouhat & Coudert, Phys. Rev. B 90, 224104 (2014).
+    C_sym = (C + C.T) / 2.0
+    born_eigvals, born_eigvecs = np.linalg.eigh(C_sym)
+    born_eig_tol = 1e-8 * max(1.0, float(np.abs(born_eigvals).max()))
+    born_stable = bool(born_eigvals[0] > born_eig_tol)
 
     # Vickers hardness (Tian 2012 model)
     k = G_H / B_H if B_H > 1e-10 else 0.0
@@ -103,7 +109,10 @@ def compute_mechanical_properties(C: np.ndarray) -> dict[str, float]:
         "A_Zener": A_Zener,
         "A_universal": A_universal,
         "born_stable": born_stable,
-        "born_1": born_1, "born_2": born_2, "born_3": born_3,
+        "born_eigvals": [float(x) for x in born_eigvals],
+        "born_min_eig": float(born_eigvals[0]),
+        "born_eig_tol": float(born_eig_tol),
+        "born_soft_mode": [float(x) for x in born_eigvecs[:, 0]],
         "Hv_tian": Hv_tian,
     }
 
@@ -325,15 +334,17 @@ def task_elastic_constants(args: list[str] | None = None, interactive: bool = Tr
     console.print("  [bold]Hardness (Tian 2012):[/bold]")
     console.print(f"    Hv = {props['Hv_tian']:.2f} GPa")
 
-    # Born stability
+    # Born stability — positive definiteness of the elastic matrix
     console.print()
-    console.print("  [bold]Born Stability Criteria (cubic):[/bold]")
-    console.print(f"    C₁₁ − C₁₂ = {props['born_1']:.2f} > 0  "
-                  f"({'[green]✓[/green]' if props['born_1'] > 0 else '[red]✗[/red]'})")
-    console.print(f"    C₁₁ + 2C₁₂ = {props['born_2']:.2f} > 0  "
-                  f"({'[green]✓[/green]' if props['born_2'] > 0 else '[red]✗[/red]'})")
-    console.print(f"    C₄₄ = {props['born_3']:.2f} > 0  "
-                  f"({'[green]✓[/green]' if props['born_3'] > 0 else '[red]✗[/red]'})")
+    console.print("  [bold]Born Stability (elastic matrix positive-definite):[/bold]")
+    _voigt_axes = ("xx", "yy", "zz", "yz", "xz", "xy")
+    for _i, _ev in enumerate(props["born_eigvals"], start=1):
+        _ok = _ev > props["born_eig_tol"]
+        console.print(f"    λ{_i} = {_ev:9.3f} GPa  "
+                      f"({'[green]✓[/green]' if _ok else '[red]✗[/red]'})")
+    _soft = props["born_soft_mode"]
+    _k = int(np.argmax(np.abs(_soft)))
+    console.print(f"    Softest mode: ε_{_voigt_axes[_k]} (weight {abs(_soft[_k]):.2f})")
     console.print(f"    → {'[green]Mechanically stable[/green]' if props['born_stable'] else '[red]UNSTABLE[/red]'}")
 
     # Sound velocities & Debye temperature
@@ -386,6 +397,7 @@ def task_elastic_constants(args: list[str] | None = None, interactive: bool = Tr
         f.write(f"# Universal Anisotropy = {props['A_universal']:.4f}\n")
         f.write(f"# Hardness (Tian)    = {props['Hv_tian']:.2f} GPa\n")
         f.write(f"# Born stable        = {'Yes' if props['born_stable'] else 'No'}\n")
+        f.write(f"# Min eigenvalue     = {props['born_min_eig']:.3f} GPa\n")
         if _v_l is not None:
             f.write(f"# Density          ρ = {rho_gcm3:.3f} g/cm³\n")
             f.write(f"# v_longitudinal     = {_v_l:.1f} m/s\n")
@@ -466,7 +478,9 @@ def task_eos_fitting(args: list[str] | None = None, interactive: bool = True,
     Two-stage workflow:
 
     1. **Extract** — scan ``scale_*/`` directories, read STRU (volume)
-       and ``OUT.ABACUS/running_scf.log`` (!FINAL_ETOT_IS), write ``ev.dat``.
+       and ``OUT.ABACUS/running_relax.log`` (!FINAL_ETOT_IS), write
+       ``ev.dat``.  Older SCF-based directories (``running_scf.log``) are
+       still accepted as a fallback.
 
     2. **Fit** — read ``ev.dat``, fit 3rd-order Birch-Murnaghan EOS,
        write ``eos_fit.dat`` (fitted curve), print V₀/B₀/B₀'/E₀.
@@ -508,9 +522,13 @@ def task_eos_fitting(args: list[str] | None = None, interactive: bool = True,
             points: list[tuple[float, float, str]] = []  # (vol, energy, dir_name)
             for sd in scale_dirs:
                 stru_file = sd / "STRU"
-                log_file = sd / "OUT.ABACUS" / "running_scf.log"
+                # Relax-based EOS (task 110): energy after ionic relaxation.
+                # Fall back to running_scf.log for older SCF-based directories.
+                log_file = sd / "OUT.ABACUS" / "running_relax.log"
+                if not log_file.exists():
+                    log_file = sd / "OUT.ABACUS" / "running_scf.log"
                 if not stru_file.exists() or not log_file.exists():
-                    console.print(f"  [yellow]![/yellow] {sd.name}: missing STRU or OUT.ABACUS/running_scf.log")
+                    console.print(f"  [yellow]![/yellow] {sd.name}: missing STRU or OUT.ABACUS/running_*.log")
                     continue
 
                 # Volume from STRU
@@ -521,7 +539,7 @@ def task_eos_fitting(args: list[str] | None = None, interactive: bool = True,
                     console.print(f"  [yellow]![/yellow] {sd.name}: failed to read STRU")
                     continue
 
-                # Energy from SCF log
+                # Energy from relax/scf log
                 try:
                     text = log_file.read_text()
                     m = re.search(r"!FINAL_ETOT_IS\s+([\-\d\.Ee+]+)", text)

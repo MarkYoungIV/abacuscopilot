@@ -112,6 +112,32 @@ class TestMatcherOrbitalPreference:
         assert low < far
 
 
+class TestDefaultBasisPreference:
+    """The default (sg15/custom) rank must not let a minimal basis win by name.
+
+    Dojo SZ "1s1p" sorts before DZP "2s2p1d" alphabetically; only a
+    DZP-like-tier preference keeps the alphabetical fallback from picking it
+    when a directory (or list) holds both.
+    """
+
+    def test_sz_never_wins_by_alphabetical_order(self, tmp_path):
+        (tmp_path / "Si_gga_7au_100Ry_1s1p.orb").write_text("dummy")
+        (tmp_path / "Si_gga_7au_100Ry_2s2p1d.orb").write_text("dummy")
+        assert _find_file_for_element(str(tmp_path), "Si", ".orb") == \
+            "Si_gga_7au_100Ry_2s2p1d.orb"
+
+    def test_sz_still_resolves_when_it_is_the_only_choice(self, tmp_path):
+        (tmp_path / "Si_gga_7au_100Ry_1s1p.orb").write_text("dummy")
+        assert _find_file_for_element(str(tmp_path), "Si", ".orb") == \
+            "Si_gga_7au_100Ry_1s1p.orb"
+
+    def test_rank_tiers(self):
+        canonical = _candidate_rank("Si_gga_7au_100Ry_4s2p2d1f.orb", ".orb")
+        dzp = _candidate_rank("Si_gga_7au_100Ry_2s2p1d.orb", ".orb")
+        sz = _candidate_rank("Si_gga_7au_100Ry_1s1p.orb", ".orb")
+        assert canonical < dzp < sz
+
+
 class TestConfigValidation:
     def test_valid_library_dirs_filters_stale(self, tmp_path):
         real = tmp_path / "lib"

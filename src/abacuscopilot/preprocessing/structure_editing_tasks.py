@@ -45,7 +45,7 @@ def build_supercell(structure: Structure, nx: int, ny: int, nz: int) -> Structur
     scale = np.diag([nx, ny, nz])
     new_structure.lattice = Lattice(
         constant=structure.lattice.constant,
-        vectors=structure.lattice.vectors @ scale,
+        vectors=scale @ structure.lattice.vectors,
     )
 
     # Copy pseudopotential / orbital info
@@ -167,8 +167,17 @@ def task_supercell(args: list[str] | None = None, interactive: bool = True) -> N
 def apply_lattice_transform(structure: Structure, M: np.ndarray) -> Structure:
     """Apply a 3×3 transformation matrix to redefine the lattice.
 
-    New lattice vectors: L' = L @ M
-    Fractional positions transform as: f' = M⁻¹ @ f
+    Lattice vectors are the *rows* of L, so the matrix multiplies from the
+    left:  L' = M @ L, i.e. the i-th new vector is the combination of the old
+    vectors given by the i-th row of M (a' = m₁₁·a + m₁₂·b + m₁₃·c).  This is
+    the convention VASPKIT uses for TRANSMAT.
+
+    Fractional positions transform as: f' = f @ M⁻¹ (row vectors, so that
+    f'·L' = f·L leaves every Cartesian position unchanged).
+
+    M must have integer entries for the new cell to be a sublattice/supercell
+    of the old one; a non-integer M yields a cell that is not commensurate
+    with the original crystal.
 
     When |det M| > 1 and M has integer entries, the new cell is larger than
     the old one — atoms are replicated (|det M| images per original atom) to
@@ -195,21 +204,29 @@ def apply_lattice_transform(structure: Structure, M: np.ndarray) -> Structure:
     # Transform lattice
     new_structure.lattice = Lattice(
         constant=structure.lattice.constant,
-        vectors=structure.lattice.vectors @ M,
+        vectors=M @ structure.lattice.vectors,
     )
 
     # --- Build tiling offsets (only needed when replicating atoms) ---
     g_offsets: list[np.ndarray] = []
     if do_replicate:
         # Find the |det M| distinct integer g vectors whose images under
-        # M⁻¹ cover the new cell without overlap.
-        col_bounds = np.sum(np.abs(np.round(M).astype(int)), axis=0)
+        # M⁻¹ cover the new cell without overlap.  The classes are the cosets
+        # Z³/Z³M, and every representative g = x·M (x ∈ [0,1)³) satisfies
+        # |g_i| ≤ Σ_j |M_ij| — note the *row* sums, not the column sums, bound
+        # the search box (they differ once M has negative entries).
+        g_bounds = np.sum(np.abs(np.round(M).astype(int)), axis=1)
+        # Try non-negative components first so the chosen representatives (and
+        # hence the atom order in the output) stay canonical.
+        g_range = [
+            list(range(0, int(b) + 1)) + list(range(-int(b), 0)) for b in g_bounds
+        ]
         seen: set[tuple[float, float, float]] = set()
-        for gx in range(col_bounds[0]):
-            for gy in range(col_bounds[1]):
-                for gz in range(col_bounds[2]):
+        for gx in g_range[0]:
+            for gy in g_range[1]:
+                for gz in g_range[2]:
                     g = np.array([gx, gy, gz], dtype=float)
-                    offset_key = tuple((M_inv @ g).round(10) % 1.0)
+                    offset_key = tuple((g @ M_inv).round(10) % 1.0)
                     if offset_key not in seen:
                         seen.add(offset_key)
                         g_offsets.append(g)
@@ -247,7 +264,7 @@ def apply_lattice_transform(structure: Structure, M: np.ndarray) -> Structure:
         if do_replicate:
             # Generate |det M| images
             for g in g_offsets:
-                f_new = (M_inv @ (f_old + g)) % 1.0
+                f_new = ((f_old + g) @ M_inv) % 1.0
                 new_structure.atoms.append(Atom(
                     species=atom.species,
                     position=f_new,
@@ -259,7 +276,7 @@ def apply_lattice_transform(structure: Structure, M: np.ndarray) -> Structure:
                 ))
         else:
             # Pure redefinition — just transform and wrap
-            f_new = (M_inv @ f_old) % 1.0
+            f_new = (f_old @ M_inv) % 1.0
             new_structure.atoms.append(Atom(
                 species=atom.species,
                 position=f_new,
@@ -281,7 +298,10 @@ def task_redefine_lattice(args: list[str] | None = None, interactive: bool = Tru
     This is used to change unit-cell conventions (e.g. conventional ↔ primitive
     cell, or re-orientation) while preserving the physical crystal structure.
 
-    The matrix M is applied as  new_lattice = old_lattice @ M.
+    Lattice vectors are the rows of L, so the matrix acts from the left:
+    new_lattice = M @ old_lattice — row i of M gives the i-th new vector,
+    i.e. a' = m₁₁·a + m₁₂·b + m₁₃·c.  This matches VASPKIT's TRANSMAT
+    convention, so integer matrices can be copied from VASPKIT verbatim.
     """
     console = _get_console()
 
@@ -319,7 +339,7 @@ def task_redefine_lattice(args: list[str] | None = None, interactive: bool = Tru
 
     if interactive:
         console.print("  Enter the 3×3 transformation matrix M")
-        console.print("  (new_lattice = old_lattice @ M):")
+        console.print("  (new_lattice = M @ old_lattice — row i of M gives a', b', c'):")
         console.print()
         r1 = [float(x) for x in _prompt(console, "  Row 1  [1 0 0]", "1 0 0").split()]
         r2 = [float(x) for x in _prompt(console, "  Row 2  [0 1 0]", "0 1 0").split()]

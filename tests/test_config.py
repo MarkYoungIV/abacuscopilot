@@ -371,3 +371,83 @@ class TestLibraryMigration:
 
         assert defaults["pseudo_dir"] == "./"
         assert defaults["orbital_dir"] == str(tmp_path)
+
+
+class TestFamilyOwnsLibraryLists:
+    """The active family decides which series the lists may resolve from.
+
+    Regression for a server whose config said `family: sg15` while
+    ``pseudo_library`` still listed Dojo-NC-FR first.  Every entry existed, so
+    the stale-entry sanitizer left the list alone, and a Si CIF resolved to
+    Dojo's `Si.upf` + SZ `..._1s1p.orb` instead of SG15's
+    `Si_ONCV_PBE-1.0.upf` + `2s2p1d`.
+    """
+
+    def _write_config(self, tmp_path, libraries):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"libraries": libraries}))
+
+    def test_sg15_drops_valid_foreign_series_entries(self, tmp_path, monkeypatch):
+        from abacuscopilot.preprocessing.system_tasks import _find_file_for_element
+
+        pp = _build_pp_orb(tmp_path)
+        _use_tmp_home(tmp_path, monkeypatch)
+        monkeypatch.setattr(cfg, "release_root", lambda: tmp_path)
+        dojo_p = pp / "Dojo-NC-FR" / "Pseudopotential"
+        dojo_o = pp / "Dojo-NC-FR" / "Orbitals_v2.0"
+        self._write_config(tmp_path, {
+            "family": "sg15",
+            "pseudo_library": [str(dojo_p)],
+            "orbital_library": [str(dojo_o)],
+        })
+
+        libs = cfg.load_config()["libraries"]
+
+        assert not any("Dojo" in d or "APNS" in d
+                       for d in libs["pseudo_library"] + libs["orbital_library"])
+        assert _find_file_for_element(libs["pseudo_library"], "Li", ".upf") == \
+            "Li_ONCV_PBE-1.0.upf"
+        assert _find_file_for_element(libs["orbital_library"], "Li", ".orb") == \
+            "Li_gga_7au_100Ry_4s1p.orb"
+
+    def test_a_missing_family_key_defaults_to_sg15(self, tmp_path, monkeypatch):
+        pp = _build_pp_orb(tmp_path)
+        _use_tmp_home(tmp_path, monkeypatch)
+        monkeypatch.setattr(cfg, "release_root", lambda: tmp_path)
+        self._write_config(tmp_path, {
+            "pseudo_library": [str(pp / "Dojo-NC-FR" / "Pseudopotential")],
+        })
+
+        libs = cfg.load_config()["libraries"]
+
+        assert not any("Dojo" in d for d in libs["pseudo_library"])
+
+    def test_custom_family_keeps_its_hand_configured_list(self, tmp_path, monkeypatch):
+        pp = _build_pp_orb(tmp_path)
+        _use_tmp_home(tmp_path, monkeypatch)
+        monkeypatch.setattr(cfg, "release_root", lambda: tmp_path)
+        dojo_p = (pp / "Dojo-NC-FR" / "Pseudopotential").resolve()
+        self._write_config(tmp_path, {
+            "family": "custom",
+            "pseudo_library": [str(dojo_p)],
+        })
+
+        libs = cfg.load_config()["libraries"]
+
+        assert libs["pseudo_library"] == [str(dojo_p)]
+
+    def test_an_external_family_keeps_its_own_dirs(self, tmp_path, monkeypatch):
+        pp = _build_pp_orb(tmp_path)
+        _use_tmp_home(tmp_path, monkeypatch)
+        monkeypatch.setattr(cfg, "release_root", lambda: tmp_path)
+        dojo_p = (pp / "Dojo-NC-FR" / "Pseudopotential").resolve()
+        dojo_o = (pp / "Dojo-NC-FR" / "Orbitals_v2.0").resolve()
+        self._write_config(tmp_path, {
+            "family": "dojoncfr/dzp",
+            "pseudo_library": [str(dojo_p)],
+            "orbital_library": [str(dojo_o)],
+        })
+
+        libs = cfg.load_config()["libraries"]
+
+        assert libs["pseudo_library"] == [str(dojo_p)]
+        assert libs["orbital_library"] == [str(dojo_o)]

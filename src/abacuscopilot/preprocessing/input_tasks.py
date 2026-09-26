@@ -1806,8 +1806,9 @@ def task_eos_setup(args: list[str] | None = None, interactive: bool = True,
 
     Reads STRU in the current directory, converts to Direct (fractional)
     coordinates, saves as STRU.tmp, then creates ``scale_X.XXX/`` directories
-    each containing a STRU with scaled lattice vectors, an SCF INPUT file,
-    and (optionally) a Slurm submission script.
+    each containing a STRU with scaled lattice vectors, a relax INPUT file
+    (ions relaxed at the fixed scaled cell), and (optionally) a Slurm
+    submission script.
     """
     import shutil
 
@@ -1852,12 +1853,23 @@ def task_eos_setup(args: list[str] | None = None, interactive: bool = True,
     else:
         basis = "lcao"
 
-    # --- INPUT params from SCF template ---
+    # --- INPUT params from RELAX template (atoms only, fixed cell) ---
+    # EOS needs the internal atomic positions relaxed at every scaled volume:
+    # a plain SCF keeps the (possibly non-equilibrium) fractional coordinates,
+    # which makes E(V) too stiff and overestimates B0.
     params = InputParams()
     params.suffix = "ABACUS"
-    template = _get_template(basis, "scf")
+    template = _get_template(basis, "relax")
     if template:
         _apply_template(params, template)
+    params.calculation = "relax"
+    params.cal_force = 1
+    params.cal_stress = 0
+    if "_template_keys" not in params.extras:
+        params.extras["_template_keys"] = []
+    for _k in ("cal_force", "cal_stress"):
+        if _k not in params.extras["_template_keys"]:
+            params.extras["_template_keys"].append(_k)
 
     # --- LCAO solver (CPU / GPU) ---
     if interactive and basis == "lcao":
@@ -1880,6 +1892,13 @@ def task_eos_setup(args: list[str] | None = None, interactive: bool = True,
         return
 
     structure = read_stru(stru_path)
+
+    # relax only moves atoms whose movement flags are 1 → warn about fixed atoms
+    # so they are not silently excluded from the internal relaxation.
+    n_fixed = sum(1 for a in structure.atoms if not all(a.fix))
+    if n_fixed:
+        console.print(f"  [yellow]! {n_fixed} atom(s) have fixed coordinates (m 0 0 0);[/yellow]")
+        console.print("  [yellow]  relax cannot move them — unfix them for a proper EOS.[/yellow]")
 
     # Convert to Direct (fractional) coordinates if needed
     if structure.coordinate_type != "Direct":
@@ -2016,6 +2035,7 @@ def task_eos_setup(args: list[str] | None = None, interactive: bool = True,
     console.print()
     console.print(f"[green]✓ EOS setup complete: {len(scale_factors)} directories[/green]")
     console.print(f"  Basis: {basis}, ks_solver: {params.ks_solver}")
+    console.print(f"  Calculation: {params.calculation} (ions relaxed at each fixed volume)")
     console.print(f"  ecutwfc: {params.ecutwfc} Ry, scf_thr: {params.scf_thr}")
     console.print("  [dim]Temporary files (STRU.tmp, UPF/ORB) removed from current directory.[/dim]")
     console.print()

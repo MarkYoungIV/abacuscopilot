@@ -375,6 +375,22 @@ def load_config() -> dict[str, Any]:
         detected = _detect_library_dirs(ext, exclude_containing=exclude)
         libs[key] = detected + [d for d in valid if d not in detected]
 
+    # The active family owns the library lists, and the default family is SG15.
+    # A persisted list can still hold entries from a series picked earlier (or
+    # hand-edited in), and the resolver searches every listed dir globally, so
+    # `family: sg15` beside a Dojo entry resolved a Si job to Dojo `Si.upf` +
+    # its SZ `..._1s1p.orb` instead of SG15's `Si_ONCV_PBE-1.0.upf` +
+    # `2s2p1d`.  Re-derive the bundled SG15 (+ lanthanide) roots whenever SG15
+    # is the active family; an external family's own dirs are written by
+    # materialize_family() when it is picked, and `custom` keeps its
+    # hand-configured lists.  Replace only when detection finds something, so
+    # a machine without PP-Orb/ keeps whatever it had.
+    if (libs.get("family") or "sg15") == "sg15":
+        for key, ext in (("pseudo_library", ".upf"), ("orbital_library", ".orb")):
+            detected = _detect_library_dirs(ext, exclude_containing=exclude)
+            if detected:
+                libs[key] = detected
+
     # A `defaults.pseudo_dir` / `orbital_dir` pointing at a directory that no
     # longer exists is a leftover from an older wizard run; ABACUS would fail
     # there.  "./" is the value that means "the job directory, where the

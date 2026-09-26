@@ -980,20 +980,57 @@ def task_md_msd(args: list[str] | None = None, interactive: bool = True) -> None
 
 
 def _minimum_image(dr: np.ndarray, cell: np.ndarray) -> np.ndarray:
-    """Apply minimum-image convention to a displacement vector.
+    """Apply the minimum-image convention to displacement vector(s).
 
     Args:
         dr: (3,) or (N,3) displacement vectors (Angstrom).
-        cell: (3,3) cell vectors (Angstrom).
+        cell: (3,3) cell vectors; rows are the lattice vectors a, b, c
+            (row-vector convention: ``cart = frac @ cell``).
 
     Returns:
-        Corrected displacement vectors (Angstrom).
+        Displacement vectors mapped to their nearest periodic image.
+
+    Notes:
+        Row-vector convention means ``frac = cart @ inv(cell)``.  For an
+        orthogonal cell fractional wrapping is exact; for a triclinic cell it
+        is not, so the 26 surrounding cells are also tested and the shortest
+        image is kept (this matches ASE's ``get_all_distances(mic=True)`` and
+        a brute-force nearest-image search).
     """
-    # Convert to fractional, wrap to [-0.5, 0.5), convert back
-    cell_inv = np.linalg.inv(cell.T)
-    frac = dr @ cell_inv
+    dr = np.asarray(dr, dtype=np.float64)
+    cell = np.asarray(cell, dtype=np.float64)
+    single = dr.ndim == 1
+    d = np.atleast_2d(dr)
+
+    # Orthogonal cell: fractional wrapping is exact — fast path.
+    if np.allclose(cell, np.diag(np.diag(cell))):
+        lengths = np.abs(np.diag(cell))
+        lengths = np.where(lengths < 1e-12, 1.0, lengths)
+        out = d - np.round(d / lengths) * lengths
+        return out[0] if single else out
+
+    cell_inv = np.linalg.inv(cell)
+    frac = d @ cell_inv
     frac -= np.floor(frac + 0.5)
-    return frac @ cell.T
+    base = frac @ cell
+
+    # The wrapped point can still have a nearer image in a neighbouring cell.
+    # Candidates are generated from the FIXED wrapped coordinates, never from
+    # the running best, otherwise shifts would compound and images be missed.
+    best = base.copy()
+    best_d2 = np.einsum("ij,ij->i", best, best)
+    for i in (-1, 0, 1):
+        for j in (-1, 0, 1):
+            for k in (-1, 0, 1):
+                if i == 0 and j == 0 and k == 0:
+                    continue
+                cand = base + i * cell[0] + j * cell[1] + k * cell[2]
+                d2 = np.einsum("ij,ij->i", cand, cand)
+                mask = d2 < best_d2
+                if mask.any():
+                    best[mask] = cand[mask]
+                    best_d2[mask] = d2[mask]
+    return best[0] if single else best
 
 
 def compute_rdf(
@@ -1376,8 +1413,9 @@ def write_poscar(
         f.write("  " + "  ".join(species_order) + "\n")
         f.write("  " + "  ".join(str(len(species_atoms[s])) for s in species_order) + "\n")
         f.write("Direct\n")
-        # Convert Cartesian (Å) → fractional (cell is in Å, so units match)
-        cell_inv = np.linalg.inv(cell.T)
+        # Convert Cartesian (Å) → fractional (row-vector convention,
+        # cart = frac @ cell  =>  frac = cart @ inv(cell)).
+        cell_inv = np.linalg.inv(cell)
         for s in species_order:
             for a in species_atoms[s]:
                 frac = a["xyz"] @ cell_inv
@@ -1411,8 +1449,8 @@ def compute_probability_density(
     nx, ny, nz = grid_size
     density = np.zeros((nx, ny, nz), dtype=np.float64)
 
-    # Pre-compute cell inverse once
-    cell_inv = np.linalg.inv(cell.T)
+    # Pre-compute cell inverse once (row-vector convention: frac = cart @ inv(cell))
+    cell_inv = np.linalg.inv(cell)
     total_count = 0
     from rich.progress import Progress
 
@@ -1596,26 +1634,34 @@ def _pairwise_dist_mic(
         pos_a: (n_a, 3) positions.
         pos_b: (n_b, 3) positions.
         cell: (3, 3) cell matrix (Å), or None for no PBC.
-        cell_inv: (3, 3) inverse cell.T, precomputed.
+        cell_inv: (3, 3) inverse cell, precomputed (row-vector convention).
+            Kept for API compatibility; the exact nearest-image search is
+            delegated to :func:`_minimum_image`.
 
     Returns:
         (n_a, n_b) distance matrix.
     """
-    # Try PyTorch MPS on Apple Silicon for large arrays (>10K pairs)
-    if pos_a.shape[0] * pos_b.shape[0] > 10000:
+    orthogonal = cell is None or np.allclose(
+        np.asarray(cell), np.diag(np.diag(np.asarray(cell)))
+    )
+
+    # Try PyTorch MPS on Apple Silicon for large arrays (>10K pairs).
+    # Only for orthogonal (or absent) cells: the GPU box-length rounding is
+    # exact there, whereas a triclinic cell needs the CPU nearest-image search.
+    if pos_a.shape[0] * pos_b.shape[0] > 10000 and orthogonal:
         try:
             import torch
 
             if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 device = torch.device("mps")
-                # torch.cdist is the fastest way to get pairwise distances on GPU
                 da = torch.from_numpy(pos_a.astype(np.float32)).to(device).unsqueeze(0)
                 db = torch.from_numpy(pos_b.astype(np.float32)).to(device).unsqueeze(0)
                 if cell is not None:
-                    # Apply minimum-image in batch on GPU
-                    L = torch.from_numpy(np.linalg.norm(cell, axis=1).astype(np.float32)).to(device)
+                    L = torch.from_numpy(
+                        np.abs(np.diag(np.asarray(cell, dtype=np.float32))).copy()
+                    ).to(device)
                     delta = da.squeeze(0)[:, None, :] - db.squeeze(0)[None, :, :]
-                    delta -= torch.round(delta / L) * L
+                    delta = delta - torch.round(delta / L) * L
                     dist = torch.norm(delta, dim=2)
                 else:
                     dist = torch.cdist(da, db).squeeze(0)
@@ -1623,13 +1669,11 @@ def _pairwise_dist_mic(
         except (ImportError, RuntimeError):
             pass
 
-    # NumPy path
-    delta = pos_a[:, None, :] - pos_b[None, :, :]
+    # NumPy path (exact nearest image)
+    disp = (pos_a[:, None, :] - pos_b[None, :, :]).reshape(-1, 3)
     if cell is not None:
-        frac = delta.reshape(-1, 3) @ cell_inv
-        frac -= np.floor(frac + 0.5)
-        delta = (frac @ cell.T).reshape(pos_a.shape[0], pos_b.shape[0], 3)
-    return np.linalg.norm(delta, axis=2)
+        disp = _minimum_image(disp, cell)
+    return np.linalg.norm(disp, axis=1).reshape(pos_a.shape[0], pos_b.shape[0])
 
 
 def _unwrap_trajectory(frames: list[dict], atom_indices: list[int]) -> np.ndarray:
@@ -1669,10 +1713,10 @@ def _unwrap_trajectory(frames: list[dict], atom_indices: list[int]) -> np.ndarra
                 delta -= np.round(delta / L) * L
             else:
                 cell = lc * np.array(lv)
-                cell_inv = np.linalg.inv(cell.T)
+                cell_inv = np.linalg.inv(cell)
                 frac = delta @ cell_inv
                 frac -= np.round(frac)
-                delta = frac @ cell.T
+                delta = frac @ cell
 
         unwrapped[:, :, k] = unwrapped[:, :, k - 1] + delta
 
@@ -1750,13 +1794,13 @@ def compute_van_hove(
 
     ngp = np.zeros(n_frames, dtype=np.float64)
     lv = frames[0].get("lattice_vectors")
-    cell_inv = np.linalg.inv(cell0.T) if cell0 is not None else None
+    cell_inv = np.linalg.inv(cell0) if cell0 is not None else None
     for k in range(1, n_frames):
         delta = coords_a[:, :, k] - coords_a[:, :, 0]
         if cell0 is not None:
             frac = delta @ cell_inv
             frac -= np.floor(frac + 0.5)
-            delta = frac @ cell0.T
+            delta = frac @ cell0
         r2_per_atom = np.sum(delta**2, axis=1)
         r2 = np.mean(r2_per_atom)
         if r2 > 1e-12:
@@ -2563,7 +2607,7 @@ def task_lammps_to_md_dump(args: list[str] | None = None, interactive: bool = Tr
     with open(lammps_path) as fin, open(out_path, "w") as fout:
         frame_lines: list[str] = []
         in_atoms = False
-        box_bounds: list[tuple[float, float]] = []
+        box_bounds: list[tuple[float, float, float]] = []
         timestep = 0
         expect_timestep = False
         expect_bounds = 0
@@ -2604,7 +2648,12 @@ def task_lammps_to_md_dump(args: list[str] | None = None, interactive: bool = Tr
                 if expect_bounds > 0:
                     parts = s.split()
                     if len(parts) >= 2:
-                        box_bounds.append((float(parts[0]), float(parts[1])))
+                        # 3rd column is the tilt factor (xy on the x line,
+                        # xz on the y line, yz on the z line); absent for
+                        # orthorhombic boxes.  Do NOT drop it: LAMMPS prints
+                        # bounding-box values for triclinic cells.
+                        tilt = float(parts[2]) if len(parts) >= 3 else 0.0
+                        box_bounds.append((float(parts[0]), float(parts[1]), tilt))
                     expect_bounds -= 1
                     continue
 
@@ -2627,32 +2676,66 @@ def task_lammps_to_md_dump(args: list[str] | None = None, interactive: bool = Tr
 
     console.print()
     console.print(f"[green]✓ Converted {n_written} frames → {out_path}[/green]")
-    console.print(
-        f"  Cell: {box_bounds[0][1] - box_bounds[0][0]:.4f} × "
-        f"{box_bounds[1][1] - box_bounds[1][0]:.4f} × "
-        f"{box_bounds[2][1] - box_bounds[2][0]:.4f} Å³"
-    )
+    if len(box_bounds) == 3:
+        _cell = _lammps_bounds_to_cell(box_bounds)
+        console.print(
+            f"  Cell: {np.linalg.norm(_cell[0]):.4f} × "
+            f"{np.linalg.norm(_cell[1]):.4f} × "
+            f"{np.linalg.norm(_cell[2]):.4f} Å"
+        )
     console.print()
+
+
+def _lammps_bounds_to_cell(box_bounds) -> np.ndarray:
+    """Convert LAMMPS BOX BOUNDS values to a real 3x3 cell matrix.
+
+    LAMMPS ``dump`` prints *bounding-box* values, not the true box edges.
+    For a triclinic box the true values are recovered with::
+
+        xlo = xlo_bound - MIN(0, xy, xz, xy+xz)
+        xhi = xhi_bound - MAX(0, xy, xz, xy+xz)
+        ylo = ylo_bound - MIN(0, yz)
+        yhi = yhi_bound - MAX(0, yz)
+        zlo = zlo_bound ; zhi = zhi_bound
+
+    and the lattice vectors are a=(xhi-xlo,0,0), b=(xy,yhi-ylo,0),
+    c=(xz,yz,zhi-zlo).  ``box_bounds`` holds ``(lo, hi, tilt)`` triples for
+    the x, y and z lines respectively, where the tilt column carries xy, xz
+    and yz.  See https://docs.lammps.org/Howto_triclinic.html.
+    """
+    (xlo_b, xhi_b, xy), (ylo_b, yhi_b, xz), (zlo_b, zhi_b, yz) = box_bounds
+
+    xlo = xlo_b - min(0.0, xy, xz, xy + xz)
+    xhi = xhi_b - max(0.0, xy, xz, xy + xz)
+    ylo = ylo_b - min(0.0, yz)
+    yhi = yhi_b - max(0.0, yz)
+    zlo = zlo_b
+    zhi = zhi_b
+
+    return np.array(
+        [
+            [xhi - xlo, 0.0, 0.0],
+            [xy, yhi - ylo, 0.0],
+            [xz, yz, zhi - zlo],
+        ]
+    )
 
 
 def _write_abacus_md_frame(
     fout,
     atom_lines: list[str],
-    box_bounds: list[tuple[float, float]],
+    box_bounds: list[tuple[float, float, float]],
     type_map: dict[int, str],
     timestep: int,
 ) -> None:
     """Write a single frame in ABACUS MD_dump format."""
-    lx = box_bounds[0][1] - box_bounds[0][0]
-    ly = box_bounds[1][1] - box_bounds[1][0]
-    lz = box_bounds[2][1] - box_bounds[2][0]
+    cell = _lammps_bounds_to_cell(box_bounds)
 
     fout.write(f"MDSTEP: {timestep}\n")
     fout.write("LATTICE_CONSTANT: 1.0 Angstrom\n")
     fout.write("LATTICE_VECTORS\n")
-    fout.write(f"   {lx:15.10f}  {0:15.10f}  {0:15.10f}\n")
-    fout.write(f"   {0:15.10f}  {ly:15.10f}  {0:15.10f}\n")
-    fout.write(f"   {0:15.10f}  {0:15.10f}  {lz:15.10f}\n")
+    for row in cell:
+        fout.write(f"   {row[0]:15.10f}  {row[1]:15.10f}  {row[2]:15.10f}\n")
     fout.write("\n")
     fout.write("INDEX   LABEL   X           Y           Z           FX   FY   FZ   VX   VY   VZ\n")
 
@@ -2665,7 +2748,7 @@ def _write_abacus_md_frame(
         )
     parsed.sort(key=lambda t: t[0])
 
-    for idx, (atom_id, lmp_type, x, y, z) in enumerate(parsed, start=1):
+    for idx, (_atom_id, lmp_type, x, y, z) in enumerate(parsed, start=1):
         elem = type_map.get(lmp_type, f"X{lmp_type}")
         fout.write(
             f"{idx:>4d}  {elem:>4s}  "
